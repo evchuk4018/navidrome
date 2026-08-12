@@ -1,0 +1,23 @@
+# Apply alongside the existing musicplayer Compose file. This override keeps
+# Navidrome in the existing musicplayer network and reuses its data volume,
+# while building the service from this fork.
+services:
+  navidrome:
+    build:
+      context: /srv/storage/wowzerbowser/files/home music
+      dockerfile: Dockerfile
+      target: final
+    image: home-music-navidrome:local
+    environment:
+      ND_BASEURL: /navidrome
+    ports:
+      - "127.0.0.1:4533:4533"
+    volumes:
+      - type: bind
+        source: /srv/storage/media/music
+        target: /music
+        read_only: true
+      - type: volume
+        source: musicplayer_navidrome_data
+        target: /data
+
