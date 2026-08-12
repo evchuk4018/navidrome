@@ -38,7 +38,9 @@
         "missing": "Поле відсутнє",
         "libraryName": "Бібліотека",
         "composer": "Композитор",
-        "disc": "Диск %{discNumber}"
+        "disc": "Диск %{discNumber}",
+        "albumGain": "",
+        "trackGain": ""
       },
       "actions": {
         "addToQueue": "Прослухати пізніше",
@@ -208,7 +210,8 @@
         "songCount": "Пісні",
         "comment": "Коментар",
         "sync": "Автоімпорт",
-        "path": "Імпортувати із"
+        "path": "Імпортувати із",
+        "starred": "Улюблене"
       },
       "actions": {
         "selectPlaylist": "Вибрати список відтворення:",
@@ -632,7 +635,8 @@
       "multipleLibraries": "%{selected} з %{total} Бібліотеки",
       "selectLibraries": "Вибір бібліотек",
       "none": "Відсутня"
-    }
+    },
+    "onlyFavourites": "Показати улюблене"
   },
   "player": {
     "playListsText": "Грати по черзі",
