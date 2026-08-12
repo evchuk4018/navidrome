@@ -23,17 +23,32 @@ only on `127.0.0.1:4533`; Tailscale Serve exposes it at the tailnet-only
 
 ```sh
 cd '/srv/storage/wowzerbowser/files/home music'
+git remote -v
 git fetch upstream
 git checkout master
 git merge --ff-only upstream/master
 git push origin master
 ```
 
-After updating, rebuild and recreate only Navidrome:
+After pulling the fork onto the homelab, rebuild and recreate only Navidrome:
 
 ```sh
+cd '/srv/storage/wowzerbowser/files/home music'
+COMPOSE_BASE=/srv/storage/wowzerbowser/files/musicplayer/docker-compose.yml
+COMPOSE_OVERRIDE='/srv/storage/wowzerbowser/files/home music/deploy/homelab/docker-compose.musicplayer.override.yml'
+git pull --ff-only origin master
 docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" up -d --build navidrome
 ```
 
-No Navidrome application source files are changed by this deployment.
+Daily operations use the same two Compose files:
 
+```sh
+COMPOSE_BASE=/srv/storage/wowzerbowser/files/musicplayer/docker-compose.yml
+COMPOSE_OVERRIDE='/srv/storage/wowzerbowser/files/home music/deploy/homelab/docker-compose.musicplayer.override.yml'
+docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" logs -f --tail=200 navidrome
+docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" restart navidrome
+docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" stop navidrome
+docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" start navidrome
+```
+
+No Navidrome application source files are changed by this deployment.
