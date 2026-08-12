@@ -16,7 +16,8 @@ services:
       - type: bind
         source: /srv/storage/media/music
         target: /music
-        read_only: true
+        # External music downloads are imported into the canonical library.
+        read_only: false
       - type: volume
         source: navidrome_data
         target: /data

@@ -21,6 +21,10 @@ coverage.out
 dist
 music
 music.old
+!core/music/
+!core/music/**
+!ui/src/music/
+!ui/src/music/**
 *.db*
 .gitinfo
 docker-compose.yml

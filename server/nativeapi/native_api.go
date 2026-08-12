@@ -15,6 +15,7 @@ import (
 	"github.com/navidrome/navidrome/core"
 	"github.com/navidrome/navidrome/core/artwork"
 	"github.com/navidrome/navidrome/core/metrics"
+	musicservice "github.com/navidrome/navidrome/core/music"
 	playlistsvc "github.com/navidrome/navidrome/core/playlists"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
@@ -46,10 +47,14 @@ type Router struct {
 	maintenance   core.Maintenance
 	pluginManager PluginManager
 	imgUpload     artwork.Uploader
+	music         musicservice.Service
 }
 
-func New(ds model.DataStore, share core.Share, playlists playlistsvc.Playlists, insights metrics.Insights, libraryService core.Library, userService core.User, maintenance core.Maintenance, pluginManager PluginManager, imgUpload artwork.Uploader) *Router {
-	r := &Router{ds: ds, share: share, playlists: playlists, insights: insights, libs: libraryService, users: userService, maintenance: maintenance, pluginManager: pluginManager, imgUpload: imgUpload}
+func New(ctx context.Context, ds model.DataStore, share core.Share, playlists playlistsvc.Playlists, insights metrics.Insights, libraryService core.Library, userService core.User, maintenance core.Maintenance, pluginManager PluginManager, imgUpload artwork.Uploader, musicService musicservice.Service) *Router {
+	r := &Router{ds: ds, share: share, playlists: playlists, insights: insights, libs: libraryService, users: userService, maintenance: maintenance, pluginManager: pluginManager, imgUpload: imgUpload, music: musicService}
+	if musicService != nil {
+		musicService.Start(ctx)
+	}
 	r.Handler = r.routes()
 	return r
 }
@@ -86,6 +91,7 @@ func (api *Router) routes() http.Handler {
 		api.addMissingFilesRoute(r)
 		api.addKeepAliveRoute(r)
 		api.addInsightsRoute(r)
+		api.addMusicRoute(r)
 
 		r.With(adminOnlyMiddleware).Group(func(r chi.Router) {
 			api.addInspectRoute(r)

@@ -11,8 +11,10 @@ COMPOSE_OVERRIDE='/srv/storage/wowzerbowser/files/home music/deploy/homelab/dock
 docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" up -d --build navidrome
 ```
 
-The canonical library is `/srv/storage/media/music`, mounted at `/music`
-read-only. Navidrome state is kept in the existing named volume
+The canonical library is `/srv/storage/media/music`, mounted at `/music` with
+write access so the authenticated external music downloader can import files.
+The beets database and provider cache live in Navidrome's existing data volume.
+Navidrome state is kept in the existing named volume
 `musicplayer_navidrome_data`, mounted at `/data`. The host publishes Navidrome
 only on `127.0.0.1:4533`; Tailscale Serve exposes it at the tailnet-only
 `/navidrome` path on the existing HTTPS endpoint.
@@ -25,9 +27,9 @@ only on `127.0.0.1:4533`; Tailscale Serve exposes it at the tailnet-only
 cd '/srv/storage/wowzerbowser/files/home music'
 git remote -v
 git fetch upstream
-git checkout master
+git checkout main
 git merge --ff-only upstream/master
-git push origin master
+git push origin main
 ```
 
 After pulling the fork onto the homelab, rebuild and recreate only Navidrome:
@@ -36,7 +38,7 @@ After pulling the fork onto the homelab, rebuild and recreate only Navidrome:
 cd '/srv/storage/wowzerbowser/files/home music'
 COMPOSE_BASE=/srv/storage/wowzerbowser/files/musicplayer/docker-compose.yml
 COMPOSE_OVERRIDE='/srv/storage/wowzerbowser/files/home music/deploy/homelab/docker-compose.musicplayer.override.yml'
-git pull --ff-only origin master
+git pull --ff-only origin main
 docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" up -d --build navidrome
 ```
 

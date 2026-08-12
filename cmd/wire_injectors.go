@@ -6,13 +6,17 @@ import (
 	"context"
 
 	"github.com/google/wire"
+	"github.com/navidrome/navidrome/adapters/beets"
 	"github.com/navidrome/navidrome/adapters/lastfm"
 	"github.com/navidrome/navidrome/adapters/listenbrainz"
+	"github.com/navidrome/navidrome/adapters/musicbrainz"
+	"github.com/navidrome/navidrome/adapters/ytdlp"
 	"github.com/navidrome/navidrome/core"
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/core/artwork"
 	"github.com/navidrome/navidrome/core/lyrics"
 	"github.com/navidrome/navidrome/core/metrics"
+	musicservice "github.com/navidrome/navidrome/core/music"
 	"github.com/navidrome/navidrome/core/playback"
 	"github.com/navidrome/navidrome/core/playlists"
 	"github.com/navidrome/navidrome/core/scrobbler"
@@ -39,6 +43,11 @@ var allProviders = wire.NewSet(
 	nativeapi.New,
 	public.New,
 	persistence.New,
+	persistence.NewMusicDownloadJobRepository,
+	musicservice.New,
+	musicbrainz.New,
+	ytdlp.New,
+	beets.New,
 	lastfm.NewRouter,
 	listenbrainz.NewRouter,
 	events.GetBroker,
@@ -58,6 +67,9 @@ var allProviders = wire.NewSet(
 	wire.Bind(new(plugins.PluginMetricsRecorder), new(metrics.Metrics)),
 	wire.Bind(new(core.Watcher), new(scanner.Watcher)),
 	wire.Bind(new(playlists.ImageUploadService), new(artwork.Uploader)),
+	wire.Bind(new(musicservice.Catalog), new(*musicbrainz.Client)),
+	wire.Bind(new(musicservice.Downloader), new(*ytdlp.Client)),
+	wire.Bind(new(musicservice.Tagger), new(*beets.Client)),
 )
 
 func CreateDataStore() model.DataStore {
