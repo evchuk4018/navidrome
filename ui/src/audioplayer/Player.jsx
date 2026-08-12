@@ -34,6 +34,7 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
+import configureMediaSessionTrackNavigation from './mediaSession'
 
 const Player = () => {
   const theme = useCurrentTheme()
@@ -423,6 +424,12 @@ const Player = () => {
       audioInstance.volume = 1
     }
   }, [isMobilePlayer, audioInstance])
+
+  useEffect(() => {
+    if (!audioInstance || isRadio) return
+
+    return configureMediaSessionTrackNavigation(audioInstance)
+  }, [audioInstance, isRadio, playerState.queue])
 
   // Report every seek (including programmatic ones the library does not surface
   // via onAudioSeeked, e.g. restartCurrentOnPrev). Debounce coalesces drag
