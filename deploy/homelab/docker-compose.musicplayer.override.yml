@@ -18,6 +18,5 @@ services:
         target: /music
         read_only: true
       - type: volume
-        source: musicplayer_navidrome_data
+        source: navidrome_data
         target: /data
-
