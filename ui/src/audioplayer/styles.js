@@ -27,6 +27,12 @@ const useStyle = makeStyles(
     },
     player: {
       display: (props) => (props.visible ? 'block' : 'none'),
+      // The dependency's mini mode is a draggable circular controller. The
+      // source-owned MiniPlayer renders the collapsed UI instead; the
+      // dependency remains responsible for the expanded player and audio.
+      '& .react-jinke-music-player': {
+        display: 'none',
+      },
       '@media screen and (max-width:810px)': {
         '& .sound-operation': {
           display: 'none',

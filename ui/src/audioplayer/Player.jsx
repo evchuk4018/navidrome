@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useInterval } from '../common'
 import { useDispatch, useSelector } from 'react-redux'
-import { useMediaQuery } from '@material-ui/core'
 import { ThemeProvider } from '@material-ui/core/styles'
 import {
   createMuiTheme,
@@ -17,6 +16,7 @@ import useCurrentTheme from '../themes/useCurrentTheme'
 import config from '../config'
 import useStyle from './styles'
 import AudioTitle from './AudioTitle'
+import MiniPlayer from './MiniPlayer'
 import {
   clearQueue,
   currentPlaying,
@@ -36,6 +36,9 @@ import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
 import configureMediaSessionTrackNavigation from './mediaSession'
 
+const MINI_MODE = 'mini'
+const FULL_MODE = 'full'
+
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
@@ -49,7 +52,11 @@ const Player = () => {
   const currentTrackIdRef = useRef(null)
   const stoppedRef = useRef(false)
   const [audioInstance, setAudioInstance] = useState(null)
-  const isDesktop = useMediaQuery('(min-width:810px)')
+  const [displayMode, setDisplayMode] = useState(MINI_MODE)
+  const [miniProgress, setMiniProgress] = useState({
+    currentTime: 0,
+    duration: 0,
+  })
   const isMobilePlayer =
     /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
       navigator.userAgent,
@@ -63,6 +70,13 @@ const Player = () => {
   playerStateRef.current = playerState
 
   currentTrackIdRef.current = currentTrackId
+
+  useEffect(() => {
+    if (playerState.queue.length === 0) {
+      setDisplayMode(MINI_MODE)
+      setMiniProgress({ currentTime: 0, duration: 0 })
+    }
+  }, [playerState.queue.length])
 
   useInterval(
     () => {
@@ -203,12 +217,22 @@ const Player = () => {
     }
   }, [playerState, audioInstance])
 
+  const handleModeChange = useCallback((mode) => {
+    if (mode === MINI_MODE || mode === FULL_MODE) {
+      setDisplayMode(mode)
+    }
+  }, [])
+
+  const openFullPlayer = useCallback(() => {
+    setDisplayMode(FULL_MODE)
+  }, [])
+
   const defaultOptions = useMemo(
     () => ({
       theme: playerTheme,
       bounds: 'body',
       playMode: playerState.mode,
-      mode: 'full',
+      mode: displayMode,
       loadAudioErrorPlayNext: false,
       autoPlayInitLoadPlayList: true,
       clearPriorAudioLists: false,
@@ -216,7 +240,7 @@ const Player = () => {
       showDownload: false,
       showLyric: true,
       showReload: false,
-      toggleMode: !isDesktop,
+      toggleMode: true,
       glassBg: false,
       showThemeSwitch: false,
       showMediaSession: true,
@@ -237,7 +261,7 @@ const Player = () => {
       locale: locale(translate),
       sortableOptions: { delay: 200, delayOnTouchOnly: true },
     }),
-    [gainInfo, isDesktop, playerTheme, translate, playerState.mode],
+    [displayMode, gainInfo, playerTheme, translate, playerState.mode],
   )
 
   const options = useMemo(() => {
@@ -268,6 +292,12 @@ const Player = () => {
     if (info.ended) {
       document.title = 'Navidrome'
     }
+    if (info.currentTime != null || info.duration != null) {
+      setMiniProgress({
+        currentTime: Number(info.currentTime) || 0,
+        duration: Number(info.duration) || 0,
+      })
+    }
     if (!info.isRadio && info.currentTime != null) {
       lastPositionMsRef.current = Math.floor(info.currentTime * 1000)
     }
@@ -286,6 +316,10 @@ const Player = () => {
       }
 
       dispatch(currentPlaying(info))
+      setMiniProgress({
+        currentTime: Number(info.currentTime) || 0,
+        duration: Number(info.duration) || 0,
+      })
       if (info.duration) {
         const song = info.song
         document.title = `${song.title} - ${song.artist} - Navidrome`
@@ -339,6 +373,10 @@ const Player = () => {
   const onAudioPause = useCallback(
     (info) => {
       dispatch(currentPlaying(info))
+      setMiniProgress({
+        currentTime: Number(info.currentTime) || 0,
+        duration: Number(info.duration) || 0,
+      })
       if (!info.isRadio && currentTrackId) {
         const posMs = Math.floor(info.currentTime * 1000)
         lastPositionMsRef.current = posMs
@@ -358,6 +396,10 @@ const Player = () => {
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
       dispatch(currentPlaying(info))
+      setMiniProgress({
+        currentTime: Number(info.currentTime) || 0,
+        duration: Number(info.duration) || 0,
+      })
       dataProvider
         .getOne('keepalive', { id: info.trackId })
         // eslint-disable-next-line no-console
@@ -409,6 +451,19 @@ const Player = () => {
       reject()
     })
   }, [dispatch, currentTrackId])
+
+  const queuedMiniTrack =
+    playerState.queue[
+      playerState.playIndex ?? playerState.savedPlayIndex ?? 0
+    ] || playerState.queue[0]
+  const miniTrack = playerState.current?.uuid
+    ? playerState.current
+    : queuedMiniTrack
+  const miniPlayerVisible = visible && displayMode === MINI_MODE
+  const miniIsPlaying =
+    audioInstance?.paused != null
+      ? !audioInstance.paused
+      : playerState.current?.paused === false
 
   if (!visible) {
     document.title = 'Navidrome'
@@ -462,6 +517,19 @@ const Player = () => {
 
   return (
     <ThemeProvider theme={createMuiTheme(theme)}>
+      {miniPlayerVisible && (
+        <MiniPlayer
+          track={miniTrack}
+          audioInstance={audioInstance}
+          currentTime={miniProgress.currentTime}
+          duration={miniProgress.duration || miniTrack?.duration || 0}
+          isPlaying={miniIsPlaying}
+          onExpand={openFullPlayer}
+          openLabel={translate('player.openText')}
+          playLabel={translate('player.clickToPlayText')}
+          pauseLabel={translate('player.clickToPauseText')}
+        />
+      )}
       <ReactJkMusicPlayer
         {...options}
         className={classes.player}
@@ -471,6 +539,7 @@ const Player = () => {
         onAudioPlay={onAudioPlay}
         onAudioPlayTrackChange={onAudioPlayTrackChange}
         onAudioPause={onAudioPause}
+        onModeChange={handleModeChange}
         onPlayModeChange={(mode) => dispatch(setPlayMode(mode))}
         onAudioEnded={onAudioEnded}
         onCoverClick={onCoverClick}
