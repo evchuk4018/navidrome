@@ -75,6 +75,7 @@ func (c *Client) Search(ctx context.Context, query string) (model.ExternalMusicS
 	if err := c.get(ctx, "/recording", queryValues(query), &recordings); err != nil {
 		return model.ExternalMusicSearch{}, fmt.Errorf("search songs: %w", err)
 	}
+	sortRecordingsByRelevance(recordings.Recordings, query)
 	var genres mbTagSearchResponse
 	if err := c.get(ctx, "/tag", queryValues(query), &genres); err != nil {
 		return model.ExternalMusicSearch{}, fmt.Errorf("search genres: %w", err)

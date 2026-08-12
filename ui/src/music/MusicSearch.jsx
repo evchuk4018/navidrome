@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useHistory } from 'react-router-dom'
 import {
   Avatar,
@@ -17,6 +17,7 @@ import SearchIcon from '@material-ui/icons/Search'
 import { makeStyles } from '@material-ui/core/styles'
 import * as musicProvider from './provider'
 import { DownloadButton, DownloadStatus } from './DownloadStatus'
+import { getSearchSectionOrder } from './searchOrder'
 import { useDownloadJobs } from './useDownloadJobs'
 
 const RECENT_SEARCHES_KEY = 'navidrome.externalMusic.recentSearches'
@@ -74,7 +75,10 @@ const readRecentSearches = () => {
 }
 
 const saveRecentSearch = (query) => {
-  const next = [query, ...readRecentSearches().filter((value) => value !== query)].slice(0, 8)
+  const next = [
+    query,
+    ...readRecentSearches().filter((value) => value !== query),
+  ].slice(0, 8)
   localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next))
   return next
 }
@@ -83,7 +87,7 @@ const Artwork = ({ src, label, classes }) =>
   src ? (
     <img className={classes.image} src={src} alt={label} />
   ) : (
-    <div className={classes.placeholder}>{label?.slice(0, 1) || '♪'}</div>
+    <div className={classes.placeholder}>{label?.slice(0, 1) || '\u266a'}</div>
   )
 
 const ResultSection = ({ title, children }) => {
@@ -97,6 +101,127 @@ const ResultSection = ({ title, children }) => {
         {children}
       </Grid>
     </Box>
+  )
+}
+
+const SearchResults = ({
+  classes,
+  history,
+  query,
+  refreshJobs,
+  results,
+  runSearch,
+}) => {
+  const sections = {
+    artists: (
+      <ResultSection title="Artists">
+        {results.artists?.map((artist) => (
+          <Grid item xs={12} sm={6} md={4} key={artist.id}>
+            <ButtonBase
+              className={classes.resultButton}
+              onClick={() => history.push(`/search/artist/${artist.id}`)}
+            >
+              <Card className={classes.card}>
+                <CardContent>
+                  <Typography variant="h6">{artist.name}</Typography>
+                  {artist.disambiguation && (
+                    <Typography color="textSecondary" variant="body2">
+                      {artist.disambiguation}
+                    </Typography>
+                  )}
+                </CardContent>
+              </Card>
+            </ButtonBase>
+          </Grid>
+        ))}
+      </ResultSection>
+    ),
+    albums: (
+      <ResultSection title="Albums">
+        {results.albums?.map((album) => (
+          <Grid item xs={12} sm={6} md={4} key={album.id}>
+            <Card className={classes.card}>
+              <ButtonBase
+                className={classes.resultButton}
+                onClick={() => history.push(`/search/album/${album.id}`)}
+              >
+                <CardContent>
+                  <Artwork
+                    src={album.imageUrl}
+                    label={album.title}
+                    classes={classes}
+                  />
+                  <Typography variant="h6">{album.title}</Typography>
+                  <Typography color="textSecondary" variant="body2">
+                    {album.artistName}{' '}
+                    {album.year ? `\u2022 ${album.year}` : ''}
+                  </Typography>
+                </CardContent>
+              </ButtonBase>
+              <Box className={classes.actions} px={2} pb={2}>
+                <DownloadButton
+                  kind="album"
+                  id={album.id}
+                  onCreated={refreshJobs}
+                />
+              </Box>
+            </Card>
+          </Grid>
+        ))}
+      </ResultSection>
+    ),
+    songs: (
+      <ResultSection title="Songs">
+        {results.songs?.map((song) => (
+          <Grid item xs={12} md={6} key={song.id}>
+            <Card>
+              <CardContent>
+                <Box display="flex" alignItems="center" gridGap={12}>
+                  <Avatar src={song.imageUrl}>{song.title?.slice(0, 1)}</Avatar>
+                  <Box flex={1}>
+                    <Typography variant="h6">{song.title}</Typography>
+                    <Typography color="textSecondary" variant="body2">
+                      {song.artistName}{' '}
+                      {song.albumTitle ? `\u2022 ${song.albumTitle}` : ''}
+                    </Typography>
+                  </Box>
+                  <DownloadButton
+                    kind="song"
+                    id={song.id}
+                    onCreated={refreshJobs}
+                  />
+                </Box>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
+      </ResultSection>
+    ),
+    genres: (
+      <ResultSection title="Genres">
+        {results.genres?.map((genre) => (
+          <Grid item key={genre.name}>
+            <Chip label={genre.name} onClick={() => runSearch(genre.name)} />
+          </Grid>
+        ))}
+      </ResultSection>
+    ),
+  }
+
+  return (
+    <>
+      {getSearchSectionOrder(query, results).map((section) => (
+        <Fragment key={section}>{sections[section]}</Fragment>
+      ))}
+      {!results.artists?.length &&
+        !results.albums?.length &&
+        !results.songs?.length &&
+        !results.genres?.length && (
+          <Typography color="textSecondary">
+            No external results found.
+          </Typography>
+        )}
+    </>
   )
 }
 
@@ -179,101 +304,14 @@ const MusicSearch = () => {
       )}
       {error && <Typography color="error">{error}</Typography>}
       {results && !loading && (
-        <>
-          <ResultSection title="Artists">
-            {results.artists?.map((artist) => (
-              <Grid item xs={12} sm={6} md={4} key={artist.id}>
-                <ButtonBase
-                  className={classes.resultButton}
-                  onClick={() => history.push(`/search/artist/${artist.id}`)}
-                >
-                  <Card className={classes.card}>
-                    <CardContent>
-                      <Typography variant="h6">{artist.name}</Typography>
-                      {artist.disambiguation && (
-                        <Typography color="textSecondary" variant="body2">
-                          {artist.disambiguation}
-                        </Typography>
-                      )}
-                    </CardContent>
-                  </Card>
-                </ButtonBase>
-              </Grid>
-            ))}
-          </ResultSection>
-
-          <ResultSection title="Albums">
-            {results.albums?.map((album) => (
-              <Grid item xs={12} sm={6} md={4} key={album.id}>
-                <Card className={classes.card}>
-                  <ButtonBase
-                    className={classes.resultButton}
-                    onClick={() => history.push(`/search/album/${album.id}`)}
-                  >
-                    <CardContent>
-                      <Artwork
-                        src={album.imageUrl}
-                        label={album.title}
-                        classes={classes}
-                      />
-                      <Typography variant="h6">{album.title}</Typography>
-                      <Typography color="textSecondary" variant="body2">
-                        {album.artistName} {album.year ? `• ${album.year}` : ''}
-                      </Typography>
-                    </CardContent>
-                  </ButtonBase>
-                  <Box className={classes.actions} px={2} pb={2}>
-                    <DownloadButton
-                      kind="album"
-                      id={album.id}
-                      onCreated={refreshJobs}
-                    />
-                  </Box>
-                </Card>
-              </Grid>
-            ))}
-          </ResultSection>
-
-          <ResultSection title="Songs">
-            {results.songs?.map((song) => (
-              <Grid item xs={12} md={6} key={song.id}>
-                <Card>
-                  <CardContent>
-                    <Box display="flex" alignItems="center" gridGap={12}>
-                      <Avatar src={song.imageUrl}>{song.title?.slice(0, 1)}</Avatar>
-                      <Box flex={1}>
-                        <Typography variant="h6">{song.title}</Typography>
-                        <Typography color="textSecondary" variant="body2">
-                          {song.artistName} {song.albumTitle ? `• ${song.albumTitle}` : ''}
-                        </Typography>
-                      </Box>
-                      <DownloadButton
-                        kind="song"
-                        id={song.id}
-                        onCreated={refreshJobs}
-                      />
-                    </Box>
-                  </CardContent>
-                </Card>
-              </Grid>
-            ))}
-          </ResultSection>
-
-          <ResultSection title="Genres">
-            {results.genres?.map((genre) => (
-              <Grid item key={genre.name}>
-                <Chip label={genre.name} onClick={() => runSearch(genre.name)} />
-              </Grid>
-            ))}
-          </ResultSection>
-
-          {!results.artists?.length &&
-            !results.albums?.length &&
-            !results.songs?.length &&
-            !results.genres?.length && (
-              <Typography color="textSecondary">No external results found.</Typography>
-            )}
-        </>
+        <SearchResults
+          classes={classes}
+          history={history}
+          query={query}
+          refreshJobs={refreshJobs}
+          results={results}
+          runSearch={runSearch}
+        />
       )}
     </Box>
   )
