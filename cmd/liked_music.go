@@ -296,7 +296,7 @@ func likedMusicArtistValueMatches(value, normalizedTarget string) bool {
 			return true
 		}
 	}
-	return false
+	return likedMusicContainsTokenSequence(normalizedValue, normalizedTarget)
 }
 
 func likedMusicTitleMatches(file model.MediaFile, normalizedTarget string) bool {
@@ -318,13 +318,13 @@ func likedMusicTitleValuesMatch(value, normalizedTarget string) bool {
 	if normalizedValue == "" || normalizedTarget == "" {
 		return false
 	}
-	if likedMusicContainsTitle(normalizedValue, normalizedTarget) || likedMusicContainsTitle(normalizedTarget, normalizedValue) {
+	if likedMusicContainsTokenSequence(normalizedValue, normalizedTarget) || likedMusicContainsTokenSequence(normalizedTarget, normalizedValue) {
 		return true
 	}
 	return likedMusicTitleTokenCountsEqual(normalizedValue, normalizedTarget)
 }
 
-func likedMusicContainsTitle(longer, shorter string) bool {
+func likedMusicContainsTokenSequence(longer, shorter string) bool {
 	longerTokens := strings.Fields(longer)
 	shorterTokens := strings.Fields(shorter)
 	if len(shorterTokens) < 2 || len(shorterTokens) > len(longerTokens) {
