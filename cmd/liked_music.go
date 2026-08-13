@@ -35,13 +35,13 @@ type likedMusicImportRow struct {
 }
 
 type likedMusicImportResult struct {
-	Rows              int
-	UniqueURLs        int
-	DuplicateURLs     int
-	Downloaded        int
-	Synchronized      int
-	Failures          []string
-	ScanWarnings      []string
+	Rows          int
+	UniqueURLs    int
+	DuplicateURLs int
+	Downloaded    int
+	Synchronized  int
+	Failures      []string
+	ScanWarnings  []string
 }
 
 func init() {
