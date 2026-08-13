@@ -14,7 +14,9 @@ import {
 
 const useStyles = makeStyles((theme) => ({
   root: {
+    width: '100%',
     maxWidth: 1040,
+    boxSizing: 'border-box',
     margin: '0 auto',
     padding: theme.spacing(3),
   },
