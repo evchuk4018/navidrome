@@ -13,22 +13,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/navidrome/navidrome/adapters/listenbrainz"
+	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 )
 
 const (
-	defaultBaseURL = "https://musicbrainz.org/ws/2"
-	cacheTTL       = 10 * time.Minute
-	maxResponse    = 8 << 20
+	defaultBaseURL       = "https://musicbrainz.org/ws/2"
+	cacheTTL             = 10 * time.Minute
+	maxResponse          = 8 << 20
+	recordingSearchLimit = 100
 )
 
 type httpDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+type popularityProvider interface {
+	GetRecordingPopularity(context.Context, []string) (map[string]model.RecordingPopularity, error)
+}
+
 type Client struct {
-	baseURL string
-	http    httpDoer
+	baseURL    string
+	http       httpDoer
+	popularity popularityProvider
 
 	rateMu      sync.Mutex
 	lastRequest time.Time
@@ -43,10 +51,14 @@ type cacheEntry struct {
 }
 
 func New() *Client {
-	return NewWithClient(defaultBaseURL, http.DefaultClient)
+	return newWithPopularity(defaultBaseURL, http.DefaultClient, listenbrainz.NewPopularityClient())
 }
 
 func NewWithClient(baseURL string, client httpDoer) *Client {
+	return newWithPopularity(baseURL, client, nil)
+}
+
+func newWithPopularity(baseURL string, client httpDoer, popularity popularityProvider) *Client {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = defaultBaseURL
 	}
@@ -54,9 +66,10 @@ func NewWithClient(baseURL string, client httpDoer) *Client {
 		client = http.DefaultClient
 	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    client,
-		cache:   make(map[string]cacheEntry),
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		http:       client,
+		popularity: popularity,
+		cache:      make(map[string]cacheEntry),
 	}
 }
 
@@ -72,10 +85,19 @@ func (c *Client) Search(ctx context.Context, query string) (model.ExternalMusicS
 	}
 
 	var recordings mbRecordingSearchResponse
-	if err := c.get(ctx, "/recording", queryValues(query), &recordings); err != nil {
+	if err := c.get(ctx, "/recording", recordingQueryValues(query), &recordings); err != nil {
 		return model.ExternalMusicSearch{}, fmt.Errorf("search songs: %w", err)
 	}
-	sortRecordingsByRelevance(recordings.Recordings, query)
+	popularity := map[string]model.RecordingPopularity(nil)
+	if c.popularity != nil && len(recordings.Recordings) > 0 {
+		var err error
+		popularity, err = c.popularity.GetRecordingPopularity(ctx, recordingIDs(recordings.Recordings))
+		if err != nil {
+			log.Warn(ctx, "ListenBrainz popularity lookup failed; using MusicBrainz ordering", err)
+			popularity = nil
+		}
+	}
+	sortRecordingsByRelevance(recordings.Recordings, query, popularity)
 	var genres mbTagSearchResponse
 	if err := c.get(ctx, "/tag", queryValues(query), &genres); err != nil {
 		return model.ExternalMusicSearch{}, fmt.Errorf("search genres: %w", err)
@@ -314,6 +336,22 @@ func queryValues(query string) url.Values {
 	return params
 }
 
+func recordingQueryValues(query string) url.Values {
+	params := queryValues(query)
+	params.Set("limit", fmt.Sprintf("%d", recordingSearchLimit))
+	return params
+}
+
+func recordingIDs(recordings []mbRecording) []string {
+	ids := make([]string, 0, len(recordings))
+	for _, recording := range recordings {
+		if recording.ID != "" {
+			ids = append(ids, recording.ID)
+		}
+	}
+	return ids
+}
+
 func values(key, value string) url.Values {
 	params := url.Values{}
 	params.Set(key, value)
@@ -511,6 +549,7 @@ type mbTrack struct {
 type mbRecording struct {
 	ID           string               `json:"id"`
 	Title        string               `json:"title"`
+	Score        int                  `json:"score"`
 	Length       int                  `json:"length"`
 	ArtistCredit []mbArtistCredit     `json:"artist-credit"`
 	Tags         []mbTag              `json:"tags"`

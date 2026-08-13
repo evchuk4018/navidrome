@@ -11,14 +11,22 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/log"
+	"github.com/navidrome/navidrome/model"
 )
 
 const (
 	lbzApiUrl = "https://api.listenbrainz.org/1/"
 	labsBase  = "https://labs.api.listenbrainz.org/"
+
+	popularityEndpoint  = "popularity/recording"
+	popularityBatchSize = 100
+	popularityCacheTTL  = 10 * time.Minute
 )
 
 var (
@@ -45,6 +53,44 @@ func newClient(baseURL string, hc httpDoer) *client {
 type client struct {
 	baseURL string
 	hc      httpDoer
+}
+
+// PopularityClient retrieves aggregate recording popularity from ListenBrainz.
+// It is separate from the authenticated ListenBrainz agent because external
+// popularity data does not require a user token.
+type PopularityClient struct {
+	client *client
+
+	cacheMu sync.RWMutex
+	cache   map[string]popularityCacheEntry
+}
+
+type popularityCacheEntry struct {
+	value     model.RecordingPopularity
+	expiresAt time.Time
+}
+
+type recordingPopularityRequest struct {
+	RecordingMBIDs []string `json:"recording_mbids"`
+}
+
+type recordingPopularityResponse struct {
+	RecordingMBID    string `json:"recording_mbid"`
+	TotalListenCount *int64 `json:"total_listen_count"`
+	TotalUserCount   *int64 `json:"total_user_count"`
+}
+
+// NewPopularityClient creates a client for the public ListenBrainz popularity
+// API. The endpoint is batch-based and does not require authentication.
+func NewPopularityClient() *PopularityClient {
+	return newPopularityClient(lbzApiUrl, http.DefaultClient)
+}
+
+func newPopularityClient(baseURL string, hc httpDoer) *PopularityClient {
+	return &PopularityClient{
+		client: newClient(baseURL, hc),
+		cache:  make(map[string]popularityCacheEntry),
+	}
 }
 
 type listenBrainzResponse struct {
@@ -286,6 +332,129 @@ func (c *client) getArtistTopSongs(ctx context.Context, mbid string, count int) 
 	}
 
 	return response, nil
+}
+
+// GetRecordingPopularity returns ListenBrainz aggregate popularity for the
+// requested recording MBIDs. Missing recordings are represented by zero-value
+// popularity, matching the API's null count response. Results are cached so a
+// repeated search does not re-query unchanged popularity data.
+func (c *PopularityClient) GetRecordingPopularity(ctx context.Context, recordingMBIDs []string) (map[string]model.RecordingPopularity, error) {
+	requested := uniqueRecordingMBIDs(recordingMBIDs)
+	result := make(map[string]model.RecordingPopularity, len(requested))
+	missing := make([]string, 0, len(requested))
+
+	for _, recordingMBID := range requested {
+		if popularity, ok := c.cachedPopularity(recordingMBID); ok {
+			result[recordingMBID] = popularity
+			continue
+		}
+		missing = append(missing, recordingMBID)
+	}
+
+	for start := 0; start < len(missing); start += popularityBatchSize {
+		end := min(start+popularityBatchSize, len(missing))
+		batch := missing[start:end]
+		popularity, err := c.fetchRecordingPopularity(ctx, batch)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, recordingMBID := range batch {
+			value := popularity[recordingMBID]
+			c.cachePopularity(recordingMBID, value)
+			result[recordingMBID] = value
+		}
+	}
+
+	return result, nil
+}
+
+func uniqueRecordingMBIDs(recordingMBIDs []string) []string {
+	unique := make([]string, 0, len(recordingMBIDs))
+	seen := make(map[string]struct{}, len(recordingMBIDs))
+	for _, recordingMBID := range recordingMBIDs {
+		recordingMBID = strings.TrimSpace(recordingMBID)
+		if recordingMBID == "" {
+			continue
+		}
+		if _, ok := seen[recordingMBID]; ok {
+			continue
+		}
+		seen[recordingMBID] = struct{}{}
+		unique = append(unique, recordingMBID)
+	}
+	return unique
+}
+
+func (c *PopularityClient) fetchRecordingPopularity(ctx context.Context, recordingMBIDs []string) (map[string]model.RecordingPopularity, error) {
+	body, err := json.Marshal(recordingPopularityRequest{RecordingMBIDs: recordingMBIDs})
+	if err != nil {
+		return nil, err
+	}
+	uri, err := c.client.path(popularityEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uri, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	log.Trace(ctx, fmt.Sprintf("Sending ListenBrainz %s request", req.Method), "url", req.URL)
+	resp, err := c.client.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var response lbzHttpError
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			return nil, fmt.Errorf("ListenBrainz: HTTP Error, Status: (%d)", resp.StatusCode)
+		}
+		if response.Code == 0 {
+			response.Code = resp.StatusCode
+		}
+		return nil, &listenBrainzError{Code: response.Code, Message: response.Error}
+	}
+
+	var response []recordingPopularityResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("ListenBrainz: HTTP Error, Status: (%d)", resp.StatusCode)
+	}
+
+	popularity := make(map[string]model.RecordingPopularity, len(response))
+	for _, item := range response {
+		value := model.RecordingPopularity{}
+		if item.TotalListenCount != nil {
+			value.TotalListenCount = *item.TotalListenCount
+		}
+		if item.TotalUserCount != nil {
+			value.TotalUserCount = *item.TotalUserCount
+		}
+		popularity[item.RecordingMBID] = value
+	}
+	return popularity, nil
+}
+
+func (c *PopularityClient) cachedPopularity(recordingMBID string) (model.RecordingPopularity, bool) {
+	c.cacheMu.RLock()
+	entry, ok := c.cache[recordingMBID]
+	c.cacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return model.RecordingPopularity{}, false
+	}
+	return entry.value, true
+}
+
+func (c *PopularityClient) cachePopularity(recordingMBID string, value model.RecordingPopularity) {
+	c.cacheMu.Lock()
+	c.cache[recordingMBID] = popularityCacheEntry{
+		value:     value,
+		expiresAt: time.Now().Add(popularityCacheTTL),
+	}
+	c.cacheMu.Unlock()
 }
 
 type artist struct {

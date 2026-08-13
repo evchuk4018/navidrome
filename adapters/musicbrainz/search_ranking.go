@@ -4,15 +4,40 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/navidrome/navidrome/model"
 )
 
-// sortRecordingsByRelevance keeps MusicBrainz's ordering for equally relevant
-// recordings while ensuring title matches are shown before broad metadata
-// matches. This matters for queries such as "The One That Got Away", where
-// artist-name matches can otherwise appear ahead of the requested recording.
-func sortRecordingsByRelevance(recordings []mbRecording, query string) {
+// sortRecordingsByRelevance keeps title relevance ahead of popularity while
+// using ListenBrainz counts to rank recordings within the same relevance
+// bucket. This matters for queries such as "The One That Got Away", where the
+// popular Katy Perry recording competes with many recordings using the same
+// title.
+func sortRecordingsByRelevance(recordings []mbRecording, query string, popularity ...map[string]model.RecordingPopularity) {
+	counts := map[string]model.RecordingPopularity(nil)
+	if len(popularity) > 0 {
+		counts = popularity[0]
+	}
+
 	sort.SliceStable(recordings, func(i, j int) bool {
-		return recordingRelevance(recordings[i], query) < recordingRelevance(recordings[j], query)
+		leftRelevance := recordingRelevance(recordings[i], query)
+		rightRelevance := recordingRelevance(recordings[j], query)
+		if leftRelevance != rightRelevance {
+			return leftRelevance < rightRelevance
+		}
+
+		leftPopularity := counts[recordings[i].ID]
+		rightPopularity := counts[recordings[j].ID]
+		if leftPopularity.TotalListenCount != rightPopularity.TotalListenCount {
+			return leftPopularity.TotalListenCount > rightPopularity.TotalListenCount
+		}
+		if leftPopularity.TotalUserCount != rightPopularity.TotalUserCount {
+			return leftPopularity.TotalUserCount > rightPopularity.TotalUserCount
+		}
+		if recordings[i].Score != recordings[j].Score {
+			return recordings[i].Score > recordings[j].Score
+		}
+		return recordings[i].ID < recordings[j].ID
 	})
 }
 
