@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/navidrome/navidrome/model"
@@ -9,6 +10,61 @@ import (
 
 type quickPickMetricsRepository struct {
 	db *sql.DB
+}
+
+// nullableSQLiteTime accepts both time.Time values and the timestamp strings
+// returned by SQLite for aggregate expressions such as max(played_at).
+type nullableSQLiteTime struct {
+	time.Time
+	Valid bool
+}
+
+func (t *nullableSQLiteTime) Scan(value any) error {
+	if value == nil {
+		t.Time = time.Time{}
+		t.Valid = false
+		return nil
+	}
+
+	switch value := value.(type) {
+	case time.Time:
+		t.Time = value
+		t.Valid = true
+		return nil
+	case int64:
+		t.Time = time.Unix(value, 0).UTC()
+		t.Valid = true
+		return nil
+	case string:
+		return t.scanString(value)
+	case []byte:
+		return t.scanString(string(value))
+	default:
+		return fmt.Errorf("unsupported SQLite time value %T", value)
+	}
+}
+
+func (t *nullableSQLiteTime) scanString(value string) error {
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02T15:04:05.999999999-07:00",
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+	}
+	var err error
+	for _, layout := range layouts {
+		var parsed time.Time
+		parsed, err = time.Parse(layout, value)
+		if err == nil {
+			t.Time = parsed
+			t.Valid = true
+			return nil
+		}
+	}
+	return fmt.Errorf("unable to parse SQLite time %q: %w", value, err)
 }
 
 func NewQuickPickMetricsRepository(db *sql.DB) model.QuickPickMetricsRepository {
@@ -53,7 +109,7 @@ func (r *quickPickMetricsRepository) PlaylistMetrics(userID string, since time.T
 	result := map[string]model.PlaylistPlayMetric{}
 	for rows.Next() {
 		var metric model.PlaylistPlayMetric
-		var last sql.NullTime
+		var last nullableSQLiteTime
 		if err := rows.Scan(&metric.PlaylistID, &metric.TotalStarts, &metric.RecentStarts, &last); err != nil {
 			return nil, err
 		}
