@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 )
@@ -20,7 +21,7 @@ type YouTubeThumbnailProvider interface {
 }
 
 func (r *resolver) resolveYouTubeAlbum(ctx context.Context, album model.Album, allowSearch bool) (resolution, bool, error) {
-	if r.ext == nil || r.ext.youtube == nil {
+	if !conf.Server.EnableExternalServices || r.ext == nil || r.ext.youtube == nil {
 		return resolution{}, false, nil
 	}
 	tracks, err := r.ds.MediaFile(ctx).GetAll(model.QueryOptions{

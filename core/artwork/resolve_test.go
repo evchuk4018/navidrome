@@ -341,6 +341,25 @@ var _ = Describe("resolveItem", func() {
 			Expect(youtube.thumbnailCalls).To(Equal(1))
 			Expect(youtube.searchCalls).To(BeZero())
 		})
+
+		It("does not contact YouTube when external services are disabled", func() {
+			conf.Server.EnableExternalServices = false
+			conf.Server.CoverArtPriority = "youtube"
+			ds.MockedAlbum.(*tests.MockAlbumRepo).SetData(model.Albums{{ID: "yt4", Name: "Album"}})
+			ds.MockedMediaFile = tests.CreateMockMediaFileRepo()
+			ds.MockedMediaFile.(*tests.MockMediaFileRepo).SetData(model.MediaFiles{{
+				ID: "mf-yt4", AlbumID: "yt4", Artist: "Artist", Title: "Offline Song", Comment: "source metadata",
+			}})
+			youtube := &fakeYouTubeThumbnailProvider{sourceURL: "https://youtu.be/offline"}
+
+			res, err := newResolver(ds, ag, ffm, nil, youtube).resolve(ctx, model.ArtworkQueueItem{
+				ItemKind: "al", ItemID: "yt4", Priority: model.ArtworkPriorityBackfill,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.reader).To(BeNil())
+			Expect(youtube.thumbnailCalls).To(BeZero())
+			Expect(youtube.searchCalls).To(BeZero())
+		})
 	})
 
 	Describe("artist", func() {
