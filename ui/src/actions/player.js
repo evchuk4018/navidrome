@@ -10,6 +10,7 @@ export const PLAYER_SET_MODE = 'PLAYER_SET_MODE'
 export const TRANSCODING_SET_PROFILE = 'TRANSCODING_SET_PROFILE'
 export const PLAYER_REFRESH_QUEUE = 'PLAYER_REFRESH_QUEUE'
 export const PLAYER_SET_RADIO_SESSION = 'PLAYER_SET_RADIO_SESSION'
+export const PLAYER_SET_RADIO_PLANNING = 'PLAYER_SET_RADIO_PLANNING'
 
 export const setTrack = (data) => ({
   type: PLAYER_SET_TRACK,
@@ -119,4 +120,9 @@ export const refreshQueue = (resolvedUrls) => ({
 export const setRadioSession = (session) => ({
   type: PLAYER_SET_RADIO_SESSION,
   data: session,
+})
+
+export const setRadioPlanning = (planningStatus) => ({
+  type: PLAYER_SET_RADIO_PLANNING,
+  data: planningStatus,
 })

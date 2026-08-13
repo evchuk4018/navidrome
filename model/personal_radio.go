@@ -3,19 +3,24 @@ package model
 import "time"
 
 const (
-	PersonalRadioActive    = "active"
-	PersonalRadioEnded     = "ended"
-	RadioItemSeed          = "seed"
-	RadioItemLibrary       = "library"
-	RadioItemDiscovery     = "discovery"
-	RadioItemReady         = "ready"
-	RadioItemDownloading   = "downloading"
-	RadioItemFailed        = "failed"
-	RadioItemPlayed        = "played"
-	DiscoveryTemporary     = "temporary"
-	DiscoveryKept          = "kept"
-	DiscoveryDeletePending = "delete_pending"
-	DiscoveryDeleted       = "deleted"
+	PersonalRadioActive         = "active"
+	PersonalRadioEnded          = "ended"
+	RadioItemSeed               = "seed"
+	RadioItemLibrary            = "library"
+	RadioItemDiscovery          = "discovery"
+	RadioItemReady              = "ready"
+	RadioItemDownloading        = "downloading"
+	RadioItemFailed             = "failed"
+	RadioItemPlayed             = "played"
+	RadioPlanningSelecting      = "selecting"
+	RadioPlanningDownloading    = "downloading"
+	RadioPlanningWaitingForScan = "waiting_for_scan"
+	RadioPlanningReady          = "ready"
+	RadioPlanningNoDiscovery    = "no_discovery"
+	DiscoveryTemporary          = "temporary"
+	DiscoveryKept               = "kept"
+	DiscoveryDeletePending      = "delete_pending"
+	DiscoveryDeleted            = "deleted"
 )
 
 type PersonalRadioSession struct {
@@ -42,9 +47,10 @@ type PersonalRadioItem struct {
 }
 
 type PersonalRadioSessionResponse struct {
-	Session PersonalRadioSession `json:"session"`
-	Items   []PersonalRadioItem  `json:"items"`
-	Pending bool                 `json:"pending"`
+	Session        PersonalRadioSession `json:"session"`
+	Items          []PersonalRadioItem  `json:"items"`
+	Pending        bool                 `json:"pending"`
+	PlanningStatus string               `json:"planningStatus"`
 }
 
 type CreatePersonalRadioRequest struct {

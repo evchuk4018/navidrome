@@ -141,7 +141,11 @@ const QuickPick = () => {
           const enriched = radioSongs(response)
           const seed = response.items.find((item) => item.type === 'seed')
           dispatch(
-            setRadioSession({ id: response.session.id, seedItemId: seed?.id }),
+            setRadioSession({
+              id: response.session.id,
+              seedItemId: seed?.id,
+              planningStatus: response.planningStatus,
+            }),
           )
           const rest = enriched.ids.filter(
             (key) => enriched.data[key].radioItemType !== 'seed',

@@ -13,6 +13,7 @@ import {
   PLAYER_SET_MODE,
   PLAYER_REFRESH_QUEUE,
   PLAYER_SET_RADIO_SESSION,
+  PLAYER_SET_RADIO_PLANNING,
 } from '../actions'
 import config from '../config'
 
@@ -275,6 +276,16 @@ export const playerReducer = (previousState = initialState, payload) => {
         ),
       }
     }
+    case PLAYER_SET_RADIO_PLANNING:
+      return {
+        ...previousState,
+        radioSession: previousState.radioSession
+          ? {
+              ...previousState.radioSession,
+              planningStatus: payload.data,
+            }
+          : previousState.radioSession,
+      }
     default:
       return previousState
   }

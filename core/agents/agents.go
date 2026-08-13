@@ -326,6 +326,90 @@ func (a *Agents) GetSimilarSongsByTrack(ctx context.Context, id, name, artist, m
 	})
 }
 
+// GetSimilarSongsByTrackAll returns a combined candidate list from every
+// enabled agent that supports track similarity. Unlike GetSimilarSongsByTrack,
+// this deliberately does not stop at the first successful agent. Personal
+// Radio uses the combined list because the first provider may return tracks
+// that are already in the library, while another provider may have useful new
+// candidates.
+func (a *Agents) GetSimilarSongsByTrackAll(ctx context.Context, id, name, artist, mbid string, count int) ([]Song, error) {
+	if count <= 0 {
+		return nil, ErrNotFound
+	}
+
+	start := time.Now()
+	var byAgent [][]Song
+	for _, enabledAgent := range a.getEnabledAgentNames() {
+		ag := a.getAgent(enabledAgent)
+		if ag == nil {
+			continue
+		}
+		if utils.IsCtxDone(ctx) {
+			break
+		}
+		retriever, ok := ag.(SimilarSongsByTrackRetriever)
+		if !ok {
+			continue
+		}
+
+		results, err := retriever.GetSimilarSongsByTrack(ctx, id, name, artist, mbid, count)
+		if err != nil {
+			log.Trace(ctx, "Agent method call error", "method", "GetSimilarSongsByTrackAll", "agent", ag.AgentName(), "error", err)
+			continue
+		}
+		if len(results) == 0 {
+			continue
+		}
+		byAgent = append(byAgent, results)
+		log.Debug(ctx, "Got similarity candidates", "method", "GetSimilarSongsByTrackAll", "agent", ag.AgentName(), "count", len(results))
+	}
+
+	if len(byAgent) == 0 {
+		return nil, ErrNotFound
+	}
+
+	// Round-robin the providers so a large result set from the first provider
+	// cannot crowd all later providers out of the candidate window.
+	result := make([]Song, 0, count)
+	seen := make(map[string]struct{}, count)
+	for round := 0; len(result) < count; round++ {
+		added := false
+		for _, results := range byAgent {
+			if round >= len(results) {
+				continue
+			}
+			candidate := results[round]
+			key := songCandidateKey(candidate)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			result = append(result, candidate)
+			added = true
+			if len(result) == count {
+				break
+			}
+		}
+		if !added {
+			break
+		}
+	}
+
+	log.Debug(ctx, "Got combined similarity candidates", "method", "GetSimilarSongsByTrackAll", "count", len(result), "elapsed", time.Since(start))
+	return result, nil
+}
+
+func songCandidateKey(song Song) string {
+	if song.MBID != "" {
+		return "mbid:" + strings.ToLower(strings.TrimSpace(song.MBID))
+	}
+	artist := ""
+	if len(song.Artists) > 0 {
+		artist = song.Artists[0].Name
+	}
+	return "title:" + strings.ToLower(strings.TrimSpace(song.Name)) + "|artist:" + strings.ToLower(strings.TrimSpace(artist))
+}
+
 // GetSimilarSongsByAlbum returns similar songs for a given album.
 func (a *Agents) GetSimilarSongsByAlbum(ctx context.Context, id, name, artist, mbid string, count int) ([]Song, error) {
 	return callAgentSliceMethod(ctx, a, "GetSimilarSongsByAlbum", func(ag Interface) ([]Song, error) {

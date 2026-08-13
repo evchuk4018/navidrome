@@ -26,6 +26,7 @@ import {
   setTranscodingProfile,
   setVolume,
   syncQueue,
+  setRadioPlanning,
 } from '../actions'
 import PlayerToolbar from './PlayerToolbar'
 import { sendNotification } from '../utils'
@@ -41,6 +42,7 @@ import {
   refillPersonalRadio,
   sendRadioFeedback,
 } from '../quickpick/provider'
+import { isRadioPlanning } from '../quickpick/radioPlanning'
 
 const MINI_MODE = 'mini'
 const FULL_MODE = 'full'
@@ -101,6 +103,18 @@ const Player = () => {
     [dispatch],
   )
 
+  const updateRadioResponse = useCallback(
+    (response) => {
+      appendRadioItems(response)
+      dispatch(
+        setRadioPlanning(
+          response.planningStatus || (response.pending ? 'selecting' : 'ready'),
+        ),
+      )
+    },
+    [appendRadioItems, dispatch],
+  )
+
   const reportRadioFeedback = useCallback((playback, event) => {
     if (!playback?.sessionId || !playback?.itemId) return
     sendRadioFeedback(playback.sessionId, {
@@ -110,6 +124,36 @@ const Player = () => {
       durationMs: Math.floor(playback.durationMs || 0),
     }).catch(() => {})
   }, [])
+
+  const radioSessionId = playerState.radioSession?.id
+  const radioPlanningStatus = playerState.radioSession?.planningStatus
+
+  // Discovery downloads happen after the seed starts playing. Poll while the
+  // server is selecting, downloading, or waiting for the scanner so a ready
+  // new song reaches the queue without requiring a track change first.
+  useEffect(() => {
+    if (!radioSessionId || !isRadioPlanning(radioPlanningStatus)) return
+
+    let active = true
+    let inFlight = false
+    const poll = () => {
+      if (inFlight) return
+      inFlight = true
+      refillPersonalRadio(radioSessionId)
+        .then((response) => {
+          if (active) updateRadioResponse(response)
+        })
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false
+        })
+    }
+    const timer = setInterval(poll, 3000)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [radioSessionId, radioPlanningStatus, updateRadioResponse])
 
   useEffect(() => {
     if (playerState.queue.length === 0) {
@@ -296,12 +340,20 @@ const Player = () => {
           audioInfo={audioInfo}
           gainInfo={gainInfo}
           isMobile={isMobile}
+          radioPlanningStatus={radioPlanningStatus}
         />
       ),
       locale: locale(translate),
       sortableOptions: { delay: 200, delayOnTouchOnly: true },
     }),
-    [displayMode, gainInfo, playerTheme, translate, playerState.mode],
+    [
+      displayMode,
+      gainInfo,
+      playerTheme,
+      radioPlanningStatus,
+      translate,
+      playerState.mode,
+    ],
   )
 
   const options = useMemo(() => {
@@ -437,7 +489,7 @@ const Player = () => {
         radioPlaybackRef.current = playback
         reportRadioFeedback(playback, 'started')
         refillPersonalRadio(playback.sessionId)
-          .then(appendRadioItems)
+          .then(updateRadioResponse)
           .catch(() => {})
       }
     },
@@ -446,8 +498,8 @@ const Player = () => {
       dispatch,
       showNotifications,
       currentTrackId,
-      appendRadioItems,
       reportRadioFeedback,
+      updateRadioResponse,
     ],
   )
 
@@ -631,6 +683,7 @@ const Player = () => {
           currentTime={miniProgress.currentTime}
           duration={miniProgress.duration || miniTrack?.duration || 0}
           isPlaying={miniIsPlaying}
+          radioPlanningStatus={radioPlanningStatus}
           onExpand={openFullPlayer}
           openLabel={translate('player.openText')}
           playLabel={translate('player.clickToPlayText')}

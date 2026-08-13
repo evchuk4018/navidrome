@@ -6,6 +6,7 @@ import PlayArrowIcon from '@material-ui/icons/PlayArrow'
 import KeyboardArrowUpIcon from '@material-ui/icons/KeyboardArrowUp'
 import MusicNoteIcon from '@material-ui/icons/MusicNote'
 import { formatDuration } from '../utils'
+import { radioPlanningMessage } from '../quickpick/radioPlanning'
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -82,6 +83,16 @@ const useStyles = makeStyles((theme) => ({
     color: theme.palette.text.secondary,
     fontSize: '0.78rem',
     lineHeight: 1.25,
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  planning: {
+    display: 'block',
+    marginTop: 2,
+    overflow: 'hidden',
+    color: theme.palette.primary.main,
+    fontSize: '0.72rem',
+    fontStyle: 'italic',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
@@ -167,6 +178,7 @@ const MiniPlayer = ({
   openLabel = 'Open',
   playLabel = 'Click to play',
   pauseLabel = 'Click to pause',
+  radioPlanningStatus,
 }) => {
   const classes = useStyles()
   const [imageFailed, setImageFailed] = useState(false)
@@ -247,6 +259,11 @@ const MiniPlayer = ({
         <span className={classes.metadata}>
           <span className={classes.title}>{title}</span>
           {artist && <span className={classes.artist}>{artist}</span>}
+          {radioPlanningStatus && radioPlanningStatus !== 'ready' && (
+            <span className={classes.planning} aria-live="polite">
+              {radioPlanningMessage(radioPlanningStatus)}
+            </span>
+          )}
         </span>
       </button>
       <div className={classes.controls}>
@@ -300,6 +317,7 @@ MiniPlayer.propTypes = {
   openLabel: PropTypes.string,
   playLabel: PropTypes.string,
   pauseLabel: PropTypes.string,
+  radioPlanningStatus: PropTypes.string,
 }
 
 export default MiniPlayer

@@ -37,6 +37,19 @@ describe('<MiniPlayer />', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows the radio planning status while finding a next song', () => {
+    render(
+      <MiniPlayer
+        track={track}
+        audioInstance={{ paused: false }}
+        radioPlanningStatus="selecting"
+        onExpand={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Pondering next song…')).toBeInTheDocument()
+  })
+
   it('toggles playback without expanding the player', () => {
     const togglePlay = vi.fn()
     const onExpand = vi.fn()

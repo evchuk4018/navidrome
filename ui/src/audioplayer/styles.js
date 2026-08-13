@@ -16,6 +16,13 @@ const useStyle = makeStyles(
       display: 'block',
       marginTop: '2px',
     },
+    radioPlanning: {
+      display: 'block',
+      marginTop: '2px',
+      color: theme.palette.text.secondary,
+      fontSize: 'smaller',
+      fontStyle: 'italic',
+    },
     songAlbum: {
       fontStyle: 'italic',
       fontSize: 'smaller',

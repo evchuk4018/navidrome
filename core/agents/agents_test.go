@@ -318,6 +318,16 @@ var _ = Describe("Agents", func() {
 			})
 		})
 
+		Describe("GetSimilarSongsByTrackAll", func() {
+			It("returns candidates from an enabled similarity agent", func() {
+				Expect(ag.GetSimilarSongsByTrackAll(ctx, "123", "test song", "test artist", "mb123", 2)).To(Equal([]Song{{
+					Name: "Similar Song",
+					MBID: "mbid555",
+				}}))
+				Expect(mock.Args).To(HaveExactElements("123", "test song", "test artist", "mb123", 2))
+			})
+		})
+
 		Describe("GetSimilarSongsByAlbum", func() {
 			It("returns on first match", func() {
 				Expect(ag.GetSimilarSongsByAlbum(ctx, "123", "test album", "test artist", "mb123", 2)).To(Equal([]Song{{

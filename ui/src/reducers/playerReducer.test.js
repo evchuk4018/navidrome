@@ -4,9 +4,27 @@ import {
   PLAYER_SYNC_QUEUE,
   PLAYER_CURRENT,
   PLAYER_REFRESH_QUEUE,
+  PLAYER_SET_RADIO_PLANNING,
 } from '../actions'
 
 describe('playerReducer', () => {
+  it('updates radio planning status without changing the queue', () => {
+    const state = {
+      queue: [{ trackId: 'seed' }],
+      radioSession: { id: 'session-1', seedItemId: 'item-1' },
+    }
+    const result = playerReducer(state, {
+      type: PLAYER_SET_RADIO_PLANNING,
+      data: 'downloading',
+    })
+
+    expect(result.queue).toEqual(state.queue)
+    expect(result.radioSession).toEqual({
+      ...state.radioSession,
+      planningStatus: 'downloading',
+    })
+  })
+
   describe('pending track selection survives SYNC_QUEUE and premature CURRENT', () => {
     // Simulates the real sequence when clicking a new song while one is playing:
     // 1. PLAYER_PLAY_TRACKS sets playIndex and clear
