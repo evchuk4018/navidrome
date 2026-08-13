@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	playlistcore "github.com/navidrome/navidrome/core/playlists"
 	"github.com/navidrome/navidrome/core/scrobbler"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
@@ -127,6 +128,7 @@ func (api *Router) setStar(ctx context.Context, star bool, ids ...string) error 
 				log.Warn(ctx, "Cannot star/unstar unknown id, skipping", "id", id)
 				continue
 			}
+			mediaFile, isSong := entity.(*model.MediaFile)
 			switch entity.(type) {
 			case *model.Artist:
 				repo = tx.Artist(ctx)
@@ -145,6 +147,15 @@ func (api *Router) setStar(ctx context.Context, star bool, ids ...string) error 
 				return err
 			}
 			event = event.With(resource, id)
+			if isSong && mediaFile != nil {
+				playlistID, err := playlistcore.SyncLikedMusic(ctx, tx, mediaFile.ID, star)
+				if err != nil {
+					return err
+				}
+				if playlistID != "" {
+					event = event.With("playlist", playlistID)
+				}
+			}
 			changed = true
 		}
 		// Skip the broadcast when nothing changed: an empty RefreshResource

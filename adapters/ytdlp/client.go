@@ -3,6 +3,7 @@ package ytdlp
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,29 @@ func (c *Client) Download(ctx context.Context, track model.ExternalTrack, direct
 	if strings.TrimSpace(track.Title) == "" {
 		return "", fmt.Errorf("track title is required")
 	}
+
+	query := strings.TrimSpace(track.ArtistName + " - " + track.Title)
+	if track.AlbumTitle != "" {
+		query += " " + track.AlbumTitle
+	}
+	return c.download(ctx, "ytsearch1:"+query, directory)
+}
+
+// DownloadURL downloads a specific HTTP(S) source URL instead of performing a metadata search.
+// It is used by administrative imports where the source URL is part of the user's input.
+func (c *Client) DownloadURL(ctx context.Context, sourceURL, directory string) (string, error) {
+	sourceURL = strings.TrimSpace(sourceURL)
+	parsed, err := url.ParseRequestURI(sourceURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("invalid download URL %q", sourceURL)
+	}
+	return c.download(ctx, sourceURL, directory)
+}
+
+func (c *Client) download(ctx context.Context, source string, directory string) (string, error) {
+	if strings.TrimSpace(source) == "" {
+		return "", fmt.Errorf("download source is required")
+	}
 	if strings.TrimSpace(directory) == "" {
 		return "", fmt.Errorf("download directory is required")
 	}
@@ -55,11 +79,6 @@ func (c *Client) Download(ctx context.Context, track model.ExternalTrack, direct
 	if c.runner == nil {
 		return "", fmt.Errorf("yt-dlp runner is not configured")
 	}
-
-	query := strings.TrimSpace(track.ArtistName + " - " + track.Title)
-	if track.AlbumTitle != "" {
-		query += " " + track.AlbumTitle
-	}
 	args := []string{
 		"--ignore-config",
 		"--no-playlist",
@@ -71,7 +90,7 @@ func (c *Client) Download(ctx context.Context, track model.ExternalTrack, direct
 		"--embed-metadata",
 		"--output", filepath.Join(directory, "%(id)s.%(ext)s"),
 		"--print", "after_move:filepath",
-		"ytsearch1:" + query,
+		source,
 	}
 	output, err := c.runner.Run(ctx, c.executable, args...)
 	if err != nil {

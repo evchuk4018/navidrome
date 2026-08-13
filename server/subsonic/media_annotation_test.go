@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/navidrome/navidrome/core/scrobbler"
+	"github.com/navidrome/navidrome/core/playlists"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/request"
 	"github.com/navidrome/navidrome/server/events"
@@ -211,6 +212,55 @@ var _ = Describe("MediaAnnotationController", func() {
 
 			Expect(err).ToNot(HaveOccurred())
 			Expect(plRepo.Starred).To(HaveKeyWithValue("pl-1", false))
+		})
+	})
+
+	Describe("Star/Unstar songs", func() {
+		var mediaRepo *tests.MockMediaFileRepo
+		var plRepo *tests.MockPlaylistRepo
+		var trackRepo *tests.MockPlaylistTrackRepo
+		var songCtx context.Context
+
+		BeforeEach(func() {
+			mediaRepo = tests.CreateMockMediaFileRepo()
+			mediaRepo.SetData(model.MediaFiles{{ID: "song-1", Title: "Song", Artist: "Artist"}})
+			plRepo = tests.CreateMockPlaylistRepo()
+			trackRepo = &tests.MockPlaylistTrackRepo{}
+			plRepo.TracksRepo = trackRepo
+			store := ds.(*tests.MockDataStore)
+			store.MockedMediaFile = mediaRepo
+			store.MockedPlaylist = plRepo
+			songCtx = request.WithUser(context.Background(), model.User{ID: "u1"})
+		})
+
+		It("stars the song and adds it to the private liked music playlist", func() {
+			r := newGetRequest("id=song-1").WithContext(songCtx)
+
+			_, err := router.Star(r)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mediaRepo.Data["song-1"].Starred).To(BeTrue())
+			Expect(plRepo.Last).To(HaveField("Name", "liked music"))
+			Expect(plRepo.Last).To(HaveField("OwnerID", "u1"))
+			Expect(plRepo.Last).To(HaveField("Public", false))
+			Expect(trackRepo.AddedIds).To(Equal([]string{"song-1"}))
+			Expect(eventBroker.Events).To(HaveLen(1))
+			Expect(eventBroker.Events[0].Data(eventBroker.Events[0])).To(ContainSubstring(`"song":["song-1"]`))
+			Expect(eventBroker.Events[0].Data(eventBroker.Events[0])).To(ContainSubstring(`"playlist":[`))
+		})
+
+		It("unstars the song and removes it from liked music", func() {
+			liked := model.Playlist{ID: "liked-1", Name: playlists.LikedMusicPlaylistName, OwnerID: "u1"}
+			plRepo.SetData(model.Playlists{liked})
+			trackRepo.Data = model.PlaylistTracks{{ID: "1", MediaFileID: "song-1"}}
+			mediaRepo.Data["song-1"].Starred = true
+			r := newGetRequest("id=song-1").WithContext(songCtx)
+
+			_, err := router.Unstar(r)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mediaRepo.Data["song-1"].Starred).To(BeFalse())
+			Expect(trackRepo.DeletedIds).To(Equal([]string{"1"}))
 		})
 	})
 

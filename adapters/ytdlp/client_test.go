@@ -52,3 +52,23 @@ func TestDownloadBuildsSafeAudioCommand(t *testing.T) {
 		t.Fatalf("expected source search query in command args %v", runner.args)
 	}
 }
+
+func TestDownloadURLUsesExactSource(t *testing.T) {
+	runner := &recordingRunner{}
+	client := NewWithRunner("yt-dlp", runner)
+	const sourceURL = "https://www.youtube.com/watch?v=abc123"
+
+	if _, err := client.DownloadURL(context.Background(), sourceURL, t.TempDir()); err != nil {
+		t.Fatalf("DownloadURL returned error: %v", err)
+	}
+	if !slices.Contains(runner.args, sourceURL) {
+		t.Fatalf("expected exact source URL in command args %v", runner.args)
+	}
+}
+
+func TestDownloadURLRejectsNonHTTPSource(t *testing.T) {
+	client := NewWithRunner("yt-dlp", &recordingRunner{})
+	if _, err := client.DownloadURL(context.Background(), "ytsearch1:Artist - Song", t.TempDir()); err == nil {
+		t.Fatal("expected invalid source URL error")
+	}
+}
