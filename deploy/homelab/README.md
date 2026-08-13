@@ -1,9 +1,32 @@
 # Navidrome homelab deployment
 
-This fork is deployed as the existing `musicplayer` Compose project's
-Navidrome service. The Navidrome source is kept in
-`/srv/storage/wowzerbowser/files/home music` on the homelab. The deployment
-override is applied with the existing Compose file:
+This fork is deployed as the `navidrome` service in the existing `musicplayer`
+Compose project. Connect to the host with:
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=10 evanh@100.98.43.68
+```
+
+The live deployment layout is:
+
+| Resource | Value |
+| --- | --- |
+| Source checkout | `/srv/storage/wowzerbowser/files/home music` |
+| Base Compose file | `/srv/storage/wowzerbowser/files/musicplayer/docker-compose.yml` |
+| Navidrome override | `/srv/storage/wowzerbowser/files/home music/deploy/homelab/docker-compose.musicplayer.override.yml` |
+| Compose project/service | `musicplayer` / `navidrome` |
+| Container/image | `musicplayer-navidrome-1` / `home-music-navidrome:local` |
+| Music library | `/srv/storage/media/music` mounted read-write at `/music` |
+| Navidrome data | `musicplayer_navidrome_data` mounted at `/data` |
+| Local listener | `127.0.0.1:4533` |
+| Tailnet URL | `https://homelab.tail861ffd.ts.net/navidrome` |
+
+This is not part of the Wowzer Bowser application stack. Do not use
+`/srv/storage/wowzerbowser/deployment.env`, its Compose project, or its
+PostgreSQL migration workflow for Navidrome. Navidrome owns the database in its
+`/data` volume and applies its application migrations during startup.
+
+The deployment override is applied alongside the existing Compose file:
 
 ```sh
 COMPOSE_BASE=/srv/storage/wowzerbowser/files/musicplayer/docker-compose.yml
@@ -17,7 +40,7 @@ The beets database and provider cache live in Navidrome's existing data volume.
 Navidrome state is kept in the existing named volume
 `musicplayer_navidrome_data`, mounted at `/data`. The host publishes Navidrome
 only on `127.0.0.1:4533`; Tailscale Serve exposes it at the tailnet-only
-`/navidrome` path on the existing HTTPS endpoint.
+`/navidrome` path shown above.
 
 ## Updating the fork
 
@@ -32,15 +55,27 @@ git merge --ff-only upstream/master
 git push origin main
 ```
 
-After pulling the fork onto the homelab, rebuild and recreate only Navidrome:
+## Deploying `origin/main`
+
+The server checkout is deployment-only and is intentionally allowed to remain
+detached at `origin/main`. Verify that it is clean, fetch the pushed commit,
+check it out explicitly, then rebuild and recreate only Navidrome:
 
 ```sh
-cd '/srv/storage/wowzerbowser/files/home music'
+SOURCE='/srv/storage/wowzerbowser/files/home music'
 COMPOSE_BASE=/srv/storage/wowzerbowser/files/musicplayer/docker-compose.yml
 COMPOSE_OVERRIDE='/srv/storage/wowzerbowser/files/home music/deploy/homelab/docker-compose.musicplayer.override.yml'
-git pull --ff-only origin main
-docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" up -d --build navidrome
+test -z "$(git -C "$SOURCE" status --porcelain)"
+git -C "$SOURCE" fetch origin main
+git -C "$SOURCE" switch --detach origin/main
+docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" up -d --build --wait navidrome
+docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_OVERRIDE" ps navidrome
+git -C "$SOURCE" rev-parse HEAD
 ```
+
+The deployed revision should match `origin/main`, and the service should report
+`healthy`. This workflow does not rebuild or restart the `musicplayer` web,
+worker, or PostgreSQL services.
 
 Daily operations use the same two Compose files:
 
