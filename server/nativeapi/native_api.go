@@ -16,7 +16,9 @@ import (
 	"github.com/navidrome/navidrome/core/artwork"
 	"github.com/navidrome/navidrome/core/metrics"
 	musicservice "github.com/navidrome/navidrome/core/music"
+	"github.com/navidrome/navidrome/core/personalradio"
 	playlistsvc "github.com/navidrome/navidrome/core/playlists"
+	"github.com/navidrome/navidrome/core/quickpick"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/request"
@@ -48,12 +50,17 @@ type Router struct {
 	pluginManager PluginManager
 	imgUpload     artwork.Uploader
 	music         musicservice.Service
+	quickPick     quickpick.Service
+	personalRadio personalradio.Service
 }
 
-func New(ctx context.Context, ds model.DataStore, share core.Share, playlists playlistsvc.Playlists, insights metrics.Insights, libraryService core.Library, userService core.User, maintenance core.Maintenance, pluginManager PluginManager, imgUpload artwork.Uploader, musicService musicservice.Service) *Router {
-	r := &Router{ds: ds, share: share, playlists: playlists, insights: insights, libs: libraryService, users: userService, maintenance: maintenance, pluginManager: pluginManager, imgUpload: imgUpload, music: musicService}
+func New(ctx context.Context, ds model.DataStore, share core.Share, playlists playlistsvc.Playlists, insights metrics.Insights, libraryService core.Library, userService core.User, maintenance core.Maintenance, pluginManager PluginManager, imgUpload artwork.Uploader, musicService musicservice.Service, quickPick quickpick.Service, personalRadio personalradio.Service) *Router {
+	r := &Router{ds: ds, share: share, playlists: playlists, insights: insights, libs: libraryService, users: userService, maintenance: maintenance, pluginManager: pluginManager, imgUpload: imgUpload, music: musicService, quickPick: quickPick, personalRadio: personalRadio}
 	if musicService != nil {
 		musicService.Start(ctx)
+	}
+	if personalRadio != nil {
+		personalRadio.Start(ctx)
 	}
 	r.Handler = r.routes()
 	return r
@@ -92,6 +99,8 @@ func (api *Router) routes() http.Handler {
 		api.addKeepAliveRoute(r)
 		api.addInsightsRoute(r)
 		api.addMusicRoute(r)
+		api.addQuickPickRoute(r)
+		api.addPersonalRadioRoute(r)
 
 		r.With(adminOnlyMiddleware).Group(func(r chi.Router) {
 			api.addInspectRoute(r)
@@ -152,6 +161,7 @@ func (api *Router) addPlaylistRoute(r chi.Router) {
 			r.Delete("/", rest.Delete(constructor))
 			r.Post("/image", uploadPlaylistImage(api.playlists))
 			r.Delete("/image", deletePlaylistImage(api.playlists))
+			r.Post("/plays", api.recordPlaylistPlay)
 		})
 	})
 }

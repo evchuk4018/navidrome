@@ -17,8 +17,10 @@ import (
 	"github.com/navidrome/navidrome/core/lyrics"
 	"github.com/navidrome/navidrome/core/metrics"
 	musicservice "github.com/navidrome/navidrome/core/music"
+	"github.com/navidrome/navidrome/core/personalradio"
 	"github.com/navidrome/navidrome/core/playback"
 	"github.com/navidrome/navidrome/core/playlists"
+	"github.com/navidrome/navidrome/core/quickpick"
 	"github.com/navidrome/navidrome/core/scrobbler"
 	"github.com/navidrome/navidrome/core/sonic"
 	"github.com/navidrome/navidrome/db"
@@ -44,7 +46,11 @@ var allProviders = wire.NewSet(
 	public.New,
 	persistence.New,
 	persistence.NewMusicDownloadJobRepository,
+	persistence.NewQuickPickMetricsRepository,
+	persistence.NewPersonalRadioRepository,
 	musicservice.New,
+	quickpick.New,
+	personalradio.New,
 	musicbrainz.New,
 	ytdlp.New,
 	beets.New,

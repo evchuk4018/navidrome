@@ -6,6 +6,7 @@ import { useTranslate, MenuItemLink, getResources } from 'react-admin'
 import ViewListIcon from '@material-ui/icons/ViewList'
 import AlbumIcon from '@material-ui/icons/Album'
 import SearchIcon from '@material-ui/icons/Search'
+import FlashOnIcon from '@material-ui/icons/FlashOn'
 import SubMenu from './SubMenu'
 import { humanize, pluralize } from 'inflection'
 import albumLists from '../album/albumLists'
@@ -114,6 +115,15 @@ const Menu = ({ dense = false }) => {
       })}
     >
       {open && <LibrarySelector />}
+      <MenuItemLink
+        to="/quick-pick"
+        activeClassName={classes.active}
+        primaryText="Quick Pick"
+        leftIcon={<FlashOnIcon />}
+        sidebarIsOpen={open}
+        dense={dense}
+        exact
+      />
       <MenuItemLink
         to="/search"
         activeClassName={classes.active}

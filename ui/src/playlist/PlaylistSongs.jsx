@@ -28,6 +28,7 @@ import {
   ArtistLinkField,
   RatingField,
 } from '../common'
+import { recordPlaylistPlay } from '../quickpick/provider'
 import { AlbumLinkField } from '../song/AlbumLinkField'
 import { playTracks } from '../actions'
 import PlaylistSongBulkActions from './PlaylistSongBulkActions'
@@ -224,7 +225,10 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
             nodeSelector={'tr'}
           >
             <SongDatagrid
-              rowClick={(id) => dispatch(playTracks(data, ids, id))}
+              rowClick={(id) => {
+                recordPlaylistPlay(playlistId).catch(() => {})
+                dispatch(playTracks(data, ids, id))
+              }}
               {...listContext}
               hasBulkActions={!readOnly}
               contextAlwaysVisible={!isDesktop}

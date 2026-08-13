@@ -69,7 +69,8 @@ func (s *service) Start(ctx context.Context) {
 		if err := s.jobs.RequeueRunning(); err != nil {
 			log.Error(ctx, "Unable to recover music download jobs", err)
 		}
-		go s.run(ctx)
+		go s.run(ctx, model.MusicDownloadOriginManual)
+		go s.run(ctx, model.MusicDownloadOriginRadio)
 	})
 }
 
@@ -108,14 +109,20 @@ func (s *service) CreateDownload(ctx context.Context, userID string, request mod
 
 	now := time.Now().UTC()
 	job := &model.MusicDownloadJob{
-		ID:        id.NewRandom(),
-		UserID:    userID,
-		Kind:      request.Kind,
-		SourceID:  request.ID,
-		Status:    model.MusicDownloadQueued,
-		Message:   "Queued",
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          id.NewRandom(),
+		UserID:      userID,
+		Kind:        request.Kind,
+		SourceID:    request.ID,
+		Status:      model.MusicDownloadQueued,
+		Message:     "Queued",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Origin:      request.Origin,
+		Priority:    request.Priority,
+		RadioItemID: request.RadioItemID,
+	}
+	if job.Origin == "" {
+		job.Origin = model.MusicDownloadOriginManual
 	}
 	if err := s.jobs.Create(job); err != nil {
 		return nil, err
@@ -145,9 +152,9 @@ func (s *service) signal() {
 	}
 }
 
-func (s *service) run(ctx context.Context) {
+func (s *service) run(ctx context.Context, origin string) {
 	for {
-		job, err := s.jobs.ClaimNext()
+		job, err := s.jobs.ClaimNext(origin)
 		if err != nil {
 			log.Error(ctx, "Unable to claim music download job", err)
 			if !waitFor(ctx, s.wake, 5*time.Second) {

@@ -4,7 +4,7 @@ import {
   isResourceDefaultView,
   resourceDefaultViews,
 } from './defaultViews'
-import albumLists, { defaultAlbumList } from '../album/albumLists'
+import albumLists from '../album/albumLists'
 
 describe('defaultViews', () => {
   beforeEach(() => {
@@ -31,6 +31,7 @@ describe('defaultViews', () => {
   })
 
   it('identifies resource-backed default views', () => {
+    expect(isResourceDefaultView('quick-pick')).toBe(true)
     expect(isResourceDefaultView('artist')).toBe(true)
     expect(isResourceDefaultView('song')).toBe(true)
     expect(isResourceDefaultView('playlist')).toBe(true)
@@ -38,12 +39,14 @@ describe('defaultViews', () => {
     expect(isResourceDefaultView('recentlyAdded')).toBe(false)
   })
 
-  it('falls back to the default album list when no default view is stored', () => {
-    expect(getStoredDefaultView()).toBe(defaultAlbumList)
+  it('makes Quick Pick the one-time default when no view is stored', () => {
+    expect(getStoredDefaultView()).toBe('quick-pick')
+    expect(localStorage.getItem('quickPickDefaultV1')).toBe('1')
   })
 
   it('returns the stored default view', () => {
     localStorage.setItem('defaultView', 'playlist')
+    localStorage.setItem('quickPickDefaultV1', '1')
 
     expect(getStoredDefaultView()).toBe('playlist')
   })

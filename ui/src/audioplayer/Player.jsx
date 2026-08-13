@@ -19,6 +19,7 @@ import AudioTitle from './AudioTitle'
 import MiniPlayer from './MiniPlayer'
 import {
   clearQueue,
+  addTracks,
   currentPlaying,
   refreshQueue,
   setPlayMode,
@@ -35,6 +36,11 @@ import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
 import configureMediaSessionTrackNavigation from './mediaSession'
+import {
+  radioSongs,
+  refillPersonalRadio,
+  sendRadioFeedback,
+} from '../quickpick/provider'
 
 const MINI_MODE = 'mini'
 const FULL_MODE = 'full'
@@ -51,6 +57,7 @@ const Player = () => {
   const lastPositionMsRef = useRef(0)
   const currentTrackIdRef = useRef(null)
   const stoppedRef = useRef(false)
+  const radioPlaybackRef = useRef(null)
   const [audioInstance, setAudioInstance] = useState(null)
   const [displayMode, setDisplayMode] = useState(MINI_MODE)
   const [miniProgress, setMiniProgress] = useState({
@@ -70,6 +77,39 @@ const Player = () => {
   playerStateRef.current = playerState
 
   currentTrackIdRef.current = currentTrackId
+
+  const appendRadioItems = useCallback(
+    (response) => {
+      const queued = new Set(
+        playerStateRef.current.queue
+          .map((item) => item.radioItemId)
+          .filter(Boolean),
+      )
+      const songs = radioSongs(response)
+      const ids = songs.ids.filter(
+        (key) => !queued.has(songs.data[key].radioItemId),
+      )
+      if (ids.length) {
+        dispatch(
+          addTracks(
+            Object.fromEntries(ids.map((key) => [key, songs.data[key]])),
+            ids,
+          ),
+        )
+      }
+    },
+    [dispatch],
+  )
+
+  const reportRadioFeedback = useCallback((playback, event) => {
+    if (!playback?.sessionId || !playback?.itemId) return
+    sendRadioFeedback(playback.sessionId, {
+      itemId: playback.itemId,
+      event,
+      listenedMs: Math.floor(playback.listenedMs || 0),
+      durationMs: Math.floor(playback.durationMs || 0),
+    }).catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (playerState.queue.length === 0) {
@@ -288,20 +328,44 @@ const Player = () => {
     [dispatch],
   )
 
-  const onAudioProgress = useCallback((info) => {
-    if (info.ended) {
-      document.title = 'Navidrome'
-    }
-    if (info.currentTime != null || info.duration != null) {
-      setMiniProgress({
-        currentTime: Number(info.currentTime) || 0,
-        duration: Number(info.duration) || 0,
-      })
-    }
-    if (!info.isRadio && info.currentTime != null) {
-      lastPositionMsRef.current = Math.floor(info.currentTime * 1000)
-    }
-  }, [])
+  const onAudioProgress = useCallback(
+    (info) => {
+      if (info.ended) {
+        document.title = 'Navidrome'
+      }
+      if (info.currentTime != null || info.duration != null) {
+        setMiniProgress({
+          currentTime: Number(info.currentTime) || 0,
+          duration: Number(info.duration) || 0,
+        })
+      }
+      if (!info.isRadio && info.currentTime != null) {
+        lastPositionMsRef.current = Math.floor(info.currentTime * 1000)
+      }
+      const playback = radioPlaybackRef.current
+      if (playback && playback.itemId === info.radioItemId) {
+        const currentMS = Math.max(0, Number(info.currentTime || 0) * 1000)
+        const delta = currentMS - playback.lastPositionMS
+        if (delta > 0 && delta < 2500) playback.listenedMs += delta
+        playback.lastPositionMS = currentMS
+        playback.durationMs = Math.max(
+          playback.durationMs,
+          Number(info.duration || info.song?.duration || 0) * 1000,
+        )
+        const threshold = Math.min(30000, playback.durationMs / 5)
+        if (
+          info.radioItemType === 'discovery' &&
+          !playback.thresholdSent &&
+          threshold > 0 &&
+          playback.listenedMs >= threshold
+        ) {
+          playback.thresholdSent = true
+          reportRadioFeedback(playback, 'threshold_reached')
+        }
+      }
+    },
+    [reportRadioFeedback],
+  )
 
   const onAudioVolumeChange = useCallback(
     // sqrt to compensate for the logarithmic volume
@@ -354,11 +418,45 @@ const Player = () => {
           )
         }
       }
+
+      if (
+        info.radioSessionId &&
+        info.radioItemId &&
+        radioPlaybackRef.current?.itemId !== info.radioItemId
+      ) {
+        const playback = {
+          sessionId: info.radioSessionId,
+          itemId: info.radioItemId,
+          itemType: info.radioItemType,
+          listenedMs: 0,
+          lastPositionMS: Number(info.currentTime || 0) * 1000,
+          durationMs: Number(info.duration || info.song?.duration || 0) * 1000,
+          thresholdSent: false,
+          completed: false,
+        }
+        radioPlaybackRef.current = playback
+        reportRadioFeedback(playback, 'started')
+        refillPersonalRadio(playback.sessionId)
+          .then(appendRadioItems)
+          .catch(() => {})
+      }
     },
-    [context, dispatch, showNotifications, currentTrackId],
+    [
+      context,
+      dispatch,
+      showNotifications,
+      currentTrackId,
+      appendRadioItems,
+      reportRadioFeedback,
+    ],
   )
 
   const onAudioPlayTrackChange = useCallback(() => {
+    const playback = radioPlaybackRef.current
+    if (playback && !playback.completed) {
+      reportRadioFeedback(playback, 'manual_skip')
+    }
+    radioPlaybackRef.current = null
     if (currentTrackId) {
       subsonic.reportPlayback(
         currentTrackId,
@@ -368,7 +466,7 @@ const Player = () => {
     }
     setHeartbeatTrackId(null)
     setCurrentTrackId(null)
-  }, [currentTrackId])
+  }, [currentTrackId, reportRadioFeedback])
 
   const onAudioPause = useCallback(
     (info) => {
@@ -395,6 +493,15 @@ const Player = () => {
       }
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
+      const playback = radioPlaybackRef.current
+      if (playback && playback.itemId === info.radioItemId) {
+        playback.completed = true
+        playback.listenedMs = Math.max(
+          playback.listenedMs,
+          Number(info.duration || 0) * 1000,
+        )
+        reportRadioFeedback(playback, 'completed')
+      }
       dispatch(currentPlaying(info))
       setMiniProgress({
         currentTime: Number(info.currentTime) || 0,
@@ -405,7 +512,7 @@ const Player = () => {
         // eslint-disable-next-line no-console
         .catch((e) => console.log('Keepalive error:', e))
     },
-    [dispatch, dataProvider, currentTrackId],
+    [dispatch, dataProvider, currentTrackId, reportRadioFeedback],
   )
 
   const onCoverClick = useCallback((mode, audioLists, audioInfo) => {

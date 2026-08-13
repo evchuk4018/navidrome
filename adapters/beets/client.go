@@ -92,6 +92,7 @@ func (c *Client) Import(ctx context.Context, files []string, metadata model.Exte
 	appendField("artist", metadata.ArtistName)
 	appendField("albumartist", metadata.ArtistName)
 	appendField("album", metadata.AlbumTitle)
+	appendField("mb_trackid", metadata.ID)
 	if metadata.Year > 0 {
 		appendField("year", strconv.Itoa(metadata.Year))
 	}

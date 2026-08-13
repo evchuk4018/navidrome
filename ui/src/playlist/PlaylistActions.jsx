@@ -16,6 +16,7 @@ import { RiPlayListAddFill, RiPlayList2Fill } from 'react-icons/ri'
 import QueueMusicIcon from '@material-ui/icons/QueueMusic'
 import ShareIcon from '@material-ui/icons/Share'
 import { httpClient } from '../dataProvider'
+import { recordPlaylistPlay } from '../quickpick/provider'
 import {
   playNext,
   addTracks,
@@ -71,8 +72,9 @@ const PlaylistActions = ({ className, ids, data, record, ...rest }) => {
   )
 
   const handlePlay = React.useCallback(() => {
+    recordPlaylistPlay(record.id).catch(() => {})
     getAllSongsAndDispatch(playTracks)
-  }, [getAllSongsAndDispatch])
+  }, [getAllSongsAndDispatch, record.id])
 
   const handlePlayNext = React.useCallback(() => {
     getAllSongsAndDispatch(playNext)
@@ -83,8 +85,9 @@ const PlaylistActions = ({ className, ids, data, record, ...rest }) => {
   }, [getAllSongsAndDispatch])
 
   const handleShuffle = React.useCallback(() => {
+    recordPlaylistPlay(record.id).catch(() => {})
     getAllSongsAndDispatch(shuffleTracks)
-  }, [getAllSongsAndDispatch])
+  }, [getAllSongsAndDispatch, record.id])
 
   const handleShare = React.useCallback(() => {
     dispatch(openShareMenu([record.id], 'playlist', record.name))

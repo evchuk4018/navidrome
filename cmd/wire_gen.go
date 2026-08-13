@@ -22,9 +22,11 @@ import (
 	"github.com/navidrome/navidrome/core/lyrics"
 	"github.com/navidrome/navidrome/core/matcher"
 	"github.com/navidrome/navidrome/core/metrics"
-	musicservice "github.com/navidrome/navidrome/core/music"
+	"github.com/navidrome/navidrome/core/music"
+	"github.com/navidrome/navidrome/core/personalradio"
 	"github.com/navidrome/navidrome/core/playback"
 	"github.com/navidrome/navidrome/core/playlists"
+	"github.com/navidrome/navidrome/core/quickpick"
 	"github.com/navidrome/navidrome/core/scrobbler"
 	"github.com/navidrome/navidrome/core/sonic"
 	"github.com/navidrome/navidrome/core/stream"
@@ -80,12 +82,18 @@ func CreateNativeAPIRouter(ctx context.Context) *nativeapi.Router {
 	library := core.NewLibrary(dataStore, modelScanner, watcher, broker, manager)
 	user := core.NewUser(dataStore, manager)
 	maintenance := core.NewMaintenance(dataStore)
-	musicbrainzClient := musicbrainz.New()
+	client := musicbrainz.New()
 	ytdlpClient := ytdlp.New()
 	beetsClient := beets.New()
-	musicDownloadJobs := persistence.NewMusicDownloadJobRepository(sqlDB)
-	musicService := musicservice.New(musicbrainzClient, ytdlpClient, beetsClient, musicDownloadJobs, modelScanner)
-	router := nativeapi.New(ctx, dataStore, share, playlistsPlaylists, insights, library, user, maintenance, manager, uploader, musicService)
+	musicDownloadJobRepository := persistence.NewMusicDownloadJobRepository(sqlDB)
+	service := music.New(client, ytdlpClient, beetsClient, musicDownloadJobRepository, modelScanner)
+	quickPickMetricsRepository := persistence.NewQuickPickMetricsRepository(sqlDB)
+	quickpickService := quickpick.New(dataStore, quickPickMetricsRepository)
+	personalRadioRepository := persistence.NewPersonalRadioRepository(sqlDB)
+	agentsAgents := agents.GetAgents(dataStore, manager)
+	matcherMatcher := matcher.New(dataStore)
+	personalradioService := personalradio.New(dataStore, personalRadioRepository, agentsAgents, matcherMatcher, service, modelScanner)
+	router := nativeapi.New(ctx, dataStore, share, playlistsPlaylists, insights, library, user, maintenance, manager, uploader, service, quickpickService, personalradioService)
 	return router
 }
 
@@ -243,7 +251,7 @@ func getPluginManager() *plugins.Manager {
 
 // wire_injectors.go:
 
-var allProviders = wire.NewSet(core.Set, artwork.Set, server.New, subsonic.New, jellyfin.New, nativeapi.New, public.New, persistence.New, persistence.NewMusicDownloadJobRepository, musicservice.New, musicbrainz.New, ytdlp.New, beets.New, lastfm.NewRouter, listenbrainz.NewRouter, events.GetBroker, scanner.New, scanner.GetWatcher, metrics.GetPrometheusInstance, db.Db, plugins.GetManager, sonic.New, wire.Bind(new(agents.PluginLoader), new(*plugins.Manager)), wire.Bind(new(scrobbler.PluginLoader), new(*plugins.Manager)), wire.Bind(new(lyrics.PluginLoader), new(*plugins.Manager)), wire.Bind(new(sonic.PluginLoader), new(*sonic.Sonic)), wire.Bind(new(sonic.Engine), new(*sonic.Sonic)), wire.Bind(new(nativeapi.PluginManager), new(*plugins.Manager)), wire.Bind(new(core.PluginUnloader), new(*plugins.Manager)), wire.Bind(new(plugins.PluginMetricsRecorder), new(metrics.Metrics)), wire.Bind(new(core.Watcher), new(scanner.Watcher)), wire.Bind(new(playlists.ImageUploadService), new(artwork.Uploader)), wire.Bind(new(musicservice.Catalog), new(*musicbrainz.Client)), wire.Bind(new(musicservice.Downloader), new(*ytdlp.Client)), wire.Bind(new(musicservice.Tagger), new(*beets.Client)))
+var allProviders = wire.NewSet(core.Set, artwork.Set, server.New, subsonic.New, jellyfin.New, nativeapi.New, public.New, persistence.New, persistence.NewMusicDownloadJobRepository, persistence.NewQuickPickMetricsRepository, persistence.NewPersonalRadioRepository, music.New, quickpick.New, personalradio.New, musicbrainz.New, ytdlp.New, beets.New, lastfm.NewRouter, listenbrainz.NewRouter, events.GetBroker, scanner.New, scanner.GetWatcher, metrics.GetPrometheusInstance, db.Db, plugins.GetManager, sonic.New, wire.Bind(new(agents.PluginLoader), new(*plugins.Manager)), wire.Bind(new(scrobbler.PluginLoader), new(*plugins.Manager)), wire.Bind(new(lyrics.PluginLoader), new(*plugins.Manager)), wire.Bind(new(sonic.PluginLoader), new(*plugins.Manager)), wire.Bind(new(sonic.Engine), new(*sonic.Sonic)), wire.Bind(new(nativeapi.PluginManager), new(*plugins.Manager)), wire.Bind(new(core.PluginUnloader), new(*plugins.Manager)), wire.Bind(new(plugins.PluginMetricsRecorder), new(metrics.Metrics)), wire.Bind(new(core.Watcher), new(scanner.Watcher)), wire.Bind(new(playlists.ImageUploadService), new(artwork.Uploader)), wire.Bind(new(music.Catalog), new(*musicbrainz.Client)), wire.Bind(new(music.Downloader), new(*ytdlp.Client)), wire.Bind(new(music.Tagger), new(*beets.Client)))
 
 func GetPluginManager(ctx context.Context) *plugins.Manager {
 	manager := getPluginManager()

@@ -3,6 +3,7 @@ package persistence
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/navidrome/navidrome/model"
@@ -27,11 +28,13 @@ func (r *musicDownloadJobRepository) Create(job *model.MusicDownloadJob) error {
 	_, err := r.db.Exec(`
 		insert into music_download_job
 		(id, user_id, kind, source_id, artist, album, title, status, message, error,
-		 output_path, completed, total, created_at, updated_at, started_at, finished_at)
-		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 output_path, completed, total, created_at, updated_at, started_at, finished_at,
+		 origin, priority, radio_item_id, media_file_id)
+		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.UserID, job.Kind, job.SourceID, job.Artist, job.Album, job.Title,
 		job.Status, job.Message, job.Error, job.OutputPath, job.Completed, job.Total,
-		job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt)
+		job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt,
+		job.Origin, job.Priority, job.RadioItemID, job.MediaFileID)
 	return err
 }
 
@@ -83,15 +86,23 @@ func (r *musicDownloadJobRepository) GetAllForUser(userID string, limit int) ([]
 	return jobs, nil
 }
 
-func (r *musicDownloadJobRepository) ClaimNext() (*model.MusicDownloadJob, error) {
+func (r *musicDownloadJobRepository) ClaimNext(origins ...string) (*model.MusicDownloadJob, error) {
 	tx, err := r.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	job, err := scanMusicDownloadJob(tx.QueryRow(musicDownloadJobSelect+
-		" where status = ? order by created_at asc limit 1", model.MusicDownloadQueued))
+	query := musicDownloadJobSelect + " where status = ?"
+	args := []any{model.MusicDownloadQueued}
+	if len(origins) > 0 {
+		query += " and origin in (" + strings.TrimSuffix(strings.Repeat("?,", len(origins)), ",") + ")"
+		for _, origin := range origins {
+			args = append(args, origin)
+		}
+	}
+	query += " order by priority desc, created_at asc limit 1"
+	job, err := scanMusicDownloadJob(tx.QueryRow(query, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -133,11 +144,13 @@ func (r *musicDownloadJobRepository) Update(job *model.MusicDownloadJob) error {
 		update music_download_job set
 		user_id = ?, kind = ?, source_id = ?, artist = ?, album = ?, title = ?,
 		status = ?, message = ?, error = ?, output_path = ?, completed = ?, total = ?,
-		created_at = ?, updated_at = ?, started_at = ?, finished_at = ?
+		created_at = ?, updated_at = ?, started_at = ?, finished_at = ?, origin = ?,
+		priority = ?, radio_item_id = ?, media_file_id = ?
 		where id = ?`,
 		job.UserID, job.Kind, job.SourceID, job.Artist, job.Album, job.Title,
 		job.Status, job.Message, job.Error, job.OutputPath, job.Completed, job.Total,
-		job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt, job.ID)
+		job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt, job.Origin,
+		job.Priority, job.RadioItemID, job.MediaFileID, job.ID)
 	return err
 }
 
@@ -152,7 +165,8 @@ func (r *musicDownloadJobRepository) RequeueRunning() error {
 
 const musicDownloadJobSelect = `
 	select id, user_id, kind, source_id, artist, album, title, status, message, error,
-		output_path, completed, total, created_at, updated_at, started_at, finished_at
+		output_path, completed, total, created_at, updated_at, started_at, finished_at,
+		origin, priority, radio_item_id, media_file_id
 	from music_download_job`
 
 type rowScanner interface {
@@ -166,6 +180,7 @@ func scanMusicDownloadJob(row rowScanner) (*model.MusicDownloadJob, error) {
 		&job.ID, &job.UserID, &job.Kind, &job.SourceID, &job.Artist, &job.Album, &job.Title,
 		&job.Status, &job.Message, &job.Error, &job.OutputPath, &job.Completed, &job.Total,
 		&job.CreatedAt, &job.UpdatedAt, &startedAt, &finishedAt,
+		&job.Origin, &job.Priority, &job.RadioItemID, &job.MediaFileID,
 	)
 	if err != nil {
 		return nil, err

@@ -64,8 +64,11 @@ type ExternalAlbumDetails struct {
 }
 
 type ExternalDownloadRequest struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	Kind        string `json:"kind"`
+	ID          string `json:"id"`
+	Origin      string `json:"-"`
+	Priority    int    `json:"-"`
+	RadioItemID string `json:"-"`
 }
 
 const (
@@ -76,26 +79,33 @@ const (
 	MusicDownloadRunning = "running"
 	MusicDownloadSuccess = "succeeded"
 	MusicDownloadFailed  = "failed"
+
+	MusicDownloadOriginManual = "manual"
+	MusicDownloadOriginRadio  = "radio"
 )
 
 type MusicDownloadJob struct {
-	ID         string     `json:"id" db:"id"`
-	UserID     string     `json:"userId" db:"user_id"`
-	Kind       string     `json:"kind" db:"kind"`
-	SourceID   string     `json:"sourceId" db:"source_id"`
-	Artist     string     `json:"artist,omitempty" db:"artist"`
-	Album      string     `json:"album,omitempty" db:"album"`
-	Title      string     `json:"title,omitempty" db:"title"`
-	Status     string     `json:"status" db:"status"`
-	Message    string     `json:"message,omitempty" db:"message"`
-	Error      string     `json:"error,omitempty" db:"error"`
-	OutputPath string     `json:"outputPath,omitempty" db:"output_path"`
-	Completed  int        `json:"completed" db:"completed"`
-	Total      int        `json:"total" db:"total"`
-	CreatedAt  time.Time  `json:"createdAt" db:"created_at"`
-	UpdatedAt  time.Time  `json:"updatedAt" db:"updated_at"`
-	StartedAt  *time.Time `json:"startedAt,omitempty" db:"started_at"`
-	FinishedAt *time.Time `json:"finishedAt,omitempty" db:"finished_at"`
+	ID          string     `json:"id" db:"id"`
+	UserID      string     `json:"userId" db:"user_id"`
+	Kind        string     `json:"kind" db:"kind"`
+	SourceID    string     `json:"sourceId" db:"source_id"`
+	Artist      string     `json:"artist,omitempty" db:"artist"`
+	Album       string     `json:"album,omitempty" db:"album"`
+	Title       string     `json:"title,omitempty" db:"title"`
+	Status      string     `json:"status" db:"status"`
+	Message     string     `json:"message,omitempty" db:"message"`
+	Error       string     `json:"error,omitempty" db:"error"`
+	OutputPath  string     `json:"outputPath,omitempty" db:"output_path"`
+	Completed   int        `json:"completed" db:"completed"`
+	Total       int        `json:"total" db:"total"`
+	CreatedAt   time.Time  `json:"createdAt" db:"created_at"`
+	UpdatedAt   time.Time  `json:"updatedAt" db:"updated_at"`
+	StartedAt   *time.Time `json:"startedAt,omitempty" db:"started_at"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty" db:"finished_at"`
+	Origin      string     `json:"origin,omitempty" db:"origin"`
+	Priority    int        `json:"priority,omitempty" db:"priority"`
+	RadioItemID string     `json:"-" db:"radio_item_id"`
+	MediaFileID string     `json:"mediaFileId,omitempty" db:"media_file_id"`
 }
 
 type MusicDownloadJobRepository interface {
@@ -103,7 +113,7 @@ type MusicDownloadJobRepository interface {
 	Get(id string) (*MusicDownloadJob, error)
 	GetForUser(id, userID string) (*MusicDownloadJob, error)
 	GetAllForUser(userID string, limit int) ([]MusicDownloadJob, error)
-	ClaimNext() (*MusicDownloadJob, error)
+	ClaimNext(origins ...string) (*MusicDownloadJob, error)
 	Update(*MusicDownloadJob) error
 	RequeueRunning() error
 }

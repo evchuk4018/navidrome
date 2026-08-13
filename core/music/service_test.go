@@ -72,7 +72,7 @@ func (f *fakeJobs) GetAllForUser(string, int) ([]model.MusicDownloadJob, error) 
 	return []model.MusicDownloadJob{*f.job}, nil
 }
 
-func (f *fakeJobs) ClaimNext() (*model.MusicDownloadJob, error) { return nil, nil }
+func (f *fakeJobs) ClaimNext(...string) (*model.MusicDownloadJob, error) { return nil, nil }
 
 func (f *fakeJobs) Update(job *model.MusicDownloadJob) error {
 	clone := *job

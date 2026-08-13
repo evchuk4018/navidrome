@@ -12,6 +12,7 @@ import {
   PLAYER_SYNC_QUEUE,
   PLAYER_SET_MODE,
   PLAYER_REFRESH_QUEUE,
+  PLAYER_SET_RADIO_SESSION,
 } from '../actions'
 import config from '../config'
 
@@ -21,6 +22,7 @@ const initialState = {
   clear: false,
   volume: config.defaultUIVolume / 100,
   savedPlayIndex: 0,
+  radioSession: null,
 }
 
 const pad = (value) => {
@@ -95,6 +97,9 @@ const mapToAudioLists = (item) => {
       },
       300,
     ),
+    radioSessionId: item.radioSessionId,
+    radioItemId: item.radioItemId,
+    radioItemType: item.radioItemType,
   }
 }
 
@@ -113,6 +118,7 @@ const reducePlayTracks = (state, { data, id }) => {
     queue,
     playIndex,
     clear: true,
+    radioSession: null,
   }
 }
 
@@ -122,6 +128,7 @@ const reduceSetTrack = (state, { data }) => {
     queue: [mapToAudioLists(data)],
     playIndex: 0,
     clear: true,
+    radioSession: null,
   }
 }
 
@@ -243,6 +250,29 @@ export const playerReducer = (previousState = initialState, payload) => {
         autoPlay: false,
         playIndex:
           previousState.savedPlayIndex >= 0 ? previousState.savedPlayIndex : 0,
+      }
+    }
+    case PLAYER_SET_RADIO_SESSION: {
+      const session = payload.data
+      return {
+        ...previousState,
+        radioSession: session,
+        queue: previousState.queue.map((item, index) =>
+          index === (previousState.savedPlayIndex || 0)
+            ? {
+                ...item,
+                radioSessionId: session.id,
+                radioItemId: session.seedItemId,
+                radioItemType: 'seed',
+                song: {
+                  ...item.song,
+                  radioSessionId: session.id,
+                  radioItemId: session.seedItemId,
+                  radioItemType: 'seed',
+                },
+              }
+            : item,
+        ),
       }
     }
     default:
