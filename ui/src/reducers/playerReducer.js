@@ -134,11 +134,8 @@ const reduceSetTrack = (state, { data }) => {
 }
 
 const reduceAddTracks = (state, { data }) => {
-  const queue = state.queue
-  Object.keys(data).forEach((id) => {
-    queue.push(mapToAudioLists(data[id]))
-  })
-  return { ...state, queue, clear: false }
+  const appended = Object.keys(data).map((id) => mapToAudioLists(data[id]))
+  return { ...state, queue: [...state.queue, ...appended], clear: false }
 }
 
 const reducePlayNext = (state, { data }) => {

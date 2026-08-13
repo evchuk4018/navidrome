@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/navidrome/navidrome/model"
@@ -45,7 +46,7 @@ func TestDownloadBuildsSafeAudioCommand(t *testing.T) {
 	if filepath.Ext(path) != ".mp3" {
 		t.Fatalf("expected mp3 output, got %q", path)
 	}
-	for _, expected := range []string{"--ignore-config", "--no-playlist", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "320K", "%(webpage_url)s:%(meta_comment)s"} {
+	for _, expected := range []string{"--ignore-config", "--js-runtimes", "node", "--no-playlist", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "320K", "%(webpage_url)s:%(meta_comment)s"} {
 		if !slices.Contains(runner.args, expected) {
 			t.Fatalf("expected %q in command args %v", expected, runner.args)
 		}
@@ -92,7 +93,7 @@ func TestThumbnailUsesMetadataOnlyCommandAndTrustedImageHost(t *testing.T) {
 	if imageURL.String() != "https://i.ytimg.com/vi/abc123/maxresdefault.jpg" {
 		t.Fatalf("unexpected thumbnail URL %q", imageURL)
 	}
-	for _, expected := range []string{"--skip-download", "after_filter:%(thumbnail)s"} {
+	for _, expected := range []string{"--js-runtimes", "node", "--skip-download", "after_filter:%(thumbnail)s"} {
 		if !slices.Contains(runner.args, expected) {
 			t.Fatalf("expected %q in command args %v", expected, runner.args)
 		}
@@ -172,5 +173,53 @@ func TestDownloadURLRetriesWithAndroidClient(t *testing.T) {
 	}
 	if !slices.Contains(runner.args[1], "youtube:player_client=android") {
 		t.Fatalf("expected Android fallback args, got %v", runner.args[1])
+	}
+}
+
+func TestDownloadSearchRetriesWithAndroidClient(t *testing.T) {
+	runner := &fallbackRunner{}
+	client := NewWithRunner("yt-dlp", runner)
+	track := model.ExternalTrack{ArtistName: "Cavetown", Title: "Devil Town"}
+
+	if _, err := client.Download(context.Background(), track, t.TempDir()); err != nil {
+		t.Fatalf("Download returned error: %v", err)
+	}
+	if runner.called != 2 {
+		t.Fatalf("expected default and fallback search attempts, got %d", runner.called)
+	}
+	if !slices.Contains(runner.args[1], "ytsearch1:Cavetown - Devil Town") {
+		t.Fatalf("expected the search source in fallback args, got %v", runner.args[1])
+	}
+	if !slices.Contains(runner.args[1], "youtube:player_client=android") {
+		t.Fatalf("expected Android fallback args, got %v", runner.args[1])
+	}
+}
+
+type failingRunner struct {
+	called int
+}
+
+func (r *failingRunner) Run(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	r.called++
+	if r.called == 1 {
+		return []byte("HTTP Error 403: Forbidden"), fmt.Errorf("download failed")
+	}
+	return []byte("video unavailable"), fmt.Errorf("fallback failed")
+}
+
+func TestDownloadReportsBothYouTubeAttempts(t *testing.T) {
+	runner := &failingRunner{}
+	client := NewWithRunner("yt-dlp", runner)
+	_, err := client.Download(context.Background(), model.ExternalTrack{
+		ArtistName: "Cavetown",
+		Title:      "Devil Town",
+	}, t.TempDir())
+	if err == nil {
+		t.Fatal("expected both download attempts to fail")
+	}
+	for _, detail := range []string{"default download", "403: Forbidden", "android fallback", "video unavailable"} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("expected error %q to contain %q", err, detail)
+		}
 	}
 }

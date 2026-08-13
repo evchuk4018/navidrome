@@ -27,7 +27,10 @@ export const sendRadioFeedback = (sessionId, feedback) =>
 export const radioSongs = (response) => {
   const data = {}
   const ids = []
-  response.items
+  const orderedItems = [...response.items].sort(
+    (left, right) => left.position - right.position,
+  )
+  orderedItems
     .filter(
       (item) =>
         item.song && (item.status === 'ready' || item.status === 'played'),

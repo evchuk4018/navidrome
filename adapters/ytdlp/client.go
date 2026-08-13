@@ -48,7 +48,7 @@ func (c *Client) Download(ctx context.Context, track model.ExternalTrack, direct
 	if track.AlbumTitle != "" {
 		query += " " + track.AlbumTitle
 	}
-	return c.download(ctx, "ytsearch1:"+query, directory)
+	return c.downloadWithYouTubeFallback(ctx, "ytsearch1:"+query, directory)
 }
 
 // DownloadURL downloads a specific HTTP(S) source URL instead of performing a metadata search.
@@ -59,14 +59,18 @@ func (c *Client) DownloadURL(ctx context.Context, sourceURL, directory string) (
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return "", fmt.Errorf("invalid download URL %q", sourceURL)
 	}
-	path, err := c.download(ctx, sourceURL, directory)
+	return c.downloadWithYouTubeFallback(ctx, sourceURL, directory)
+}
+
+func (c *Client) downloadWithYouTubeFallback(ctx context.Context, source, directory string) (string, error) {
+	path, err := c.download(ctx, source, directory)
 	if err == nil {
 		return path, nil
 	}
 
 	// YouTube increasingly serves some videos only through a client-specific API.
 	// Retry with the Android client when the default web extraction cannot obtain media.
-	fallbackPath, fallbackErr := c.download(ctx, sourceURL, directory,
+	fallbackPath, fallbackErr := c.download(ctx, source, directory,
 		"--extractor-args", "youtube:player_client=android")
 	if fallbackErr == nil {
 		return fallbackPath, nil
@@ -93,6 +97,7 @@ func (c *Client) download(ctx context.Context, source string, directory string, 
 	}
 	args := []string{
 		"--ignore-config",
+		"--js-runtimes", "node",
 		"--no-playlist",
 		"--no-progress",
 		"--newline",
@@ -152,6 +157,7 @@ func (c *Client) thumbnail(ctx context.Context, source string) (*url.URL, error)
 	}
 	args := []string{
 		"--ignore-config",
+		"--js-runtimes", "node",
 		"--no-playlist",
 		"--no-progress",
 		"--no-warnings",

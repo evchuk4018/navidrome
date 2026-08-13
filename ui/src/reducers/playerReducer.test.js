@@ -4,6 +4,7 @@ import {
   PLAYER_SYNC_QUEUE,
   PLAYER_CURRENT,
   PLAYER_REFRESH_QUEUE,
+  PLAYER_ADD_TRACKS,
   PLAYER_SET_RADIO_PLANNING,
 } from '../actions'
 
@@ -23,6 +24,40 @@ describe('playerReducer', () => {
       ...state.radioSession,
       planningStatus: 'downloading',
     })
+  })
+
+  it('appends ready radio tracks without restarting the current iOS playback', () => {
+    const current = { uuid: 'seed-uuid', trackId: 'seed', paused: false }
+    const queue = [current]
+    const state = {
+      queue,
+      current,
+      savedPlayIndex: 0,
+      playIndex: undefined,
+      clear: false,
+      autoPlay: false,
+      radioSession: { id: 'session-1' },
+    }
+    const result = playerReducer(state, {
+      type: PLAYER_ADD_TRACKS,
+      data: {
+        'radio-item-1': {
+          id: 'track-1',
+          title: 'Fresh Track',
+          artist: 'Artist',
+          radioItemId: 'item-1',
+        },
+      },
+    })
+
+    expect(result.queue).not.toBe(queue)
+    expect(result.queue[0]).toBe(current)
+    expect(result.current).toBe(current)
+    expect(result.savedPlayIndex).toBe(0)
+    expect(result.playIndex).toBeUndefined()
+    expect(result.clear).toBe(false)
+    expect(result.autoPlay).toBe(false)
+    expect(result.queue[1].radioItemId).toBe('item-1')
   })
 
   describe('pending track selection survives SYNC_QUEUE and premature CURRENT', () => {

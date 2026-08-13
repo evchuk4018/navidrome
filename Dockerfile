@@ -160,12 +160,17 @@ LABEL org.opencontainers.image.source="https://github.com/navidrome/navidrome"
 
 # Install runtime dependencies
 # - libwebp + symlinks: enables native WebP encoding via purego/dlopen
-RUN apk add -U --no-cache ffmpeg mpv sqlite libwebp libwebpdemux libwebpmux python3 py3-pip && \
-    python3 -m pip install --no-cache-dir --break-system-packages yt-dlp beets && \
+# - libstdc++: supports the Node LTS binary used by yt-dlp's challenge solver
+RUN apk add -U --no-cache ffmpeg mpv sqlite libwebp libwebpdemux libwebpmux libstdc++ python3 py3-pip && \
+    python3 -m pip install --no-cache-dir --break-system-packages 'yt-dlp[default]' beets && \
     for lib in libwebp libwebpdemux libwebpmux; do \
         target=$(ls /usr/lib/$lib.so.* 2>/dev/null | head -1) && \
         [ -n "$target" ] && ln -sf "$target" /usr/lib/$lib.so; \
     done
+
+# Reuse the supported Node LTS runtime from the UI build stage. Alpine 3.20's
+# packaged Node 20 is below yt-dlp-ejs's current Node 22 minimum.
+COPY --from=ui /usr/local/bin/node /usr/local/bin/node
 
 # Copy navidrome binary (musl build for Docker, enables native libwebp)
 COPY --from=build-alpine /out/navidrome /app/
