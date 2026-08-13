@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"strings"
 	"unicode"
 
@@ -135,9 +136,11 @@ func runLikedMusicImport(ctx context.Context, inputPath, username string, output
 					result.Failures = append(result.Failures, fmt.Sprintf("line %d %q: library could not be read after scan", rows[idx].Line, rows[idx].Title))
 				}
 			} else {
-				newFiles := mediaFilesAddedSince(before, after)
 				for _, idx := range downloadRows {
-					matches := findLikedMusicMatches(newFiles, rows[idx])
+					// The scanner may update an existing row rather than create a new
+					// media-file ID. Match against the complete post-scan library so
+					// those successful imports are still synchronized.
+					matches := findLikedMusicMatches(after, rows[idx])
 					switch len(matches) {
 					case 1:
 						assignments[idx] = matches[0].ID
@@ -193,7 +196,8 @@ func readLikedMusicRows(path string) ([]likedMusicImportRow, likedMusicImportRes
 			continue
 		}
 		result.Rows++
-		parts := strings.SplitN(line, " — ", 3)
+		delimiter := " " + string(rune(0x2014)) + " "
+		parts := strings.SplitN(line, delimiter, 3)
 		if len(parts) != 3 {
 			result.Failures = append(result.Failures, fmt.Sprintf("line %d: expected title — artist — URL", lineNumber))
 			continue
@@ -250,7 +254,7 @@ func findLikedMusicMatches(files model.MediaFiles, row likedMusicImportRow) []mo
 	seen := make(map[string]struct{})
 	matches := make([]model.MediaFile, 0)
 	for _, file := range files {
-		if file.Missing || normalizeLikedMusicTitle(file.Title) != rowTitle || !mediaFileArtistMatches(file, rowArtist) {
+		if file.Missing || !likedMusicTitleMatches(file, rowTitle) || !mediaFileArtistMatches(file, rowArtist) {
 			continue
 		}
 		if _, ok := seen[file.ID]; ok {
@@ -263,15 +267,104 @@ func findLikedMusicMatches(files model.MediaFiles, row likedMusicImportRow) []mo
 }
 
 func mediaFileArtistMatches(file model.MediaFile, normalizedArtist string) bool {
-	if normalizeLikedMusicArtist(file.Artist) == normalizedArtist || normalizeLikedMusicArtist(file.AlbumArtist) == normalizedArtist {
-		return true
-	}
+	artistValues := []string{file.Artist, file.AlbumArtist}
 	for _, artist := range file.Participants.AllNames() {
-		if normalizeLikedMusicArtist(artist) == normalizedArtist {
+		artistValues = append(artistValues, artist)
+	}
+	// Beets' canonical artist directory is often more faithful to the
+	// supplied artist than the provider's embedded uploader tag.
+	if separator := strings.IndexAny(file.Path, `/\\`); separator > 0 {
+		artistValues = append(artistValues, file.Path[:separator])
+	}
+	for _, value := range artistValues {
+		if likedMusicArtistValueMatches(value, normalizedArtist) {
 			return true
 		}
 	}
 	return false
+}
+
+func likedMusicArtistValueMatches(value, normalizedTarget string) bool {
+	normalizedValue := normalizeLikedMusicArtist(value)
+	if normalizedValue == normalizedTarget {
+		return true
+	}
+	for _, part := range strings.FieldsFunc(normalizedValue, func(r rune) bool {
+		return unicode.IsSpace(r)
+	}) {
+		if part == normalizedTarget {
+			return true
+		}
+	}
+	return false
+}
+
+func likedMusicTitleMatches(file model.MediaFile, normalizedTarget string) bool {
+	if likedMusicTitleValuesMatch(file.Title, normalizedTarget) {
+		return true
+	}
+	filename := pathpkg.Base(file.Path)
+	if extension := pathpkg.Ext(filename); extension != "" {
+		filename = strings.TrimSuffix(filename, extension)
+	}
+	return likedMusicTitleValuesMatch(filename, normalizedTarget)
+}
+
+func likedMusicTitleValuesMatch(value, normalizedTarget string) bool {
+	normalizedValue := normalizeLikedMusicTitle(value)
+	if normalizedValue == normalizedTarget {
+		return true
+	}
+	if normalizedValue == "" || normalizedTarget == "" {
+		return false
+	}
+	if likedMusicContainsTitle(normalizedValue, normalizedTarget) || likedMusicContainsTitle(normalizedTarget, normalizedValue) {
+		return true
+	}
+	return likedMusicTitleTokenCountsEqual(normalizedValue, normalizedTarget)
+}
+
+func likedMusicContainsTitle(longer, shorter string) bool {
+	longerTokens := strings.Fields(longer)
+	shorterTokens := strings.Fields(shorter)
+	if len(shorterTokens) < 2 || len(shorterTokens) > len(longerTokens) {
+		return false
+	}
+	for start := 0; start+len(shorterTokens) <= len(longerTokens); start++ {
+		matched := true
+		for offset, token := range shorterTokens {
+			if longerTokens[start+offset] != token {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func likedMusicTitleTokenCounts(value string) map[string]int {
+	counts := make(map[string]int)
+	for _, token := range strings.Fields(value) {
+		counts[token]++
+	}
+	return counts
+}
+
+func likedMusicTitleTokenCountsEqual(left, right string) bool {
+	leftCounts := likedMusicTitleTokenCounts(left)
+	rightCounts := likedMusicTitleTokenCounts(right)
+	if len(leftCounts) != len(rightCounts) {
+		return false
+	}
+	for token, count := range leftCounts {
+		if rightCounts[token] != count {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeLikedMusicTitle(value string) string {
@@ -311,22 +404,6 @@ func normalizeLikedMusicText(value string) string {
 		}
 	}
 	return strings.Join(strings.Fields(normalized.String()), " ")
-}
-
-func mediaFilesAddedSince(before, after model.MediaFiles) model.MediaFiles {
-	known := make(map[string]struct{}, len(before))
-	for _, file := range before {
-		known[file.ID] = struct{}{}
-	}
-	added := make(model.MediaFiles, 0)
-	for _, file := range after {
-		if !file.Missing {
-			if _, exists := known[file.ID]; !exists {
-				added = append(added, file)
-			}
-		}
-	}
-	return added
 }
 
 func scanLikedMusicLibrary(ctx context.Context, ds model.DataStore) error {

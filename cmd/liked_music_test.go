@@ -43,6 +43,30 @@ func TestFindLikedMusicMatchesNormalizesMetadata(t *testing.T) {
 	}
 }
 
+func TestFindLikedMusicMatchesCanonicalPathAndProviderMetadata(t *testing.T) {
+	row := likedMusicImportRow{
+		Title:  "waka flocka flame - no hands [ slowed + reverb ] (lyrics) (feat. Roscoe Dash & Wale)",
+		Artist: "Waka Flocka Flame",
+	}
+	files := model.MediaFiles{{
+		ID:     "song-1",
+		Title:  "waka flocka flame - no hands (feat. roscoe dash & wale) [ slowed + reverb ] (lyrics)",
+		Artist: "slowed songs",
+		Path:   "Waka Flocka Flame/Singles/waka flocka flame - no hands [ slowed + reverb ] (lyrics) (feat. Roscoe Dash & Wale).mp3",
+	}}
+	if matches := findLikedMusicMatches(files, row); len(matches) != 1 || matches[0].ID != "song-1" {
+		t.Fatalf("expected one canonical metadata match, got %+v", matches)
+	}
+}
+
+func TestFindLikedMusicMatchesAllowsRemasterTitleSuffix(t *testing.T) {
+	row := likedMusicImportRow{Title: "Bubble Pop Electric", Artist: "Gwen Stefani"}
+	files := model.MediaFiles{{ID: "song-1", Title: "Bubble Pop Electric (Remastered 2019)", Artist: "Gwen Stefani, Johnny Vulture"}}
+	if matches := findLikedMusicMatches(files, row); len(matches) != 1 || matches[0].ID != "song-1" {
+		t.Fatalf("expected one remaster match, got %+v", matches)
+	}
+}
+
 func TestFindLikedMusicMatchesRejectsAmbiguousMetadata(t *testing.T) {
 	row := likedMusicImportRow{Title: "Song", Artist: "Artist"}
 	files := model.MediaFiles{
