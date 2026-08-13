@@ -108,7 +108,7 @@ var _ = Describe("Acquisition → serve loop", func() {
 		Eventually(func() bool { return imgCache.Available(ctx) }).Should(BeTrue())
 
 		svc = artwork.NewArtwork(ds, imgCache, store, ffm)
-		worker = artwork.NewWorker(ds, store, agents.GetAgents(ds, nil), ffm, events.NoopBroker(), imgCache)
+		worker = artwork.NewWorker(ds, store, agents.GetAgents(ds, nil), ffm, events.NoopBroker(), imgCache, nil)
 	})
 
 	seedFolderAlbum := func(albumID string) {

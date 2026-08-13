@@ -100,4 +100,29 @@ describe('<MusicSearch />', () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
   })
+
+  it('renders the cover URL returned for a song result', async () => {
+    mocks.search.mockResolvedValue(
+      searchResults({
+        songs: [
+          {
+            id: 'covered-song',
+            title: 'Covered Song',
+            artistName: 'Artist',
+            imageUrl: 'https://coverartarchive.org/covered-song.jpg',
+          },
+        ],
+      }),
+    )
+
+    const { container } = render(<MusicSearch />)
+    submitSearch('Covered Song')
+
+    await screen.findByText('Artist')
+    expect(
+      container.querySelector(
+        'img[src="https://coverartarchive.org/covered-song.jpg"]',
+      ),
+    ).toBeInTheDocument()
+  })
 })

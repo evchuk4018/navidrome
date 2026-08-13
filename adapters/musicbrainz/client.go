@@ -119,7 +119,7 @@ func (c *Client) Search(ctx context.Context, query string) (model.ExternalMusicS
 		collectTags(tags, group.Tags, query)
 	}
 	for _, recording := range recordings.Recordings {
-		result.Songs = append(result.Songs, externalRecording(recording))
+		result.Songs = append(result.Songs, externalTrack(recording))
 		collectTags(tags, recording.Tags, query)
 	}
 	for _, genre := range genres.Tags {
@@ -220,15 +220,7 @@ func (c *Client) Recording(ctx context.Context, recordingID string) (model.Exter
 	if err := c.get(ctx, "/recording/"+recordingID, values("inc", "releases artist-credits tags"), &recording); err != nil {
 		return model.ExternalTrack{}, fmt.Errorf("get recording: %w", err)
 	}
-	track := externalRecording(recording)
-	if len(recording.Releases) > 0 {
-		release := recording.Releases[0]
-		track.AlbumID = release.ReleaseGroup.ID
-		track.AlbumTitle = release.ReleaseGroup.Title
-		track.ReleaseDate = firstNonEmpty(release.ReleaseGroup.FirstReleaseDate, release.Date)
-		track.Year = yearFromDate(track.ReleaseDate)
-	}
-	return track, nil
+	return externalTrack(recording), nil
 }
 
 func (c *Client) get(ctx context.Context, path string, params url.Values, target ...any) error {
@@ -423,8 +415,16 @@ func externalRecording(recording mbRecording) model.ExternalTrack {
 
 func externalTrack(recording mbRecording) model.ExternalTrack {
 	track := externalRecording(recording)
-	if len(recording.Releases) > 0 {
-		track.ImageURL = coverArtURL(recording.Releases[0].ReleaseGroup.ID)
+	for _, release := range recording.Releases {
+		if release.ReleaseGroup.ID == "" {
+			continue
+		}
+		track.AlbumID = release.ReleaseGroup.ID
+		track.AlbumTitle = firstNonEmpty(release.ReleaseGroup.Title, release.Title)
+		track.ReleaseDate = firstNonEmpty(release.ReleaseGroup.FirstReleaseDate, release.Date)
+		track.Year = yearFromDate(track.ReleaseDate)
+		track.ImageURL = coverArtURL(release.ReleaseGroup.ID)
+		break
 	}
 	return track
 }

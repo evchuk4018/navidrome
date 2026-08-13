@@ -133,7 +133,7 @@ var _ = Describe("Artwork Serving", Ordered, func() {
 		imgCache := newDummyImageCache(ctx)
 		ffm := harness.NoopFFmpeg{}
 		artSvc = artwork.NewArtwork(ds, imgCache, store, ffm)
-		worker = artwork.NewWorker(ds, store, agents.GetAgents(ds, nil), ffm, events.NoopBroker(), imgCache)
+		worker = artwork.NewWorker(ds, store, agents.GetAgents(ds, nil), ffm, events.NoopBroker(), imgCache, nil)
 
 		artRouter = buildArtworkRouter(artSvc)
 		router = artRouter // so the shared doReq/doRawReq helpers hit the artwork-wired router

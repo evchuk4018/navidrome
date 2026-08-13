@@ -2,6 +2,7 @@ package ytdlp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,13 +45,75 @@ func TestDownloadBuildsSafeAudioCommand(t *testing.T) {
 	if filepath.Ext(path) != ".mp3" {
 		t.Fatalf("expected mp3 output, got %q", path)
 	}
-	for _, expected := range []string{"--ignore-config", "--no-playlist", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "320K"} {
+	for _, expected := range []string{"--ignore-config", "--no-playlist", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "320K", "%(webpage_url)s:%(meta_comment)s"} {
 		if !slices.Contains(runner.args, expected) {
 			t.Fatalf("expected %q in command args %v", expected, runner.args)
 		}
 	}
 	if !slices.Contains(runner.args, "ytsearch1:Artist - Song Album") {
 		t.Fatalf("expected source search query in command args %v", runner.args)
+	}
+}
+
+type outputRunner struct {
+	output []byte
+	err    error
+	args   []string
+}
+
+func (r *outputRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	r.args = args
+	return r.output, r.err
+}
+
+func TestSourceURLExtractsTrustedYouTubeHosts(t *testing.T) {
+	client := NewWithRunner("yt-dlp", &outputRunner{})
+	for _, metadata := range []string{
+		"https://www.youtube.com/watch?v=abc123",
+		"source: <https://youtu.be/abc123>, imported",
+		"https://music.youtube.com/watch?v=abc123",
+	} {
+		if got, ok := client.SourceURL(metadata); !ok || got == "" {
+			t.Fatalf("expected source URL from %q, got %q, %v", metadata, got, ok)
+		}
+	}
+	if _, ok := client.SourceURL("https://example.com/watch?v=abc123"); ok {
+		t.Fatal("expected non-YouTube URL to be rejected")
+	}
+}
+
+func TestThumbnailUsesMetadataOnlyCommandAndTrustedImageHost(t *testing.T) {
+	runner := &outputRunner{output: []byte("https://i.ytimg.com/vi/abc123/maxresdefault.jpg\n")}
+	client := NewWithRunner("yt-dlp", runner)
+	imageURL, err := client.Thumbnail(context.Background(), "https://www.youtube.com/watch?v=abc123")
+	if err != nil {
+		t.Fatalf("Thumbnail returned error: %v", err)
+	}
+	if imageURL.String() != "https://i.ytimg.com/vi/abc123/maxresdefault.jpg" {
+		t.Fatalf("unexpected thumbnail URL %q", imageURL)
+	}
+	for _, expected := range []string{"--skip-download", "after_filter:%(thumbnail)s"} {
+		if !slices.Contains(runner.args, expected) {
+			t.Fatalf("expected %q in command args %v", expected, runner.args)
+		}
+	}
+}
+
+func TestThumbnailRejectsUntrustedImageHost(t *testing.T) {
+	client := NewWithRunner("yt-dlp", &outputRunner{output: []byte("https://example.com/cover.jpg\n")})
+	if _, err := client.Thumbnail(context.Background(), "https://youtu.be/abc123"); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("expected not found for untrusted thumbnail, got %v", err)
+	}
+}
+
+func TestSearchThumbnailUsesSingleYouTubeResult(t *testing.T) {
+	runner := &outputRunner{output: []byte("https://i.ytimg.com/vi/abc123/hqdefault.jpg\n")}
+	client := NewWithRunner("yt-dlp", runner)
+	if _, err := client.SearchThumbnail(context.Background(), "Artist - Song"); err != nil {
+		t.Fatalf("SearchThumbnail returned error: %v", err)
+	}
+	if !slices.Contains(runner.args, "ytsearch1:Artist - Song") {
+		t.Fatalf("expected one-result search in args %v", runner.args)
 	}
 }
 
@@ -75,7 +138,7 @@ func TestDownloadURLRejectsNonHTTPSource(t *testing.T) {
 }
 
 type fallbackRunner struct {
-	args  [][]string
+	args   [][]string
 	called int
 }
 

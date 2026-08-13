@@ -44,7 +44,7 @@ const fakeLibScheme = "artworkfake"
 const fakeLibPath = fakeLibScheme + ":///music"
 
 const (
-	defaultCoverPriority = "cover.*, folder.*, front.*, embedded, external"
+	defaultCoverPriority = "cover.*, folder.*, front.*, embedded, external, youtube"
 	defaultDiscPriority  = "disc*.*, cd*.*, cover.*, folder.*, front.*, discsubtitle, embedded"
 )
 
@@ -120,7 +120,7 @@ func setupResolutionHarness() {
 	Eventually(func() bool { return imgCache.Available(rctx) }).Should(BeTrue())
 
 	rsvc = artwork.NewArtwork(rds, imgCache, rstore, ffm)
-	rworker = artwork.NewWorker(rds, rstore, agents.GetAgents(rds, nil), ffm, events.NoopBroker(), imgCache)
+	rworker = artwork.NewWorker(rds, rstore, agents.GetAgents(rds, nil), ffm, events.NoopBroker(), imgCache, nil)
 }
 
 // setLayout paths must be relative and forward-slash.

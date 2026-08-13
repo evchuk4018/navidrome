@@ -39,7 +39,7 @@ type chainState struct{ extErr, localErr bool }
 // try stamps the accumulated external failure onto a hit, and records the miss otherwise.
 func (c *chainState) try(res resolution, ok bool) (resolution, bool) {
 	if ok {
-		res.extError = c.extErr
+		res.extError = res.extError || c.extErr
 		return res, true
 	}
 	c.localErr = c.localErr || res.localError
@@ -53,8 +53,9 @@ func (c *chainState) exhausted() resolution {
 
 // externalSource holds the agents to ask and the rate limiter/circuit breaker to ask them through.
 type externalSource struct {
-	agents *agents.Agents
-	gate   gateFunc
+	agents  *agents.Agents
+	youtube YouTubeThumbnailProvider
+	gate    gateFunc
 }
 
 // resolver walks a kind's priority chain and returns the first hit; a nil ext means local-only.
@@ -64,11 +65,15 @@ type resolver struct {
 	ext    *externalSource
 }
 
-func newResolver(ds model.DataStore, ag *agents.Agents, ffm ffmpeg.FFmpeg, gate gateFunc) *resolver {
+func newResolver(ds model.DataStore, ag *agents.Agents, ffm ffmpeg.FFmpeg, gate gateFunc, youtube ...YouTubeThumbnailProvider) *resolver {
 	if gate == nil {
 		gate = passthroughGate
 	}
-	return &resolver{ds: ds, ffmpeg: ffm, ext: &externalSource{agents: ag, gate: gate}}
+	var youtubeProvider YouTubeThumbnailProvider
+	if len(youtube) > 0 {
+		youtubeProvider = youtube[0]
+	}
+	return &resolver{ds: ds, ffmpeg: ffm, ext: &externalSource{agents: ag, youtube: youtubeProvider, gate: gate}}
 }
 
 // newLocalResolver builds a resolver that can neither reach the network nor sample album art
@@ -81,7 +86,7 @@ func (r *resolver) resolve(ctx context.Context, item model.ArtworkQueueItem) (re
 	kind, _ := model.ParseKind(item.ItemKind)
 	switch kind {
 	case model.KindAlbumArtwork:
-		return r.resolveAlbum(ctx, item.ItemID)
+		return r.resolveAlbum(ctx, item)
 	case model.KindArtistArtwork:
 		return r.resolveArtist(ctx, item.ItemID)
 	case model.KindPlaylistArtwork:
@@ -112,8 +117,8 @@ func (r *resolver) fetchExternalArtist(ctx context.Context, ar model.Artist) (io
 }
 
 // resolveAlbum walks conf.Server.CoverArtPriority over the folder, embedded and external sources.
-func (r *resolver) resolveAlbum(ctx context.Context, albumID string) (resolution, error) {
-	al, err := r.ds.Album(ctx).Get(albumID)
+func (r *resolver) resolveAlbum(ctx context.Context, item model.ArtworkQueueItem) (resolution, error) {
+	al, err := r.ds.Album(ctx).Get(item.ItemID)
 	if err != nil {
 		return resolution{}, err
 	}
@@ -140,6 +145,15 @@ func (r *resolver) resolveAlbum(ctx context.Context, albumID string) (resolution
 			} else if isErr {
 				chain.extErr = true
 			}
+		case pattern == "youtube":
+			res, ok, err := r.resolveYouTubeAlbum(ctx, *al, item.Priority == model.ArtworkPriorityBackfill)
+			if err != nil {
+				return resolution{}, err
+			}
+			if hit, found := chain.try(res, ok); found {
+				return hit, nil
+			}
+			chain.extErr = chain.extErr || res.extError
 		case len(imgFiles) > 0:
 			if res, ok := chain.try(resolveFolderFile(ctx, lib, imgFiles, pattern)); ok {
 				return res, nil
@@ -277,7 +291,9 @@ func (r *resolver) resolvePlaylist(ctx context.Context, playlistID string) (reso
 	var tiles []image.Image
 	var tileErr error // first internal (non-external) tile failure, e.g. album deleted mid-flight
 	for _, albumID := range albumIDs {
-		res, err := r.resolveAlbum(ctx, albumID)
+		// Playlist grid generation may resolve its albums, but it is not itself a legacy album
+		// backfill and must never trigger the one-time YouTube metadata search.
+		res, err := r.resolveAlbum(ctx, model.ArtworkQueueItem{ItemID: albumID})
 		if err != nil {
 			if tileErr == nil {
 				tileErr = err

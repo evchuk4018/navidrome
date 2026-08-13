@@ -75,6 +75,7 @@ var allProviders = wire.NewSet(
 	wire.Bind(new(playlists.ImageUploadService), new(artwork.Uploader)),
 	wire.Bind(new(musicservice.Catalog), new(*musicbrainz.Client)),
 	wire.Bind(new(musicservice.Downloader), new(*ytdlp.Client)),
+	wire.Bind(new(artwork.YouTubeThumbnailProvider), new(*ytdlp.Client)),
 	wire.Bind(new(musicservice.Tagger), new(*beets.Client)),
 )
 

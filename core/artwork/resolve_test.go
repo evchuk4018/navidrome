@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -20,6 +21,35 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+type fakeYouTubeThumbnailProvider struct {
+	sourceURL      string
+	thumbnailURL   *url.URL
+	searchURL      *url.URL
+	thumbnailErr   error
+	searchErr      error
+	thumbnailCalls int
+	searchCalls    int
+	searchQuery    string
+}
+
+func (f *fakeYouTubeThumbnailProvider) SourceURL(metadata string) (string, bool) {
+	if f.sourceURL == "" || metadata == "" {
+		return "", false
+	}
+	return f.sourceURL, true
+}
+
+func (f *fakeYouTubeThumbnailProvider) Thumbnail(context.Context, string) (*url.URL, error) {
+	f.thumbnailCalls++
+	return f.thumbnailURL, f.thumbnailErr
+}
+
+func (f *fakeYouTubeThumbnailProvider) SearchThumbnail(_ context.Context, query string) (*url.URL, error) {
+	f.searchCalls++
+	f.searchQuery = query
+	return f.searchURL, f.searchErr
+}
 
 var _ = Describe("resolveItem", func() {
 	var (
@@ -227,6 +257,89 @@ var _ = Describe("resolveItem", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(res.extError).To(BeTrue())
 			Expect(gatedNames).To(Equal([]string{"failAgent"}))
+		})
+
+		It("uses a retained YouTube source URL without searching", func() {
+			conf.Server.CoverArtPriority = "youtube"
+			ds.MockedAlbum.(*tests.MockAlbumRepo).SetData(model.Albums{{ID: "yt1", Name: "Album"}})
+			ds.MockedMediaFile = tests.CreateMockMediaFileRepo()
+			ds.MockedMediaFile.(*tests.MockMediaFileRepo).SetData(model.MediaFiles{{
+				ID: "mf-yt1", AlbumID: "yt1", Artist: "Artist", Title: "Song", Comment: "source metadata",
+			}})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("youtube image"))
+			}))
+			DeferCleanup(server.Close)
+			imageURL, err := url.Parse(server.URL)
+			Expect(err).ToNot(HaveOccurred())
+			youtube := &fakeYouTubeThumbnailProvider{
+				sourceURL: "https://youtu.be/source", thumbnailURL: imageURL,
+			}
+
+			res, err := newResolver(ds, ag, ffm, nil, youtube).resolve(ctx, model.ArtworkQueueItem{
+				ItemKind: "al", ItemID: "yt1", Priority: model.ArtworkPriorityScan,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.reader).ToNot(BeNil())
+			defer res.reader.Close()
+			Expect(res.source).To(Equal("external:youtube"))
+			Expect(youtube.thumbnailCalls).To(Equal(1))
+			Expect(youtube.searchCalls).To(BeZero())
+		})
+
+		It("searches YouTube only for backfill work when the source URL is missing", func() {
+			conf.Server.CoverArtPriority = "youtube"
+			ds.MockedAlbum.(*tests.MockAlbumRepo).SetData(model.Albums{{ID: "yt2", Name: "Album"}})
+			ds.MockedMediaFile = tests.CreateMockMediaFileRepo()
+			ds.MockedMediaFile.(*tests.MockMediaFileRepo).SetData(model.MediaFiles{{
+				ID: "mf-yt2", AlbumID: "yt2", Artist: "Artist", Title: "Legacy Song",
+			}})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("searched image"))
+			}))
+			DeferCleanup(server.Close)
+			imageURL, err := url.Parse(server.URL)
+			Expect(err).ToNot(HaveOccurred())
+			youtube := &fakeYouTubeThumbnailProvider{searchURL: imageURL}
+			resolver := newResolver(ds, ag, ffm, nil, youtube)
+
+			res, err := resolver.resolve(ctx, model.ArtworkQueueItem{
+				ItemKind: "al", ItemID: "yt2", Priority: model.ArtworkPriorityScan,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.reader).To(BeNil())
+			Expect(youtube.searchCalls).To(BeZero())
+
+			res, err = resolver.resolve(ctx, model.ArtworkQueueItem{
+				ItemKind: "al", ItemID: "yt2", Priority: model.ArtworkPriorityBackfill,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.reader).ToNot(BeNil())
+			defer res.reader.Close()
+			Expect(res.source).To(Equal("external:youtube-search"))
+			Expect(youtube.searchCalls).To(Equal(1))
+			Expect(youtube.searchQuery).To(Equal("Artist - Legacy Song"))
+		})
+
+		It("does not search when a retained YouTube source no longer has a thumbnail", func() {
+			conf.Server.CoverArtPriority = "youtube"
+			ds.MockedAlbum.(*tests.MockAlbumRepo).SetData(model.Albums{{ID: "yt3", Name: "Album"}})
+			ds.MockedMediaFile = tests.CreateMockMediaFileRepo()
+			ds.MockedMediaFile.(*tests.MockMediaFileRepo).SetData(model.MediaFiles{{
+				ID: "mf-yt3", AlbumID: "yt3", Artist: "Artist", Title: "Unavailable Song", Comment: "source metadata",
+			}})
+			youtube := &fakeYouTubeThumbnailProvider{
+				sourceURL: "https://youtu.be/unavailable", thumbnailErr: model.ErrNotFound,
+				searchURL: &url.URL{Scheme: "https", Host: "i.ytimg.com", Path: "/fallback.jpg"},
+			}
+
+			res, err := newResolver(ds, ag, ffm, nil, youtube).resolve(ctx, model.ArtworkQueueItem{
+				ItemKind: "al", ItemID: "yt3", Priority: model.ArtworkPriorityBackfill,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(res.reader).To(BeNil())
+			Expect(youtube.thumbnailCalls).To(Equal(1))
+			Expect(youtube.searchCalls).To(BeZero())
 		})
 	})
 

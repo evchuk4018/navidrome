@@ -153,7 +153,7 @@ var _ = Describe("Worker", func() {
 			})}
 		// Init walks the cache dir on a goroutine; loaded CI runners can take >1s.
 		Eventually(func() bool { return imgCache.Available(ctx) }, 10*time.Second).Should(BeTrue())
-		w = NewWorker(ds, store, ag, ffm, broker, imgCache)
+		w = NewWorker(ds, store, ag, ffm, broker, imgCache, nil)
 	})
 
 	Describe("drain", func() {
@@ -274,7 +274,7 @@ var _ = Describe("Worker", func() {
 			})
 			racing := &reenqueueOnDequeue{MockArtworkQueueRepo: queueRepo}
 			ds.MockedArtworkQueue = racing
-			w = NewWorker(ds, store, ag, ffm, broker, imgCache)
+			w = NewWorker(ds, store, ag, ffm, broker, imgCache, nil)
 			Expect(queueRepo.Enqueue(model.ArtworkQueueItem{
 				ItemKind: "al", ItemID: "al7", Priority: model.ArtworkPriorityScan,
 			})).To(Succeed())
@@ -296,7 +296,7 @@ var _ = Describe("Worker", func() {
 			imageAgents(&fakeImageAgent{name: "failAgent", err: errors.New("agent timed out")})
 			racing := &reenqueueOnDequeue{MockArtworkQueueRepo: queueRepo}
 			ds.MockedArtworkQueue = racing
-			w = NewWorker(ds, store, ag, ffm, broker, imgCache)
+			w = NewWorker(ds, store, ag, ffm, broker, imgCache, nil)
 			Expect(queueRepo.Enqueue(model.ArtworkQueueItem{ItemKind: "al", ItemID: "al8"})).To(Succeed())
 			dequeued := findQueued(queueRepo, "al", "al8").RetryAt
 
@@ -315,7 +315,7 @@ var _ = Describe("Worker", func() {
 			conf.Server.CoverArtPriority = "external"
 			ds.MockedAlbum.(*tests.MockAlbumRepo).SetData(model.Albums{{ID: "al9", Name: "Album"}})
 			imageAgents(&fakeImageAgent{name: "failAgent", err: errors.New("agent timed out")})
-			w = NewWorker(ds, store, ag, ffm, broker, imgCache)
+			w = NewWorker(ds, store, ag, ffm, broker, imgCache, nil)
 			Expect(queueRepo.Enqueue(model.ArtworkQueueItem{ItemKind: "al", ItemID: "al9"})).To(Succeed())
 			// Age the row past the retry budget.
 			for k, v := range queueRepo.Data {
@@ -343,7 +343,7 @@ var _ = Describe("Worker", func() {
 				Hash: "cafebabe", Source: "external:lastfm",
 			})).To(Succeed())
 			imageAgents(&fakeImageAgent{name: "failAgent", err: errors.New("agent timed out")})
-			w = NewWorker(ds, store, ag, ffm, broker, imgCache)
+			w = NewWorker(ds, store, ag, ffm, broker, imgCache, nil)
 			Expect(queueRepo.Enqueue(model.ArtworkQueueItem{ItemKind: "al", ItemID: "al10"})).To(Succeed())
 			for k, v := range queueRepo.Data {
 				if v.ItemID == "al10" {
@@ -395,7 +395,7 @@ var _ = Describe("Worker", func() {
 				private:       model.Playlist{ID: "plPriv", OwnerID: "admin"},
 				tracks:        &tests.MockPlaylistTrackRepo{},
 			}
-			w = NewWorker(vds, store, ag, ffm, broker, imgCache)
+			w = NewWorker(vds, store, ag, ffm, broker, imgCache, nil)
 			Expect(queueRepo.Enqueue(model.ArtworkQueueItem{ItemKind: "pl", ItemID: "plPriv"})).To(Succeed())
 
 			n, err := w.drain(ctx, 1)
@@ -766,7 +766,7 @@ var _ = Describe("Worker", func() {
 			DeferCleanup(func() { goleak.VerifyNone(GinkgoT(), ignore) })
 
 			localDS := &tests.MockDataStore{MockedArtworkQueue: tests.CreateMockArtworkQueueRepo()}
-			lw := NewWorker(localDS, NewImageStore(GinkgoT().TempDir()), agents.GetAgents(localDS, nil), tests.NewMockFFmpeg(""), &fakeEventBroker{}, imgCache)
+			lw := NewWorker(localDS, NewImageStore(GinkgoT().TempDir()), agents.GetAgents(localDS, nil), tests.NewMockFFmpeg(""), &fakeEventBroker{}, imgCache, nil)
 
 			runCtx, cancel := context.WithCancel(ctx)
 			done := make(chan error, 1)

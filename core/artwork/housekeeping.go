@@ -30,7 +30,7 @@ func hasRecheckPath(prefix string) bool {
 }
 
 // artworkEpoch invalidates all resolution state when bumped; bump it whenever resolution semantics change.
-const artworkEpoch = 1
+const artworkEpoch = 2
 
 // fingerprint covers the inputs that affect resolution outcomes; a change invalidates stored state.
 func fingerprint() string {

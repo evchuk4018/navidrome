@@ -37,7 +37,7 @@ func newSearchFixtureServer(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`{
                 "recordings": [
                     {"id":"obscure","title":"The One That Got Away","score":100,"artist-credit":[{"name":"Obscure Artist"}]},
-                    {"id":"katy","title":"The One That Got Away","score":100,"artist-credit":[{"name":"Katy Perry"}]},
+					{"id":"katy","title":"The One That Got Away","score":100,"artist-credit":[{"name":"Katy Perry"}],"releases":[{"title":"Teenage Dream","date":"2010-08-24","release-group":{"id":"album-id","title":"Teenage Dream","first-release-date":"2010-08-24"}}]},
                     {"id":"unrelated","title":"Teenage Dream","score":100,"artist-credit":[{"name":"Katy Perry"}]}
                 ]
             }`))
@@ -72,6 +72,9 @@ func TestSearchRanksRecordingsByListenBrainzPopularity(t *testing.T) {
 	}
 	if got := popularity.requested; len(got) != 3 || got[0] != "obscure" || got[1] != "katy" || got[2] != "unrelated" {
 		t.Fatalf("unexpected popularity request IDs: %v", got)
+	}
+	if got := result.Songs[0]; got.AlbumID != "album-id" || got.AlbumTitle != "Teenage Dream" || got.Year != 2010 || got.ImageURL != "https://coverartarchive.org/release-group/album-id/front-250" {
+		t.Fatalf("expected release artwork metadata on song result, got %+v", got)
 	}
 }
 

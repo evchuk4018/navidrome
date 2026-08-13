@@ -978,7 +978,7 @@ func setViperDefaults() {
 	viper.SetDefault("ffmpegpath", "")
 	viper.SetDefault("mpvpath", "")
 	viper.SetDefault("mpvcmdtemplate", "mpv --audio-device=%d --no-audio-display %f --input-ipc-server=%s")
-	viper.SetDefault("coverartpriority", "cover.*, folder.*, front.*, embedded, external")
+	viper.SetDefault("coverartpriority", "cover.*, folder.*, front.*, embedded, external, youtube")
 	viper.SetDefault("coverartquality", 75)
 	viper.SetDefault("enablewebpencoding", false)
 	viper.SetDefault("artistartpriority", "artist.*, album/artist.*, external")

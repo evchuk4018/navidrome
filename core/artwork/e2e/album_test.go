@@ -221,7 +221,7 @@ var _ = Describe("Album artwork resolution", func() {
 
 	// Doc scenarios from:
 	// https://www.navidrome.org/docs/usage/library/artwork/#albums
-	// Default CoverArtPriority is "cover.*, folder.*, front.*, embedded, external".
+	// Default CoverArtPriority is "cover.*, folder.*, front.*, embedded, external, youtube".
 	When("only folder.jpg is present (cover.* and front.* missing)", func() {
 		// Artist/
 		// └── Album/

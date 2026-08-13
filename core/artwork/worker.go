@@ -51,7 +51,7 @@ type Worker struct {
 	gates   map[string]*extGate
 }
 
-func NewWorker(ds model.DataStore, store *ImageStore, ag *agents.Agents, ffmpeg ffmpeg.FFmpeg, broker events.Broker, imgCache cache.FileCache) *Worker {
+func NewWorker(ds model.DataStore, store *ImageStore, ag *agents.Agents, ffmpeg ffmpeg.FFmpeg, broker events.Broker, imgCache cache.FileCache, youtube YouTubeThumbnailProvider) *Worker {
 	w := &Worker{
 		proc:   &processor{ds: ds, store: store},
 		cache:  imgCache,
@@ -61,7 +61,7 @@ func NewWorker(ds model.DataStore, store *ImageStore, ag *agents.Agents, ffmpeg 
 		runCtx: context.Background(),
 		gates:  map[string]*extGate{},
 	}
-	w.proc.resolver = newResolver(ds, ag, ffmpeg, w.gate)
+	w.proc.resolver = newResolver(ds, ag, ffmpeg, w.gate, youtube)
 	w.proc.pruneLock = w.pruneMu.RLocker()
 	return w
 }
