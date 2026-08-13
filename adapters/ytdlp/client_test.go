@@ -2,6 +2,7 @@ package ytdlp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -70,5 +71,43 @@ func TestDownloadURLRejectsNonHTTPSource(t *testing.T) {
 	client := NewWithRunner("yt-dlp", &recordingRunner{})
 	if _, err := client.DownloadURL(context.Background(), "ytsearch1:Artist - Song", t.TempDir()); err == nil {
 		t.Fatal("expected invalid source URL error")
+	}
+}
+
+type fallbackRunner struct {
+	args  [][]string
+	called int
+}
+
+func (r *fallbackRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
+	r.called++
+	r.args = append(r.args, args)
+	if r.called == 1 {
+		return []byte("403 Forbidden"), fmt.Errorf("download failed")
+	}
+	outputDir := ""
+	for index, arg := range args {
+		if arg == "--output" && index+1 < len(args) {
+			outputDir = filepath.Dir(args[index+1])
+		}
+	}
+	path := filepath.Join(outputDir, "fallback.mp3")
+	if err := os.WriteFile(path, []byte("audio"), 0600); err != nil {
+		return nil, err
+	}
+	return []byte(path + "\n"), nil
+}
+
+func TestDownloadURLRetriesWithAndroidClient(t *testing.T) {
+	runner := &fallbackRunner{}
+	client := NewWithRunner("yt-dlp", runner)
+	if _, err := client.DownloadURL(context.Background(), "https://www.youtube.com/watch?v=abc123", t.TempDir()); err != nil {
+		t.Fatalf("DownloadURL returned error: %v", err)
+	}
+	if runner.called != 2 {
+		t.Fatalf("expected default and fallback attempts, got %d", runner.called)
+	}
+	if !slices.Contains(runner.args[1], "youtube:player_client=android") {
+		t.Fatalf("expected Android fallback args, got %v", runner.args[1])
 	}
 }

@@ -59,10 +59,22 @@ func (c *Client) DownloadURL(ctx context.Context, sourceURL, directory string) (
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return "", fmt.Errorf("invalid download URL %q", sourceURL)
 	}
-	return c.download(ctx, sourceURL, directory)
+	path, err := c.download(ctx, sourceURL, directory)
+	if err == nil {
+		return path, nil
+	}
+
+	// YouTube increasingly serves some videos only through a client-specific API.
+	// Retry with the Android client when the default web extraction cannot obtain media.
+	fallbackPath, fallbackErr := c.download(ctx, sourceURL, directory,
+		"--extractor-args", "youtube:player_client=android")
+	if fallbackErr == nil {
+		return fallbackPath, nil
+	}
+	return "", fmt.Errorf("default download: %w; android fallback: %v", err, fallbackErr)
 }
 
-func (c *Client) download(ctx context.Context, source string, directory string) (string, error) {
+func (c *Client) download(ctx context.Context, source string, directory string, extraArgs ...string) (string, error) {
 	if strings.TrimSpace(source) == "" {
 		return "", fmt.Errorf("download source is required")
 	}
@@ -90,8 +102,9 @@ func (c *Client) download(ctx context.Context, source string, directory string) 
 		"--embed-metadata",
 		"--output", filepath.Join(directory, "%(id)s.%(ext)s"),
 		"--print", "after_move:filepath",
-		source,
 	}
+	args = append(args, extraArgs...)
+	args = append(args, source)
 	output, err := c.runner.Run(ctx, c.executable, args...)
 	if err != nil {
 		return "", fmt.Errorf("yt-dlp failed: %s", commandOutput(output, err))
