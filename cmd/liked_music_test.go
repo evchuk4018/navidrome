@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/navidrome/navidrome/model"
@@ -27,6 +29,29 @@ func TestReadLikedMusicRowsDeduplicatesURLs(t *testing.T) {
 	}
 	if len(rows) != 2 || rows[0].URL == rows[1].URL {
 		t.Fatalf("unexpected deduplicated rows: %+v", rows)
+	}
+}
+
+func TestReadLikedMusicRowsCountsImportShape(t *testing.T) {
+	delimiter := " " + string(rune(0x2014)) + " "
+	var content strings.Builder
+	for i := 0; i < 97; i++ {
+		fmt.Fprintf(&content, "Song %d%sArtist %d%shttps://www.youtube.com/watch?v=%d\n", i, delimiter, i, delimiter, i)
+	}
+	for _, duplicate := range []int{0, 24, 96} {
+		fmt.Fprintf(&content, "Duplicate %d%sArtist %d%shttps://www.youtube.com/watch?v=%d\n", duplicate, delimiter, duplicate, delimiter, duplicate)
+	}
+	path := filepath.Join(t.TempDir(), "liked.txt")
+	if err := os.WriteFile(path, []byte(content.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, result, err := readLikedMusicRows(path)
+	if err != nil {
+		t.Fatalf("readLikedMusicRows returned error: %v", err)
+	}
+	if result.Rows != 100 || result.UniqueURLs != 97 || result.DuplicateURLs != 3 || len(rows) != 97 {
+		t.Fatalf("unexpected import shape counts: rows=%d unique=%d duplicates=%d parsed=%d", result.Rows, result.UniqueURLs, result.DuplicateURLs, len(rows))
 	}
 }
 
