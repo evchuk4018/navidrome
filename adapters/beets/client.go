@@ -77,7 +77,10 @@ func (c *Client) Import(ctx context.Context, files []string, metadata model.Exte
 		return err
 	}
 
-	args := []string{"-c", c.configPath, "import", "-q"}
+	args := []string{
+		"-c", c.configPath,
+		"import", "-q", "--quiet-fallback=asis",
+	}
 	if singleton {
 		args = append(args, "-s")
 	}
@@ -122,6 +125,7 @@ func (c *Client) ensureConfig() error {
 			"    autotag: yes",
 			"    timid: no",
 			"    quiet: yes",
+			"    quiet_fallback: asis",
 			"paths:",
 			"    default: $albumartist/$album/$track - $title",
 			"    singleton: $artist/Singles/$title",

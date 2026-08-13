@@ -44,7 +44,13 @@ func TestImportCreatesConfigAndSetsMetadata(t *testing.T) {
 	if !strings.Contains(string(config), "move: yes") {
 		t.Fatalf("expected moving importer config, got %s", config)
 	}
+	if !strings.Contains(string(config), "quiet_fallback: asis") {
+		t.Fatalf("expected quiet imports to fall back to as-is, got %s", config)
+	}
 	if !slices.Contains(runner.args, "-s") || !slices.Contains(runner.args, "--set") {
 		t.Fatalf("expected singleton metadata args, got %v", runner.args)
+	}
+	if !slices.Contains(runner.args, "--quiet-fallback=asis") {
+		t.Fatalf("expected quiet fallback override, got %v", runner.args)
 	}
 }
