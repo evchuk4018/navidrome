@@ -22,7 +22,16 @@ func (f fakeSimilarityProvider) GetSimilarSongsByTrackAll(context.Context, strin
 
 type fakePersonalRadioRepository struct {
 	model.PersonalRadioRepository
-	items []model.PersonalRadioItem
+	items   []model.PersonalRadioItem
+	session *model.PersonalRadioSession
+}
+
+func (f *fakePersonalRadioRepository) GetSessionForUser(string, string) (*model.PersonalRadioSession, error) {
+	if f.session == nil {
+		return &model.PersonalRadioSession{ID: "session", Status: model.PersonalRadioEnded}, nil
+	}
+	session := *f.session
+	return &session, nil
 }
 
 func (f *fakePersonalRadioRepository) GetItems(string) ([]model.PersonalRadioItem, error) {
@@ -38,14 +47,34 @@ func (f *fakePersonalRadioRepository) GetFeedback(string, []string) (map[string]
 	return map[string]model.RadioTrackFeedback{}, nil
 }
 
+func (f *fakePersonalRadioRepository) UpdateItem(item *model.PersonalRadioItem) error {
+	for i := range f.items {
+		if f.items[i].ID == item.ID {
+			f.items[i] = *item
+			return nil
+		}
+	}
+	f.items = append(f.items, *item)
+	return nil
+}
+
+func (f *fakePersonalRadioRepository) UpsertDiscovery(*model.DiscoveryTrack) error {
+	return nil
+}
+
 type fakeMusicService struct {
 	musicservice.Service
 	requests []model.ExternalDownloadRequest
+	job      *model.MusicDownloadJob
 }
 
 func (f *fakeMusicService) CreateDownload(_ context.Context, _ string, request model.ExternalDownloadRequest) (*model.MusicDownloadJob, error) {
 	f.requests = append(f.requests, request)
 	return &model.MusicDownloadJob{ID: "job-" + request.ID}, nil
+}
+
+func (f *fakeMusicService) GetDownload(context.Context, string, string) (*model.MusicDownloadJob, error) {
+	return f.job, nil
 }
 
 func TestEarlySkipThreshold(t *testing.T) {
@@ -229,5 +258,40 @@ func TestHeldLibraryItemsReleaseInOrderAfterDiscoveryResolves(t *testing.T) {
 	}
 	if got := outstandingRadioItems(items); got != 4 {
 		t.Fatalf("expected failed discovery to be excluded from capacity, got %d", got)
+	}
+}
+
+func TestRefillFailsCompletedDownloadWithoutLibraryMatch(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	repo := &fakePersonalRadioRepository{
+		session: &model.PersonalRadioSession{ID: "session", UserID: "user", Status: model.PersonalRadioEnded},
+		items: []model.PersonalRadioItem{{
+			ID: "item", SessionID: "session", Position: 1,
+			ItemType: model.RadioItemDiscovery, Status: model.RadioItemDownloading,
+			RecordingMBID: "missing-recording", DownloadJobID: "job",
+		}},
+	}
+	music := &fakeMusicService{job: &model.MusicDownloadJob{
+		ID: "job", Status: model.MusicDownloadSuccess, SourceID: "missing-recording",
+	}}
+	svc := &service{
+		ds:             ds,
+		repo:           repo,
+		matcher:        matcher.New(ds),
+		music:          music,
+		planning:       map[string]bool{},
+		planningStatus: map[string]string{},
+	}
+
+	response, err := svc.Refill(context.Background(), "user", "session")
+	if err != nil {
+		t.Fatalf("Refill returned error: %v", err)
+	}
+	if repo.items[0].Status != model.RadioItemFailed {
+		t.Fatalf("expected unmatched completed download to fail, got %q", repo.items[0].Status)
+	}
+	if response.PlanningStatus != model.RadioPlanningNoDiscovery {
+		t.Fatalf("expected terminal no-discovery status after failed completed download, got %q", response.PlanningStatus)
 	}
 }

@@ -127,6 +127,14 @@ func (s *service) CreateDownload(ctx context.Context, userID string, request mod
 	if err := s.jobs.Create(job); err != nil {
 		return nil, err
 	}
+	log.Info(ctx, "Music download job queued",
+		"jobID", job.ID,
+		"userID", userID,
+		"origin", job.Origin,
+		"kind", job.Kind,
+		"sourceID", job.SourceID,
+		"priority", job.Priority,
+		"radioItemID", job.RadioItemID)
 	s.signal()
 	return job, nil
 }
@@ -156,13 +164,20 @@ func (s *service) run(ctx context.Context, origin string) {
 	for {
 		job, err := s.jobs.ClaimNext(origin)
 		if err != nil {
-			log.Error(ctx, "Unable to claim music download job", err)
+			log.Error(ctx, "Unable to claim music download job", "origin", origin, "error", err)
 			if !waitFor(ctx, s.wake, 5*time.Second) {
 				return
 			}
 			continue
 		}
 		if job != nil {
+			log.Debug(ctx, "Music download job claimed",
+				"jobID", job.ID,
+				"userID", job.UserID,
+				"origin", job.Origin,
+				"kind", job.Kind,
+				"sourceID", job.SourceID,
+				"radioItemID", job.RadioItemID)
 			s.process(ctx, job)
 			continue
 		}
@@ -186,6 +201,14 @@ func waitFor(ctx context.Context, wake <-chan struct{}, duration time.Duration) 
 }
 
 func (s *service) process(ctx context.Context, job *model.MusicDownloadJob) {
+	start := time.Now()
+	log.Info(ctx, "Music download job started",
+		"jobID", job.ID,
+		"userID", job.UserID,
+		"origin", job.Origin,
+		"kind", job.Kind,
+		"sourceID", job.SourceID,
+		"radioItemID", job.RadioItemID)
 	err := s.processDownload(ctx, job)
 	if err == nil {
 		now := time.Now().UTC()
@@ -194,8 +217,19 @@ func (s *service) process(ctx context.Context, job *model.MusicDownloadJob) {
 		job.Error = ""
 		job.FinishedAt = &now
 		if updateErr := s.jobs.Update(job); updateErr != nil {
-			log.Error(ctx, "Unable to mark music download job successful", "jobID", job.ID, updateErr)
+			log.Error(ctx, "Unable to mark music download job successful", "jobID", job.ID, "error", updateErr)
 		}
+		log.Info(ctx, "Music download job succeeded",
+			"jobID", job.ID,
+			"userID", job.UserID,
+			"origin", job.Origin,
+			"sourceID", job.SourceID,
+			"title", job.Title,
+			"artist", job.Artist,
+			"album", job.Album,
+			"completed", job.Completed,
+			"total", job.Total,
+			"elapsed", time.Since(start))
 		return
 	}
 
@@ -212,10 +246,21 @@ func (s *service) process(ctx context.Context, job *model.MusicDownloadJob) {
 		job.FinishedAt = &now
 	}
 	if updateErr := s.jobs.Update(job); updateErr != nil {
-		log.Error(ctx, "Unable to update music download job", "jobID", job.ID, updateErr)
+		log.Error(ctx, "Unable to update music download job", "jobID", job.ID, "error", updateErr)
 	}
 	if !errors.Is(err, context.Canceled) {
-		log.Error(ctx, "Music download job failed", "jobID", job.ID, err)
+		log.Error(ctx, "Music download job failed",
+			"jobID", job.ID,
+			"userID", job.UserID,
+			"origin", job.Origin,
+			"sourceID", job.SourceID,
+			"title", job.Title,
+			"artist", job.Artist,
+			"album", job.Album,
+			"message", job.Message,
+			"jobError", job.Error,
+			"elapsed", time.Since(start),
+			"error", err)
 	}
 }
 
@@ -239,26 +284,67 @@ func (s *service) processDownload(ctx context.Context, job *model.MusicDownloadJ
 
 	switch job.Kind {
 	case model.MusicDownloadSong:
+		stageStart := time.Now()
+		log.Debug(ctx, "Music download loading recording metadata",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"origin", job.Origin)
 		track, err := s.catalog.Recording(ctx, job.SourceID)
 		if err != nil {
 			return fmt.Errorf("load recording: %w", err)
 		}
 		setJobTrack(job, track)
+		log.Debug(ctx, "Music download recording metadata loaded",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"title", track.Title,
+			"artist", track.ArtistName,
+			"album", track.AlbumTitle,
+			"duration", track.Duration,
+			"elapsed", time.Since(stageStart))
 		job.Total = 1
 		if err := s.jobs.Update(job); err != nil {
 			return fmt.Errorf("update download metadata: %w", err)
 		}
+		stageStart = time.Now()
+		log.Debug(ctx, "Music download provider started",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"title", track.Title,
+			"artist", track.ArtistName)
 		path, err := s.downloader.Download(ctx, track, tempDir)
 		if err != nil {
 			return fmt.Errorf("download recording: %w", err)
 		}
+		log.Debug(ctx, "Music download provider completed",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"path", path,
+			"elapsed", time.Since(stageStart))
+		stageStart = time.Now()
+		log.Debug(ctx, "Music download importer started",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"title", track.Title,
+			"artist", track.ArtistName,
+			"album", track.AlbumTitle)
 		if err := s.tagger.Import(ctx, []string{path}, track, true); err != nil {
 			return fmt.Errorf("tag recording: %w", err)
 		}
+		log.Debug(ctx, "Music download importer completed",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"path", path,
+			"elapsed", time.Since(stageStart))
 		job.Completed = 1
 		return s.scanLibrary(ctx)
 
 	case model.MusicDownloadAlbum:
+		stageStart := time.Now()
+		log.Debug(ctx, "Music download loading album metadata",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"origin", job.Origin)
 		album, err := s.catalog.Album(ctx, job.SourceID)
 		if err != nil {
 			return fmt.Errorf("load album: %w", err)
@@ -269,6 +355,13 @@ func (s *service) processDownload(ctx context.Context, job *model.MusicDownloadJ
 		job.Artist = album.Album.ArtistName
 		job.Album = album.Album.Title
 		job.Total = len(album.Tracks)
+		log.Debug(ctx, "Music download album metadata loaded",
+			"jobID", job.ID,
+			"sourceID", job.SourceID,
+			"artist", job.Artist,
+			"album", job.Album,
+			"trackCount", job.Total,
+			"elapsed", time.Since(stageStart))
 		if err := s.jobs.Update(job); err != nil {
 			return fmt.Errorf("update album metadata: %w", err)
 		}
@@ -284,10 +377,26 @@ func (s *service) processDownload(ctx context.Context, job *model.MusicDownloadJ
 			if track.AlbumID == "" {
 				track.AlbumID = album.Album.ID
 			}
+			stageStart = time.Now()
+			log.Debug(ctx, "Music download album track provider started",
+				"jobID", job.ID,
+				"sourceID", job.SourceID,
+				"trackIndex", i+1,
+				"trackCount", job.Total,
+				"title", track.Title,
+				"artist", track.ArtistName)
 			path, err := s.downloader.Download(ctx, track, tempDir)
 			if err != nil {
 				return fmt.Errorf("download track %q: %w", track.Title, err)
 			}
+			log.Debug(ctx, "Music download album track provider completed",
+				"jobID", job.ID,
+				"sourceID", job.SourceID,
+				"trackIndex", i+1,
+				"trackCount", job.Total,
+				"title", track.Title,
+				"path", path,
+				"elapsed", time.Since(stageStart))
 			files = append(files, path)
 			job.Completed = i + 1
 			job.Message = fmt.Sprintf("Downloaded %d of %d tracks", job.Completed, job.Total)
@@ -312,12 +421,24 @@ func (s *service) processDownload(ctx context.Context, job *model.MusicDownloadJ
 
 func (s *service) scanLibrary(ctx context.Context) error {
 	if s.scanner == nil {
+		log.Debug(ctx, "Music download scan skipped because scanner is unavailable")
 		return nil
 	}
-	if _, err := s.scanner.ScanAll(ctx, false); err != nil {
+	start := time.Now()
+	log.Debug(ctx, "Music download library scan started")
+	warnings, err := s.scanner.ScanAll(ctx, false)
+	if err != nil {
 		// The files are already safely imported. A concurrent scan can pick them up
 		// later, so a scan conflict is not a failed download.
-		log.Warn(ctx, "Music download completed but library scan could not start", err)
+		log.Warn(ctx, "Music download completed but library scan could not start",
+			"warningCount", len(warnings),
+			"elapsed", time.Since(start),
+			"error", err)
+	} else {
+		log.Info(ctx, "Music download library scan completed",
+			"warningCount", len(warnings),
+			"warnings", warnings,
+			"elapsed", time.Since(start))
 	}
 	return nil
 }

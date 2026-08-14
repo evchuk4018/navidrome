@@ -79,7 +79,11 @@ func (c *Client) Import(ctx context.Context, files []string, metadata model.Exte
 
 	args := []string{
 		"-c", c.configPath,
-		"import", "-q", "--quiet-fallback=asis",
+		// The external catalog already identified this recording. Letting beets
+		// autotag a YouTube search result can replace the requested metadata with
+		// the video title/artist and make the imported file impossible to resolve
+		// back to the radio item.
+		"import", "-q", "-A", "--quiet-fallback=asis",
 	}
 	if singleton {
 		args = append(args, "-s")

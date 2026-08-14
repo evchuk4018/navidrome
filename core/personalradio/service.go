@@ -3,6 +3,7 @@ package personalradio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -84,6 +85,13 @@ func (s *service) Create(ctx context.Context, userID, seedID string) (*model.Per
 		return nil, err
 	}
 	s.setPlanningStatus(session.ID, model.RadioPlanningSelecting)
+	log.Info(ctx, "Personal radio session created",
+		"sessionID", session.ID,
+		"userID", userID,
+		"seedID", seed.ID,
+		"seedTitle", seed.Title,
+		"seedArtist", seed.Artist,
+		"seedRecordingMBID", seed.MbzRecordingID)
 	s.schedulePlan(context.WithoutCancel(ctx), session, seed)
 	return &model.PersonalRadioSessionResponse{
 		Session:        session,
@@ -94,6 +102,7 @@ func (s *service) Create(ctx context.Context, userID, seedID string) (*model.Per
 }
 
 func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.PersonalRadioSessionResponse, error) {
+	start := time.Now()
 	session, err := s.repo.GetSessionForUser(sessionID, userID)
 	if err != nil {
 		return nil, err
@@ -102,6 +111,11 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.
 	if err != nil {
 		return nil, err
 	}
+	log.Debug(ctx, "Personal radio refill started",
+		"sessionID", sessionID,
+		"userID", userID,
+		"itemCount", len(items),
+		"itemStatuses", radioItemStatusCounts(items))
 	pending := false
 	waitingForScan := false
 	downloadFailed := false
@@ -110,55 +124,165 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.
 		if item.Status != model.RadioItemDownloading {
 			continue
 		}
+		log.Debug(ctx, "Personal radio checking download item",
+			"sessionID", sessionID,
+			"userID", userID,
+			"itemID", item.ID,
+			"position", item.Position,
+			"recordingMBID", item.RecordingMBID,
+			"downloadJobID", item.DownloadJobID)
 		if s.music == nil {
 			item.Status = model.RadioItemFailed
-			_ = s.repo.UpdateItem(item)
+			if err := s.updateRadioItem(ctx, item, "marking item failed because download service is unavailable"); err != nil {
+				return nil, err
+			}
 			downloadFailed = true
 			continue
 		}
 		job, getErr := s.music.GetDownload(ctx, userID, item.DownloadJobID)
 		if getErr != nil {
+			log.Warn(ctx, "Personal radio could not read download job",
+				"sessionID", sessionID,
+				"userID", userID,
+				"itemID", item.ID,
+				"downloadJobID", item.DownloadJobID,
+				"notFound", errors.Is(getErr, model.ErrNotFound),
+				"error", getErr)
 			if errors.Is(getErr, model.ErrNotFound) {
 				item.Status = model.RadioItemFailed
-				_ = s.repo.UpdateItem(item)
+				if err := s.updateRadioItem(ctx, item, "marking item failed because download job was not found"); err != nil {
+					return nil, err
+				}
 				downloadFailed = true
 				continue
 			}
 			pending = true
 			continue
 		}
+		if job == nil {
+			log.Error(ctx, "Personal radio download service returned a nil job",
+				"sessionID", sessionID,
+				"userID", userID,
+				"itemID", item.ID,
+				"downloadJobID", item.DownloadJobID)
+			item.Status = model.RadioItemFailed
+			if err := s.updateRadioItem(ctx, item, "marking item failed because download job was nil"); err != nil {
+				return nil, err
+			}
+			downloadFailed = true
+			continue
+		}
 		switch job.Status {
 		case model.MusicDownloadSuccess:
-			var matched map[int]model.MediaFile
-			var matchErr error
-			if s.matcher != nil {
-				matched, matchErr = s.matcher.MatchSongsIndexed(ctx, []agents.Song{{MBID: item.RecordingMBID}})
-			}
-			if matchErr == nil {
-				if file, ok := matched[0]; ok {
-					item.MediaFileID = file.ID
-					item.Song = &file
-					item.Status = model.RadioItemReady
-					job.MediaFileID = file.ID
-					_ = s.repo.UpdateItem(item)
-					expires := time.Now().UTC().Add(discoveryTTL)
-					_ = s.repo.UpsertDiscovery(&model.DiscoveryTrack{ID: id.NewRandom(), UserID: userID, RecordingMBID: item.RecordingMBID, MediaFileID: file.ID, State: model.DiscoveryTemporary, ExpiresAt: &expires, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
-					continue
+			log.Debug(ctx, "Personal radio download completed; resolving imported track",
+				"sessionID", sessionID,
+				"userID", userID,
+				"itemID", item.ID,
+				"downloadJobID", job.ID,
+				"recordingMBID", item.RecordingMBID,
+				"downloadTitle", job.Title,
+				"downloadArtist", job.Artist,
+				"downloadAlbum", job.Album)
+			if s.matcher == nil {
+				log.Error(ctx, "Personal radio cannot resolve completed download because matcher is unavailable",
+					"sessionID", sessionID,
+					"itemID", item.ID,
+					"downloadJobID", job.ID)
+				item.Status = model.RadioItemFailed
+				if err := s.updateRadioItem(ctx, item, "marking item failed because matcher is unavailable"); err != nil {
+					return nil, err
 				}
+				downloadFailed = true
+				continue
 			}
-			waitingForScan = true // The scanner may still be committing the import.
-		case model.MusicDownloadFailed:
+			file, matched, matchErr := s.resolveDownloadedItem(ctx, item, job)
+			if matchErr != nil {
+				log.Warn(ctx, "Personal radio matcher failed for completed download; will retry resolution",
+					"sessionID", sessionID,
+					"userID", userID,
+					"itemID", item.ID,
+					"downloadJobID", job.ID,
+					"recordingMBID", item.RecordingMBID,
+					"error", matchErr)
+				waitingForScan = true
+				pending = true
+				continue
+			}
+			if matched {
+				item.MediaFileID = file.ID
+				item.Song = &file
+				item.Status = model.RadioItemReady
+				if err := s.updateRadioItem(ctx, item, "marking completed download ready"); err != nil {
+					return nil, err
+				}
+				expires := time.Now().UTC().Add(discoveryTTL)
+				if err := s.repo.UpsertDiscovery(&model.DiscoveryTrack{ID: id.NewRandom(), UserID: userID, RecordingMBID: item.RecordingMBID, MediaFileID: file.ID, State: model.DiscoveryTemporary, ExpiresAt: &expires, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+					log.Warn(ctx, "Personal radio could not persist resolved discovery",
+						"sessionID", sessionID,
+						"itemID", item.ID,
+						"recordingMBID", item.RecordingMBID,
+						"mediaFileID", file.ID,
+						"error", err)
+				}
+				log.Info(ctx, "Personal radio download resolved",
+					"sessionID", sessionID,
+					"userID", userID,
+					"itemID", item.ID,
+					"downloadJobID", job.ID,
+					"recordingMBID", item.RecordingMBID,
+					"mediaFileID", file.ID,
+					"title", file.Title,
+					"artist", file.Artist)
+				continue
+			}
+			log.Warn(ctx, "Personal radio download succeeded but imported track did not match",
+				"sessionID", sessionID,
+				"userID", userID,
+				"itemID", item.ID,
+				"downloadJobID", job.ID,
+				"recordingMBID", item.RecordingMBID,
+				"downloadTitle", job.Title,
+				"downloadArtist", job.Artist,
+				"downloadAlbum", job.Album)
 			item.Status = model.RadioItemFailed
-			_ = s.repo.UpdateItem(item)
+			if err := s.updateRadioItem(ctx, item, "marking unmatched completed download failed"); err != nil {
+				return nil, err
+			}
+			downloadFailed = true
+		case model.MusicDownloadFailed:
+			log.Warn(ctx, "Personal radio download job failed",
+				"sessionID", sessionID,
+				"userID", userID,
+				"itemID", item.ID,
+				"downloadJobID", job.ID,
+				"recordingMBID", item.RecordingMBID,
+				"message", job.Message,
+				"jobError", job.Error)
+			item.Status = model.RadioItemFailed
+			if err := s.updateRadioItem(ctx, item, "marking failed download item failed"); err != nil {
+				return nil, err
+			}
 			downloadFailed = true
 		default:
+			log.Debug(ctx, "Personal radio download is still pending",
+				"sessionID", sessionID,
+				"userID", userID,
+				"itemID", item.ID,
+				"downloadJobID", job.ID,
+				"recordingMBID", item.RecordingMBID,
+				"jobStatus", job.Status,
+				"message", job.Message,
+				"completed", job.Completed,
+				"total", job.Total)
 			pending = true
 		}
 	}
 
 	for _, index := range releasableHeldItems(items) {
 		items[index].Status = model.RadioItemReady
-		_ = s.repo.UpdateItem(&items[index])
+		if err := s.updateRadioItem(ctx, &items[index], "releasing library item after discovery resolution"); err != nil {
+			return nil, err
+		}
 	}
 
 	for i := range items {
@@ -176,6 +300,11 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.
 		if seedErr == nil {
 			s.schedulePlan(context.WithoutCancel(ctx), *session, seed)
 			pending = true
+		} else {
+			log.Warn(ctx, "Personal radio could not find planning seed",
+				"sessionID", session.ID,
+				"userID", userID,
+				"error", seedErr)
 		}
 	}
 
@@ -197,6 +326,16 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.
 	if status == "" {
 		status = model.RadioPlanningReady
 	}
+	log.Debug(ctx, "Personal radio refill completed",
+		"sessionID", sessionID,
+		"userID", userID,
+		"status", status,
+		"pending", pending || isPendingPlanningStatus(status),
+		"waitingForScan", waitingForScan,
+		"downloadFailed", downloadFailed,
+		"itemCount", len(items),
+		"itemStatuses", radioItemStatusCounts(items),
+		"elapsed", time.Since(start))
 	return &model.PersonalRadioSessionResponse{
 		Session:        *session,
 		Items:          items,
@@ -286,15 +425,30 @@ func (s *service) schedulePlan(ctx context.Context, session model.PersonalRadioS
 		s.planningStatus[session.ID] = model.RadioPlanningSelecting
 	}
 	s.planningMu.Unlock()
+	log.Debug(ctx, "Personal radio planning scheduled",
+		"sessionID", session.ID,
+		"userID", session.UserID,
+		"seedID", seed.ID,
+		"seedTitle", seed.Title,
+		"seedArtist", seed.Artist)
 	go func() {
+		start := time.Now()
 		defer func() {
 			s.planningMu.Lock()
 			delete(s.planning, session.ID)
 			s.planningMu.Unlock()
+			log.Debug(ctx, "Personal radio planning worker finished",
+				"sessionID", session.ID,
+				"userID", session.UserID,
+				"elapsed", time.Since(start))
 		}()
 		if err := s.plan(ctx, session, seed); err != nil {
 			s.setPlanningStatus(session.ID, model.RadioPlanningNoDiscovery)
-			log.Warn(ctx, "Unable to extend personal radio queue", "sessionID", session.ID, err)
+			log.Warn(ctx, "Unable to extend personal radio queue",
+				"sessionID", session.ID,
+				"userID", session.UserID,
+				"seedID", seed.ID,
+				"error", err)
 		}
 	}()
 }
@@ -302,10 +456,17 @@ func (s *service) schedulePlan(ctx context.Context, session model.PersonalRadioS
 func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, seed *model.MediaFile) error {
 	items, err := s.repo.GetItems(session.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("load personal radio items: %w", err)
 	}
 	outstanding := outstandingRadioItems(items)
 	if outstanding >= queueLowWatermark {
+		log.Debug(ctx, "Personal radio planning skipped because queue is full",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"seedID", seed.ID,
+			"itemCount", len(items),
+			"outstanding", outstanding,
+			"queueLowWatermark", queueLowWatermark)
 		return nil
 	}
 	seen := map[string]bool{}
@@ -328,12 +489,36 @@ func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, 
 	if slotsToAdd%2 != 0 {
 		slotsToAdd++
 	}
+	log.Debug(ctx, "Personal radio planning started",
+		"sessionID", session.ID,
+		"userID", session.UserID,
+		"seedID", seed.ID,
+		"seedTitle", seed.Title,
+		"seedArtist", seed.Artist,
+		"itemCount", len(items),
+		"outstanding", outstanding,
+		"slotsToAdd", slotsToAdd,
+		"seenMediaFiles", len(seen),
+		"seenRecordings", len(seenRecordings))
 	pools, err := s.recommendationPools(ctx, session, seed, seen, seenRecordings, slotsToAdd)
 	if err != nil {
-		return err
+		return fmt.Errorf("build personal radio recommendation pools: %w", err)
 	}
+	log.Info(ctx, "Personal radio recommendation pools built",
+		"sessionID", session.ID,
+		"userID", session.UserID,
+		"seedID", seed.ID,
+		"localCandidates", len(pools.local),
+		"discoveryCandidates", len(pools.discovery),
+		"slotsToAdd", slotsToAdd)
 	if len(pools.local) == 0 && len(pools.discovery) == 0 {
 		s.setPlanningStatus(session.ID, model.RadioPlanningNoDiscovery)
+		log.Warn(ctx, "Personal radio found no usable candidates",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"seedID", seed.ID,
+			"seenMediaFiles", len(seen),
+			"seenRecordings", len(seenRecordings))
 		return nil
 	}
 
@@ -402,11 +587,34 @@ func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, 
 	}
 	if len(newItems) == 0 {
 		s.setPlanningStatus(session.ID, model.RadioPlanningNoDiscovery)
+		log.Warn(ctx, "Personal radio could not queue any planned candidates",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"seedID", seed.ID,
+			"localCandidates", len(pools.local),
+			"discoveryCandidates", len(pools.discovery),
+			"slotsToAdd", slotsToAdd)
 		return nil
 	}
 	if err := s.repo.AppendItems(session.ID, newItems); err != nil {
-		return err
+		return fmt.Errorf("append personal radio items: %w", err)
 	}
+	localItems, discoveryItems := 0, 0
+	for _, item := range newItems {
+		if item.ItemType == model.RadioItemDiscovery {
+			discoveryItems++
+		} else if item.ItemType == model.RadioItemLibrary {
+			localItems++
+		}
+	}
+	log.Info(ctx, "Personal radio plan appended",
+		"sessionID", session.ID,
+		"userID", session.UserID,
+		"seedID", seed.ID,
+		"itemsAdded", len(newItems),
+		"libraryItems", localItems,
+		"discoveryItems", discoveryItems,
+		"itemPositions", plannedPositions(newItems))
 	if hasDiscoveryItems(newItems) {
 		s.setPlanningStatus(session.ID, model.RadioPlanningDownloading)
 	} else {
@@ -423,14 +631,33 @@ type candidatePools struct {
 func (s *service) recommendationPools(ctx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count int) (candidatePools, error) {
 	pools := candidatePools{}
 	localAdded := map[string]bool{}
+	stats := map[string]int{}
+	if s.agents == nil || s.matcher == nil {
+		log.Warn(ctx, "Personal radio external recommendation path is unavailable",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"seedID", seed.ID,
+			"agentsConfigured", s.agents != nil,
+			"matcherConfigured", s.matcher != nil)
+	}
 	if s.agents != nil && s.matcher != nil {
 		recommendations, recErr := s.agents.GetSimilarSongsByTrackAll(ctx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, discoveryCandidateLimit)
 		if recErr != nil {
-			log.Debug(ctx, "No personal radio recommendation candidates", "sessionID", session.ID, "error", recErr)
+			log.Debug(ctx, "Personal radio similarity provider returned no candidates",
+				"sessionID", session.ID,
+				"userID", session.UserID,
+				"seedID", seed.ID,
+				"error", recErr)
 		} else if len(recommendations) > 0 {
+			stats["providerCandidates"] = len(recommendations)
 			matches, matchErr := s.matcher.MatchSongsIndexed(ctx, recommendations)
 			if matchErr != nil {
-				log.Warn(ctx, "Unable to compare personal radio recommendations with the library", "sessionID", session.ID, matchErr)
+				log.Warn(ctx, "Unable to compare personal radio recommendations with the library",
+					"sessionID", session.ID,
+					"userID", session.UserID,
+					"seedID", seed.ID,
+					"candidateCount", len(recommendations),
+					"error", matchErr)
 			} else {
 				mbids := make([]string, 0, len(recommendations))
 				for _, song := range recommendations {
@@ -438,26 +665,87 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 						mbids = append(mbids, song.MBID)
 					}
 				}
-				feedback, _ := s.repo.GetFeedback(session.UserID, mbids)
+				feedback, feedbackErr := s.repo.GetFeedback(session.UserID, mbids)
+				if feedbackErr != nil {
+					log.Warn(ctx, "Personal radio could not load recommendation feedback",
+						"sessionID", session.ID,
+						"userID", session.UserID,
+						"mbidCount", len(mbids),
+						"error", feedbackErr)
+					feedback = map[string]model.RadioTrackFeedback{}
+				}
 				for i, song := range recommendations {
+					candidateFields := []any{
+						"sessionID", session.ID,
+						"userID", session.UserID,
+						"seedID", seed.ID,
+						"candidateIndex", i,
+						"candidateID", song.ID,
+						"candidateMBID", song.MBID,
+						"candidateTitle", song.Name,
+						"candidateAlbum", song.Album,
+					}
 					if local, ok := matches[i]; ok {
 						if !local.Missing && !seen[local.ID] && !localAdded[local.ID] {
 							pools.local = append(pools.local, local)
 							localAdded[local.ID] = true
+							stats["matchedLocal"]++
+							traceRadioCandidate(ctx, "Personal radio candidate accepted from library",
+								append(candidateFields,
+									"decision", "library",
+									"mediaFileID", local.ID,
+									"matchedTitle", local.Title,
+									"matchedArtist", local.Artist))
+						} else if local.Missing {
+							stats["matchedMissing"]++
+							traceRadioCandidate(ctx, "Personal radio candidate rejected because matched library file is missing",
+								append(candidateFields, "decision", "matched_missing", "mediaFileID", local.ID))
+						} else if seen[local.ID] {
+							stats["matchedSeen"]++
+							traceRadioCandidate(ctx, "Personal radio candidate rejected because library file was already seen",
+								append(candidateFields, "decision", "matched_seen", "mediaFileID", local.ID))
+						} else {
+							stats["matchedDuplicate"]++
+							traceRadioCandidate(ctx, "Personal radio candidate rejected because library file was already added to this plan",
+								append(candidateFields, "decision", "matched_duplicate", "mediaFileID", local.ID))
 						}
 						continue
 					}
 					if song.MBID == "" || seenRecordings[song.MBID] {
+						if song.MBID == "" {
+							stats["missingMBID"]++
+							traceRadioCandidate(ctx, "Personal radio candidate rejected because it has no recording MBID",
+								append(candidateFields, "decision", "missing_mbid"))
+						} else {
+							stats["seenRecording"]++
+							traceRadioCandidate(ctx, "Personal radio candidate rejected because recording was already seen",
+								append(candidateFields, "decision", "seen_recording"))
+						}
 						continue
 					}
 					f := feedback[song.MBID]
 					cooldownDays := min(365, 30*(f.EarlySkipCount+1))
 					if f.LastEarlySkipAt != nil && time.Since(*f.LastEarlySkipAt) < time.Duration(cooldownDays)*24*time.Hour {
+						stats["feedbackCooldown"]++
+						traceRadioCandidate(ctx, "Personal radio candidate rejected by feedback cooldown",
+							append(candidateFields,
+								"decision", "feedback_cooldown",
+								"earlySkipCount", f.EarlySkipCount,
+								"cooldownDays", cooldownDays,
+								"lastEarlySkipAt", f.LastEarlySkipAt))
 						continue
 					}
 					pools.discovery = append(pools.discovery, song)
+					stats["acceptedDiscovery"]++
+					traceRadioCandidate(ctx, "Personal radio candidate accepted for discovery download",
+						append(candidateFields, "decision", "discovery"))
 				}
 			}
+		} else {
+			log.Debug(ctx, "Personal radio similarity provider returned an empty candidate list",
+				"sessionID", session.ID,
+				"userID", session.UserID,
+				"seedID", seed.ID)
 		}
 	}
 
@@ -470,14 +758,23 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 	}
 	fallback, err := s.localCandidates(ctx, seed, metadataSeen, count)
 	if err != nil {
-		return candidatePools{}, err
+		return candidatePools{}, fmt.Errorf("load local fallback candidates: %w", err)
 	}
+	stats["localFallback"] = len(fallback)
 	for _, file := range fallback {
 		if !localAdded[file.ID] {
 			pools.local = append(pools.local, file)
 			localAdded[file.ID] = true
 		}
 	}
+	log.Debug(ctx, "Personal radio candidate filtering completed",
+		"sessionID", session.ID,
+		"userID", session.UserID,
+		"seedID", seed.ID,
+		"candidateStats", stats,
+		"localPool", len(pools.local),
+		"discoveryPool", len(pools.discovery),
+		"fallbackRequested", count)
 	return pools, nil
 }
 
@@ -493,7 +790,13 @@ func (s *service) queueDiscovery(ctx context.Context, session model.PersonalRadi
 		UpdatedAt:     now,
 	}
 	if s.music == nil {
-		log.Warn(ctx, "Personal radio download service is unavailable", "recordingMBID", discovery.MBID)
+		log.Warn(ctx, "Personal radio download service is unavailable",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"itemID", item.ID,
+			"position", position,
+			"recordingMBID", discovery.MBID,
+			"title", discovery.Name)
 		return model.PersonalRadioItem{}, false
 	}
 	job, err := s.music.CreateDownload(ctx, session.UserID, model.ExternalDownloadRequest{
@@ -504,15 +807,78 @@ func (s *service) queueDiscovery(ctx context.Context, session model.PersonalRadi
 		RadioItemID: item.ID,
 	})
 	if err != nil {
-		log.Warn(ctx, "Unable to queue personal radio discovery", "recordingMBID", discovery.MBID, err)
+		log.Warn(ctx, "Unable to queue personal radio discovery",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"itemID", item.ID,
+			"position", position,
+			"recordingMBID", discovery.MBID,
+			"title", discovery.Name,
+			"artist", firstSongArtist(discovery),
+			"error", err)
 		return model.PersonalRadioItem{}, false
 	}
 	if job == nil || job.ID == "" {
-		log.Warn(ctx, "Personal radio download service returned an empty job", "recordingMBID", discovery.MBID)
+		log.Warn(ctx, "Personal radio download service returned an empty job",
+			"sessionID", session.ID,
+			"userID", session.UserID,
+			"itemID", item.ID,
+			"position", position,
+			"recordingMBID", discovery.MBID,
+			"title", discovery.Name,
+			"artist", firstSongArtist(discovery))
 		return model.PersonalRadioItem{}, false
 	}
 	item.DownloadJobID = job.ID
+	log.Info(ctx, "Personal radio discovery download queued",
+		"sessionID", session.ID,
+		"userID", session.UserID,
+		"itemID", item.ID,
+		"position", position,
+		"downloadJobID", job.ID,
+		"recordingMBID", discovery.MBID,
+		"title", discovery.Name,
+		"artist", firstSongArtist(discovery),
+		"album", discovery.Album)
 	return item, true
+}
+
+func (s *service) updateRadioItem(ctx context.Context, item *model.PersonalRadioItem, reason string) error {
+	if err := s.repo.UpdateItem(item); err != nil {
+		return fmt.Errorf("%s for session item %s: %w", reason, item.ID, err)
+	}
+	return nil
+}
+
+func (s *service) resolveDownloadedItem(ctx context.Context, item *model.PersonalRadioItem, job *model.MusicDownloadJob) (model.MediaFile, bool, error) {
+	song := agents.Song{
+		Name:  job.Title,
+		MBID:  item.RecordingMBID,
+		Album: job.Album,
+	}
+	if job.Artist != "" {
+		song.Artists = []agents.Artist{{Name: job.Artist}}
+	}
+	matched, err := s.matcher.MatchSongsIndexed(ctx, []agents.Song{song})
+	if err != nil {
+		return model.MediaFile{}, false, fmt.Errorf("match imported recording %q: %w", item.RecordingMBID, err)
+	}
+	file, ok := matched[0]
+	if !ok {
+		return model.MediaFile{}, false, nil
+	}
+	return file, true, nil
+}
+
+func firstSongArtist(song agents.Song) string {
+	if len(song.Artists) == 0 {
+		return ""
+	}
+	return song.Artists[0].Name
+}
+
+func traceRadioCandidate(ctx context.Context, message string, fields []any) {
+	log.Trace(append([]any{ctx, message}, fields...)...)
 }
 
 type scoredFile struct {
@@ -677,6 +1043,22 @@ func hasDownloadingItems(items []model.PersonalRadioItem) bool {
 		}
 	}
 	return false
+}
+
+func radioItemStatusCounts(items []model.PersonalRadioItem) map[string]int {
+	counts := make(map[string]int)
+	for _, item := range items {
+		counts[item.Status]++
+	}
+	return counts
+}
+
+func plannedPositions(items []model.PersonalRadioItem) []int {
+	positions := make([]int, 0, len(items))
+	for _, item := range items {
+		positions = append(positions, item.Position)
+	}
+	return positions
 }
 
 func outstandingRadioItems(items []model.PersonalRadioItem) int {

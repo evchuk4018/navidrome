@@ -18,6 +18,24 @@ export const createPersonalRadio = (seedMediaFileId) =>
 export const refillPersonalRadio = (sessionId) =>
   jsonRequest(`/personal-radio/sessions/${sessionId}`)
 
+export const radioErrorDetails = (error) => {
+  const body = error?.body
+  const bodyError = body?.error
+  const message =
+    (typeof body === 'string' && body) ||
+    (typeof bodyError === 'string' && bodyError) ||
+    bodyError?.message ||
+    body?.message ||
+    error?.message ||
+    'Unknown error'
+
+  return {
+    status: error?.status,
+    message,
+    body,
+  }
+}
+
 export const sendRadioFeedback = (sessionId, feedback) =>
   httpClient(`${REST_URL}/personal-radio/sessions/${sessionId}/feedback`, {
     method: 'POST',

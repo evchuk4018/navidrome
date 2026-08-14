@@ -50,6 +50,9 @@ func TestImportCreatesConfigAndSetsMetadata(t *testing.T) {
 	if !slices.Contains(runner.args, "-s") || !slices.Contains(runner.args, "--set") {
 		t.Fatalf("expected singleton metadata args, got %v", runner.args)
 	}
+	if !slices.Contains(runner.args, "-A") {
+		t.Fatalf("expected importer to preserve supplied metadata without autotagging, got %v", runner.args)
+	}
 	if !slices.Contains(runner.args, "--quiet-fallback=asis") {
 		t.Fatalf("expected quiet fallback override, got %v", runner.args)
 	}

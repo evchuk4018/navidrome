@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/request"
 )
@@ -34,6 +35,10 @@ func (api *Router) createPersonalRadio(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := api.personalRadio.Create(r.Context(), user.ID, payload.SeedMediaFileID)
 	if err != nil {
+		log.Error(r.Context(), "Personal radio session creation failed",
+			"userID", user.ID,
+			"seedID", payload.SeedMediaFileID,
+			"error", err)
 		writeMusicError(w, r, err, http.StatusInternalServerError)
 		return
 	}
@@ -53,6 +58,10 @@ func (api *Router) refillPersonalRadio(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := api.personalRadio.Refill(r.Context(), user.ID, chi.URLParam(r, "id"))
 	if err != nil {
+		log.Error(r.Context(), "Personal radio refill failed",
+			"userID", user.ID,
+			"sessionID", chi.URLParam(r, "id"),
+			"error", err)
 		writeMusicError(w, r, err, http.StatusInternalServerError)
 		return
 	}
@@ -75,6 +84,12 @@ func (api *Router) personalRadioFeedback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := api.personalRadio.Feedback(r.Context(), user.ID, chi.URLParam(r, "id"), payload); err != nil {
+		log.Error(r.Context(), "Personal radio feedback failed",
+			"userID", user.ID,
+			"sessionID", chi.URLParam(r, "id"),
+			"itemID", payload.ItemID,
+			"event", payload.Event,
+			"error", err)
 		writeMusicError(w, r, err, http.StatusInternalServerError)
 		return
 	}

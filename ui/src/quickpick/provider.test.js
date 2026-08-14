@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { radioSongs } from './provider'
+import { radioErrorDetails, radioSongs } from './provider'
 
 describe('radioSongs', () => {
   it('preserves server positions and hides held or downloading tracks', () => {
@@ -53,5 +53,33 @@ describe('radioSongs', () => {
       'fresh-2',
       'library-3',
     ])
+  })
+})
+
+describe('radioErrorDetails', () => {
+  it('extracts the server response from a failed refill', () => {
+    expect(
+      radioErrorDetails({
+        status: 500,
+        message: 'Request failed',
+        body: { error: { message: 'planner failed' } },
+      }),
+    ).toEqual({
+      status: 500,
+      message: 'planner failed',
+      body: { error: { message: 'planner failed' } },
+    })
+  })
+
+  it('falls back to a plain response body or error message', () => {
+    expect(radioErrorDetails({ status: 502, body: 'upstream failed' })).toEqual(
+      expect.objectContaining({
+        status: 502,
+        message: 'upstream failed',
+      }),
+    )
+    expect(radioErrorDetails(new Error('network failed'))).toEqual(
+      expect.objectContaining({ message: 'network failed' }),
+    )
   })
 })

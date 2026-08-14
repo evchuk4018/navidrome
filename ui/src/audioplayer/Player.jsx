@@ -40,6 +40,7 @@ import configureMediaSessionTrackNavigation from './mediaSession'
 import {
   radioSongs,
   refillPersonalRadio,
+  radioErrorDetails,
   sendRadioFeedback,
 } from '../quickpick/provider'
 import { isRadioPlanning } from '../quickpick/radioPlanning'
@@ -115,6 +116,16 @@ const Player = () => {
     [appendRadioItems, dispatch],
   )
 
+  const reportRadioRefillError = useCallback((sessionId, error) => {
+    // Refill runs in the background; a warning keeps the server response visible
+    // without showing a notification every three seconds.
+    // eslint-disable-next-line no-console
+    console.warn('[personal-radio] refill failed', {
+      sessionId,
+      ...radioErrorDetails(error),
+    })
+  }, [])
+
   const reportRadioFeedback = useCallback((playback, event) => {
     if (!playback?.sessionId || !playback?.itemId) return
     sendRadioFeedback(playback.sessionId, {
@@ -143,7 +154,7 @@ const Player = () => {
         .then((response) => {
           if (active) updateRadioResponse(response)
         })
-        .catch(() => {})
+        .catch((error) => reportRadioRefillError(radioSessionId, error))
         .finally(() => {
           inFlight = false
         })
@@ -153,7 +164,12 @@ const Player = () => {
       active = false
       clearInterval(timer)
     }
-  }, [radioSessionId, radioPlanningStatus, updateRadioResponse])
+  }, [
+    radioSessionId,
+    radioPlanningStatus,
+    reportRadioRefillError,
+    updateRadioResponse,
+  ])
 
   useEffect(() => {
     if (playerState.queue.length === 0) {
@@ -490,7 +506,7 @@ const Player = () => {
         reportRadioFeedback(playback, 'started')
         refillPersonalRadio(playback.sessionId)
           .then(updateRadioResponse)
-          .catch(() => {})
+          .catch((error) => reportRadioRefillError(playback.sessionId, error))
       }
     },
     [
@@ -499,6 +515,7 @@ const Player = () => {
       showNotifications,
       currentTrackId,
       reportRadioFeedback,
+      reportRadioRefillError,
       updateRadioResponse,
     ],
   )
