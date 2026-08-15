@@ -17,10 +17,14 @@ type Service interface {
 	RecordPlaylistPlay(context.Context, string, string) error
 }
 
+type SimilarityProvider interface {
+	GetSimilarSongsByTrackAll(context.Context, string, string, string, string, int) ([]agents.Song, error)
+}
+
 type service struct {
 	ds      model.DataStore
 	metrics model.QuickPickMetricsRepository
-	agents  *agents.Agents
+	agents  SimilarityProvider
 	matcher *matcher.Matcher
 }
 
