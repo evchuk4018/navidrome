@@ -152,6 +152,7 @@ const reduceSyncRadioTracks = (state, { data }) => {
   const ids = Object.keys(data)
   if (!ids.length) return state
   const queue = [...state.queue]
+  let requiresReplacement = false
   const byRadioItemId = new Map(
     queue.map((item) => [item.radioItemId, item]).filter(([id]) => id),
   )
@@ -163,13 +164,24 @@ const reduceSyncRadioTracks = (state, { data }) => {
         (item) => item.radioItemId === next.radioItemId,
       )
       if (index >= 0) {
+        if (
+          !!existing.radioPending === !!next.radioPending &&
+          existing.trackId === next.trackId
+        ) {
+          return
+        }
+        requiresReplacement = true
         queue[index] = { ...next, uuid: existing.uuid }
         return
       }
     }
     queue.push(next)
   })
-  return { ...state, queue, clear: false }
+  // Radio updates use the player's quiet replacement path. This keeps the
+  // currently playing seed alive while replacing a pending placeholder in the
+  // music player's internal list instead of appending a second copy.
+  if (queue.every((item, index) => item === state.queue[index])) return state
+  return { ...state, queue, clear: requiresReplacement }
 }
 
 const reducePlayNext = (state, { data }) => {

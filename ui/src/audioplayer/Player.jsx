@@ -49,6 +49,24 @@ import { isRadioPlanning } from '../quickpick/radioPlanning'
 const MINI_MODE = 'mini'
 const FULL_MODE = 'full'
 
+const radioQueueChanged = (queue, data) => {
+  const currentByItemId = new Map(
+    queue
+      .filter((item) => item.radioItemId)
+      .map((item) => [item.radioItemId, item]),
+  )
+
+  return Object.values(data).some((song) => {
+    const current = currentByItemId.get(song.radioItemId)
+    const trackId = song.mediaFileId || song.id
+    return (
+      !current ||
+      !!current.radioPending !== !!song.radioPending ||
+      current.trackId !== trackId
+    )
+  })
+}
+
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
@@ -85,7 +103,9 @@ const Player = () => {
   const appendRadioItems = useCallback(
     (response) => {
       const songs = radioSongs(response)
-      dispatch(syncRadioTracks(songs.data, songs.ids))
+      if (radioQueueChanged(playerStateRef.current.queue, songs.data)) {
+        dispatch(syncRadioTracks(songs.data, songs.ids))
+      }
     },
     [dispatch],
   )

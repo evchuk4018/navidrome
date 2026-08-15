@@ -100,6 +100,37 @@ describe('playerReducer', () => {
     expect(result.queue[0].singer).toBe('Artist')
     expect(result.queue[0].musicSrc).not.toBeNull()
     expect(result.queue[0].uuid).toBe('placeholder-uuid')
+    expect(result.clear).toBe(true)
+  })
+
+  it('ignores an unchanged radio sync so the player does not append duplicates', () => {
+    const state = {
+      queue: [
+        {
+          trackId: 'track-1',
+          uuid: 'track-uuid',
+          radioItemId: 'item-1',
+          radioPending: false,
+          musicSrc: 'stream-url',
+        },
+      ],
+      current: {},
+      clear: false,
+      radioSession: { id: 'session-1' },
+    }
+    const result = playerReducer(state, {
+      type: PLAYER_SYNC_RADIO_TRACKS,
+      data: {
+        'radio-item-1': {
+          id: 'track-1',
+          title: 'Fresh Track',
+          radioItemId: 'item-1',
+          radioPending: false,
+        },
+      },
+    })
+
+    expect(result).toBe(state)
   })
 
   it('shows the pending download with its recommendation metadata', () => {
