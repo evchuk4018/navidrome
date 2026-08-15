@@ -20,6 +20,7 @@ type Catalog interface {
 	Artist(context.Context, string) (model.ExternalArtistDetails, error)
 	Album(context.Context, string) (model.ExternalAlbumDetails, error)
 	Recording(context.Context, string) (model.ExternalTrack, error)
+	SearchSongs(context.Context, string) ([]model.ExternalTrack, error)
 }
 
 type Downloader interface {
@@ -294,7 +295,24 @@ func (s *service) processDownload(ctx context.Context, job *model.MusicDownloadJ
 			"origin", job.Origin)
 		track, err := s.catalog.Recording(ctx, job.SourceID)
 		if err != nil {
-			return fmt.Errorf("load recording: %w", err)
+			log.Warn(ctx, "Music download recording lookup failed; searching catalog instead",
+				"jobID", job.ID,
+				"sourceID", job.SourceID,
+				"origin", job.Origin,
+				"title", job.Title,
+				"artist", job.Artist,
+				"error", err)
+			track, err = s.resolveRecordingBySearch(ctx, job)
+			if err != nil {
+				return fmt.Errorf("load recording: %w", err)
+			}
+			log.Info(ctx, "Music download recording resolved via catalog search",
+				"jobID", job.ID,
+				"sourceID", job.SourceID,
+				"resolvedID", track.ID,
+				"title", track.Title,
+				"artist", track.ArtistName,
+				"album", track.AlbumTitle)
 		}
 		setJobTrack(job, track)
 		log.Debug(ctx, "Music download recording metadata loaded",
@@ -450,6 +468,57 @@ func setJobTrack(job *model.MusicDownloadJob, track model.ExternalTrack) {
 	job.Artist = track.ArtistName
 	job.Album = track.AlbumTitle
 	job.Title = track.Title
+}
+
+// resolveRecordingBySearch looks a recording up by artist and title when the
+// recorded source ID does not exist in the catalog. Last.fm recommendations
+// sometimes carry MusicBrainz IDs that are no longer valid, so the search is
+// the fallback that keeps the download flowing.
+func (s *service) resolveRecordingBySearch(ctx context.Context, job *model.MusicDownloadJob) (model.ExternalTrack, error) {
+	query := strings.TrimSpace(strings.TrimSpace(job.Artist) + " " + strings.TrimSpace(job.Title))
+	if query == "" {
+		return model.ExternalTrack{}, errors.New("recording metadata is empty; cannot search")
+	}
+	songs, err := s.catalog.SearchSongs(ctx, query)
+	if err != nil {
+		return model.ExternalTrack{}, fmt.Errorf("search recording: %w", err)
+	}
+	if len(songs) == 0 {
+		return model.ExternalTrack{}, model.ErrNotFound
+	}
+	title := normalizeSearchTitle(job.Title)
+	artist := normalizeSearchTitle(job.Artist)
+	for _, song := range songs {
+		if !searchTitleMatch(title, song.Title) {
+			continue
+		}
+		if artist == "" || normalizeSearchTitle(song.ArtistName) == artist {
+			return song, nil
+		}
+	}
+	for _, song := range songs {
+		if searchTitleMatch(title, song.Title) {
+			return song, nil
+		}
+	}
+	return model.ExternalTrack{}, model.ErrNotFound
+}
+
+func normalizeSearchTitle(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// searchTitleMatch accepts an exact normalized match or a fuzzy match where
+// one title fully contains the other.
+func searchTitleMatch(expected, actual string) bool {
+	expected = normalizeSearchTitle(expected)
+	actual = normalizeSearchTitle(actual)
+	if expected == "" || actual == "" {
+		return false
+	}
+	return expected == actual ||
+		strings.Contains(expected, actual) ||
+		strings.Contains(actual, expected)
 }
 
 func validateSourceID(value string) error {

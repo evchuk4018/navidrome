@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +226,34 @@ func (c *Client) Recording(ctx context.Context, recordingID string) (model.Exter
 	return externalTrack(recording), nil
 }
 
+// SearchSongs searches the recording catalog and returns the matches ordered
+// by relevance (title match first, then ListenBrainz popularity).
+func (c *Client) SearchSongs(ctx context.Context, query string) ([]model.ExternalTrack, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	var recordings mbRecordingSearchResponse
+	if err := c.get(ctx, "/recording", recordingQueryValues(query), &recordings); err != nil {
+		return nil, fmt.Errorf("search songs: %w", err)
+	}
+	popularity := map[string]model.RecordingPopularity(nil)
+	if c.popularity != nil && len(recordings.Recordings) > 0 {
+		var err error
+		popularity, err = c.popularity.GetRecordingPopularity(ctx, recordingIDs(recordings.Recordings))
+		if err != nil {
+			log.Warn(ctx, "ListenBrainz popularity lookup failed; using MusicBrainz ordering", err)
+			popularity = nil
+		}
+	}
+	sortRecordingsByRelevance(recordings.Recordings, query, popularity)
+	songs := make([]model.ExternalTrack, 0, len(recordings.Recordings))
+	for _, recording := range recordings.Recordings {
+		songs = append(songs, externalTrack(recording))
+	}
+	return songs, nil
+}
+
 func (c *Client) get(ctx context.Context, path string, params url.Values, target ...any) error {
 	params = cloneValues(params)
 	params.Set("fmt", "json")
@@ -240,38 +271,112 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, target
 		return json.Unmarshal(body, targetValue(target))
 	}
 
-	if err := c.waitForRateLimit(ctx); err != nil {
-		return err
+	var lastErr error
+	for attempt := 1; attempt <= transientAttempts; attempt++ {
+		if err := c.waitForRateLimit(ctx); err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "Navidrome/2 (https://github.com/navidrome/navidrome)")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			// A canceled or expired context is not transient; everything else is.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				return err
+			}
+			lastErr = err
+			if attempt < transientAttempts {
+				if err := sleep(ctx, transientBackoff(attempt, 0)); err != nil {
+					return err
+				}
+				continue
+			}
+			return err
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			_ = resp.Body.Close()
+			return model.ErrNotFound
+		}
+		if isTransientStatus(resp.StatusCode) && attempt < transientAttempts {
+			wait := retryAfter(resp)
+			if wait <= 0 {
+				wait = transientBackoff(attempt, 0)
+			}
+			lastErr = fmt.Errorf("musicbrainz returned HTTP %d", resp.StatusCode)
+			_ = resp.Body.Close()
+			if err := sleep(ctx, wait); err != nil {
+				return err
+			}
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return fmt.Errorf("musicbrainz returned HTTP %d", resp.StatusCode)
+		}
+		if len(body) > maxResponse {
+			return fmt.Errorf("musicbrainz response exceeds size limit")
+		}
+		c.store(cacheKey, body)
+		if err := json.Unmarshal(body, targetValue(target)); err != nil {
+			return fmt.Errorf("decode musicbrainz response: %w", err)
+		}
+		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return err
+	return lastErr
+}
+
+const transientAttempts = 3
+
+func isTransientStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
 	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "Navidrome external music provider")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
+	return false
+}
+
+// retryAfter returns the number of seconds to wait before retrying, honoring
+// the Retry-After header when present.
+func retryAfter(resp *http.Response) time.Duration {
+	if raw := strings.TrimSpace(resp.Header.Get("Retry-After")); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return model.ErrNotFound
+	return 0
+}
+
+func transientBackoff(attempt int, jitter time.Duration) time.Duration {
+	if attempt < 1 {
+		attempt = 1
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("musicbrainz returned HTTP %d", resp.StatusCode)
+	wait := time.Duration(attempt) * time.Second
+	if jitter > 0 {
+		wait += time.Duration(rand.Int63n(int64(jitter)))
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-	if err != nil {
-		return err
+	return wait
+}
+
+func sleep(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	if len(body) > maxResponse {
-		return fmt.Errorf("musicbrainz response exceeds size limit")
-	}
-	c.store(cacheKey, body)
-	if err := json.Unmarshal(body, targetValue(target)); err != nil {
-		return fmt.Errorf("decode musicbrainz response: %w", err)
-	}
-	return nil
 }
 
 func (c *Client) waitForRateLimit(ctx context.Context) error {

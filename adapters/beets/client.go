@@ -108,7 +108,46 @@ func (c *Client) Import(ctx context.Context, files []string, metadata model.Exte
 	if err != nil {
 		return fmt.Errorf("beets failed: %s", commandOutput(output, err))
 	}
+	// beets import -A never writes tags to the file (it only records them in its
+	// library), so the imported files keep the raw YouTube metadata. Write the
+	// library metadata back so the scanner can index the clean title/artist and
+	// the MusicBrainz recording ID.
+	query := writeQuery(metadata)
+	if query != "" {
+		writeArgs := []string{"-c", c.configPath, "write", query}
+		output, err = c.runner.Run(ctx, c.executable, writeArgs...)
+		if err != nil {
+			return fmt.Errorf("beets tag write failed: %s", commandOutput(output, err))
+		}
+	}
 	return nil
+}
+
+// writeQuery selects the just-imported items in the beets library so a
+// subsequent `beet write` can persist their metadata to the files. Song
+// imports carry the recording ID; album imports are selected by album artist
+// and album title.
+func writeQuery(metadata model.ExternalTrack) string {
+	if strings.TrimSpace(metadata.ID) != "" {
+		return "mb_trackid:" + metadata.ID
+	}
+	if strings.TrimSpace(metadata.ArtistName) == "" {
+		return ""
+	}
+	query := "albumartist:" + beetsQueryValue(metadata.ArtistName)
+	if strings.TrimSpace(metadata.AlbumTitle) != "" {
+		query += " album:" + beetsQueryValue(metadata.AlbumTitle)
+	}
+	return query
+}
+
+// beetsQueryValue quotes a query value containing spaces so it is parsed as a
+// single phrase instead of separate terms.
+func beetsQueryValue(value string) string {
+	if strings.ContainsAny(value, " ") {
+		return strconv.Quote(value)
+	}
+	return value
 }
 
 func (c *Client) ensureConfig() error {
