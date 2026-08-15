@@ -156,7 +156,7 @@ func TestLocalCandidatesDoNotFallBackToUnrelatedLibrary(t *testing.T) {
 	}
 }
 
-func TestPlanAlternatesRankedLibraryAndDiscoveryTracks(t *testing.T) {
+func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 	mediaRepo := tests.CreateMockMediaFileRepo()
 	mediaRepo.SetData(model.MediaFiles{
 		{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop", MbzRecordingID: "seed-mbid"},
@@ -164,6 +164,8 @@ func TestPlanAlternatesRankedLibraryAndDiscoveryTracks(t *testing.T) {
 		{ID: "local-2", Title: "Local Two", Artist: "Similar Artist", Genre: "Pop"},
 		{ID: "local-3", Title: "Local Three", Artist: "Similar Artist", Genre: "Pop"},
 		{ID: "local-4", Title: "Local Four", Artist: "Similar Artist", Genre: "Pop"},
+		{ID: "local-5", Title: "Local Five", Artist: "Similar Artist", Genre: "Pop"},
+		{ID: "local-6", Title: "Local Six", Artist: "Similar Artist", Genre: "Pop"},
 	})
 	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
 	repo := &fakePersonalRadioRepository{items: []model.PersonalRadioItem{{
@@ -179,6 +181,8 @@ func TestPlanAlternatesRankedLibraryAndDiscoveryTracks(t *testing.T) {
 			{ID: "local-2"}, {MBID: "fresh-2"},
 			{ID: "local-3"}, {MBID: "fresh-3"},
 			{ID: "local-4"}, {MBID: "fresh-4"},
+			{ID: "local-5"}, {MBID: "fresh-5"},
+			{ID: "local-6"}, {MBID: "fresh-6"},
 		}},
 		matcher:        matcher.New(ds),
 		music:          music,
@@ -190,74 +194,81 @@ func TestPlanAlternatesRankedLibraryAndDiscoveryTracks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(repo.items) != 7 {
-		t.Fatalf("expected seed plus six planned items, got %d", len(repo.items))
+	if len(repo.items) != 11 {
+		t.Fatalf("expected seed plus ten planned items, got %d", len(repo.items))
 	}
+	// Discovery items lead so the fresh similar tracks are visible in the queue
+	// immediately; each is followed by a ready library buffer so playback never
+	// stalls while the download lands.
 	wantTypes := []string{
-		model.RadioItemLibrary, model.RadioItemDiscovery,
-		model.RadioItemLibrary, model.RadioItemDiscovery,
-		model.RadioItemLibrary, model.RadioItemDiscovery,
+		model.RadioItemDiscovery, model.RadioItemLibrary,
+		model.RadioItemDiscovery, model.RadioItemLibrary,
+		model.RadioItemDiscovery, model.RadioItemLibrary,
+		model.RadioItemDiscovery, model.RadioItemLibrary,
+		model.RadioItemDiscovery, model.RadioItemLibrary,
 	}
 	wantStatuses := []string{
-		model.RadioItemReady, model.RadioItemDownloading,
-		model.RadioItemHeld, model.RadioItemDownloading,
-		model.RadioItemHeld, model.RadioItemDownloading,
+		model.RadioItemDownloading, model.RadioItemReady,
+		model.RadioItemDownloading, model.RadioItemReady,
+		model.RadioItemDownloading, model.RadioItemReady,
+		model.RadioItemDownloading, model.RadioItemReady,
+		model.RadioItemDownloading, model.RadioItemReady,
 	}
 	for i, item := range repo.items[1:] {
 		if item.Position != i+1 || item.ItemType != wantTypes[i] || item.Status != wantStatuses[i] {
 			t.Fatalf("item %d = position %d, type %q, status %q", i, item.Position, item.ItemType, item.Status)
 		}
 	}
-	if len(music.requests) != 3 {
-		t.Fatalf("expected three discovery downloads, got %d", len(music.requests))
+	if len(music.requests) != 5 {
+		t.Fatalf("expected five discovery downloads, got %d", len(music.requests))
 	}
 	for i, request := range music.requests {
-		if request.ID != []string{"fresh-1", "fresh-2", "fresh-3"}[i] || request.Origin != model.MusicDownloadOriginRadio {
+		if request.ID != []string{"fresh-1", "fresh-2", "fresh-3", "fresh-4", "fresh-5"}[i] || request.Origin != model.MusicDownloadOriginRadio {
 			t.Fatalf("unexpected discovery request %#v", request)
 		}
 	}
 
-	// Polling while all six slots are ready, held, or downloading must not
-	// enqueue another plan or flood the queue with library tracks.
+	// Polling while all ten slots are ready or downloading must not enqueue
+	// another plan or flood the queue with library tracks.
 	if err := svc.plan(context.Background(), session, mediaRepo.Data["seed"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 7 || len(music.requests) != 3 {
+	if len(repo.items) != 11 || len(music.requests) != 5 {
 		t.Fatalf("in-flight work was duplicated: %d items, %d downloads", len(repo.items), len(music.requests))
 	}
 
 	// A failed discovery no longer counts toward capacity. The next plan skips
-	// its seen MBID and appends the next ranked local/discovery pair.
-	repo.items[2].Status = model.RadioItemFailed
+	// its seen MBID and appends the next ranked discovery/buffer pair.
+	repo.items[1].Status = model.RadioItemFailed
 	if err := svc.plan(context.Background(), session, mediaRepo.Data["seed"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 9 || len(music.requests) != 4 {
+	if len(repo.items) != 13 || len(music.requests) != 6 {
 		t.Fatalf("expected one replacement pair: %d items, %d downloads", len(repo.items), len(music.requests))
 	}
-	if replacement := music.requests[3]; replacement.ID != "fresh-4" {
-		t.Fatalf("expected failed discovery to advance to fresh-4, got %#v", replacement)
+	if replacement := music.requests[5]; replacement.ID != "fresh-6" {
+		t.Fatalf("expected failed discovery to advance to fresh-6, got %#v", replacement)
 	}
-	if repo.items[7].Status != model.RadioItemHeld || repo.items[8].Status != model.RadioItemDownloading {
-		t.Fatalf("expected held library/download replacement pair, got %#v", repo.items[7:])
+	if repo.items[11].ItemType != model.RadioItemDiscovery || repo.items[11].Status != model.RadioItemDownloading {
+		t.Fatalf("expected replacement discovery first, got %#v", repo.items[11])
+	}
+	if repo.items[12].ItemType != model.RadioItemLibrary || repo.items[12].Status != model.RadioItemReady {
+		t.Fatalf("expected replacement library buffer, got %#v", repo.items[12])
 	}
 }
 
-func TestHeldLibraryItemsReleaseInOrderAfterDiscoveryResolves(t *testing.T) {
+func TestOutstandingCountsReadyAndDownloadingBuffers(t *testing.T) {
 	now := time.Now().UTC()
 	items := []model.PersonalRadioItem{
+		{ItemType: model.RadioItemSeed, Status: model.RadioItemReady, CreatedAt: now},
 		{ItemType: model.RadioItemLibrary, Status: model.RadioItemReady, CreatedAt: now},
 		{ItemType: model.RadioItemDiscovery, Status: model.RadioItemFailed, CreatedAt: now},
-		{ItemType: model.RadioItemLibrary, Status: model.RadioItemHeld, CreatedAt: now},
+		{ItemType: model.RadioItemLibrary, Status: model.RadioItemReady, CreatedAt: now},
 		{ItemType: model.RadioItemDiscovery, Status: model.RadioItemDownloading, CreatedAt: now},
-		{ItemType: model.RadioItemLibrary, Status: model.RadioItemHeld, CreatedAt: now},
+		{ItemType: model.RadioItemLibrary, Status: model.RadioItemPlayed, CreatedAt: now},
 	}
-	indices := releasableHeldItems(items)
-	if len(indices) != 1 || indices[0] != 2 {
-		t.Fatalf("expected only the library item after the failed discovery to release, got %v", indices)
-	}
-	if got := outstandingRadioItems(items); got != 4 {
-		t.Fatalf("expected failed discovery to be excluded from capacity, got %d", got)
+	if got := outstandingRadioItems(items); got != 3 {
+		t.Fatalf("expected seed excluded, failed excluded, played excluded, got %d", got)
 	}
 }
 
