@@ -87,14 +87,20 @@ func TestCreateDownloadValidatesAndQueues(t *testing.T) {
 	service := New(fakeCatalog{}, fakeDownloader{}, &fakeTagger{}, jobs, nil)
 
 	job, err := service.CreateDownload(context.Background(), "user-1", model.ExternalDownloadRequest{
-		Kind: model.MusicDownloadSong,
-		ID:   "recording-1",
+		Kind:   model.MusicDownloadSong,
+		ID:     "recording-1",
+		Title:  "Fresh Track",
+		Artist: "Fresh Artist",
+		Album:  "Fresh Album",
 	})
 	if err != nil {
 		t.Fatalf("CreateDownload returned error: %v", err)
 	}
 	if job.Status != model.MusicDownloadQueued || jobs.job == nil {
 		t.Fatalf("expected queued job, got %#v", job)
+	}
+	if jobs.job.Title != "Fresh Track" || jobs.job.Artist != "Fresh Artist" || jobs.job.Album != "Fresh Album" {
+		t.Fatalf("expected recommendation metadata on job, got %#v", jobs.job)
 	}
 
 	_, err = service.CreateDownload(context.Background(), "user-1", model.ExternalDownloadRequest{

@@ -11,6 +11,7 @@ describe('radioSongs', () => {
           position: 2,
           type: 'discovery',
           status: 'downloading',
+          song: { title: 'Fresh Track', artist: 'Fresh Artist' },
         },
         {
           id: 'library-2',
@@ -67,7 +68,9 @@ describe('radioSongs', () => {
     expect(result.data['radio-fresh-1']).toEqual(
       expect.objectContaining({
         radioPending: true,
-        name: 'Pending download…',
+        name: 'Downloading: Fresh Track',
+        title: 'Fresh Track',
+        artist: 'Fresh Artist',
         id: undefined,
         streamUrl: null,
       }),

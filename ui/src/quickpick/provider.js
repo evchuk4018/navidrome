@@ -64,9 +64,9 @@ export const radioSongs = (response) => {
         data[key] = {
           ...data[key],
           id: undefined,
-          name: 'Pending download…',
-          artist: '',
-          album: '',
+          name: data[key].title
+            ? `Downloading: ${data[key].title}`
+            : 'Pending download…',
           streamUrl: null,
         }
       }

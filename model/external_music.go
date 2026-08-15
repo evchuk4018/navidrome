@@ -69,6 +69,9 @@ type ExternalDownloadRequest struct {
 	Origin      string `json:"-"`
 	Priority    int    `json:"-"`
 	RadioItemID string `json:"-"`
+	Title       string `json:"-"`
+	Artist      string `json:"-"`
+	Album       string `json:"-"`
 }
 
 const (

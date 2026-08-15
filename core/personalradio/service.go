@@ -172,6 +172,16 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.
 			downloadFailed = true
 			continue
 		}
+		// Expose the recommendation metadata while the download is in flight so
+		// the queue can show what is being fetched before the track is ready.
+		// The ready path below overwrites the stub with the imported file.
+		if item.Song == nil && job.Title != "" {
+			item.Song = &model.MediaFile{
+				Title:  job.Title,
+				Artist: job.Artist,
+				Album:  job.Album,
+			}
+		}
 		switch job.Status {
 		case model.MusicDownloadSuccess:
 			log.Debug(ctx, "Personal radio download completed; resolving imported track",
@@ -795,6 +805,9 @@ func (s *service) queueDiscovery(ctx context.Context, session model.PersonalRadi
 		Origin:      model.MusicDownloadOriginRadio,
 		Priority:    100,
 		RadioItemID: item.ID,
+		Title:       discovery.Name,
+		Artist:      firstSongArtist(discovery),
+		Album:       discovery.Album,
 	})
 	if err != nil {
 		log.Warn(ctx, "Unable to queue personal radio discovery",

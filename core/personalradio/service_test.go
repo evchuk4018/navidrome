@@ -177,8 +177,8 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 		ds:   ds,
 		repo: repo,
 		agents: fakeSimilarityProvider{songs: []agents.Song{
-			{ID: "local-1"}, {MBID: "fresh-1"},
-			{ID: "local-2"}, {MBID: "fresh-2"},
+			{ID: "local-1"}, {MBID: "fresh-1", Name: "Fresh One", Artists: []agents.Artist{{Name: "Fresh Artist"}}, Album: "Fresh Album"},
+			{ID: "local-2"}, {MBID: "fresh-2", Name: "Fresh Two", Artists: []agents.Artist{{Name: "Fresh Artist"}}, Album: "Fresh Album"},
 			{ID: "local-3"}, {MBID: "fresh-3"},
 			{ID: "local-4"}, {MBID: "fresh-4"},
 			{ID: "local-5"}, {MBID: "fresh-5"},
@@ -225,6 +225,16 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 	for i, request := range music.requests {
 		if request.ID != []string{"fresh-1", "fresh-2", "fresh-3", "fresh-4", "fresh-5"}[i] || request.Origin != model.MusicDownloadOriginRadio {
 			t.Fatalf("unexpected discovery request %#v", request)
+		}
+	}
+	// The Last.fm recommendation metadata rides on the download request so the
+	// queue can show what is being fetched while the download is in flight.
+	for i, request := range music.requests[:2] {
+		want := []struct {
+			title, artist, album string
+		}{{"Fresh One", "Fresh Artist", "Fresh Album"}, {"Fresh Two", "Fresh Artist", "Fresh Album"}}[i]
+		if request.Title != want.title || request.Artist != want.artist || request.Album != want.album {
+			t.Fatalf("recommendation metadata missing from request %#v", request)
 		}
 	}
 
@@ -304,5 +314,44 @@ func TestRefillFailsCompletedDownloadWithoutLibraryMatch(t *testing.T) {
 	}
 	if response.PlanningStatus != model.RadioPlanningNoDiscovery {
 		t.Fatalf("expected terminal no-discovery status after failed completed download, got %q", response.PlanningStatus)
+	}
+}
+
+func TestRefillExposesPendingDownloadMetadata(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	repo := &fakePersonalRadioRepository{
+		session: &model.PersonalRadioSession{ID: "session", UserID: "user", Status: model.PersonalRadioEnded},
+		items: []model.PersonalRadioItem{{
+			ID: "item", SessionID: "session", Position: 1,
+			ItemType: model.RadioItemDiscovery, Status: model.RadioItemDownloading,
+			RecordingMBID: "fresh-mbid", DownloadJobID: "job",
+		}},
+	}
+	music := &fakeMusicService{job: &model.MusicDownloadJob{
+		ID: "job", Status: model.MusicDownloadRunning,
+		Title: "Fresh Track", Artist: "Fresh Artist", Album: "Fresh Album",
+	}}
+	svc := &service{
+		ds:             ds,
+		repo:           repo,
+		music:          music,
+		planning:       map[string]bool{},
+		planningStatus: map[string]string{},
+	}
+
+	response, err := svc.Refill(context.Background(), "user", "session")
+	if err != nil {
+		t.Fatalf("Refill returned error: %v", err)
+	}
+	if len(response.Items) != 1 || response.Items[0].Song == nil {
+		t.Fatalf("expected pending item to carry recommendation metadata, got %#v", response.Items)
+	}
+	song := response.Items[0].Song
+	if song.Title != "Fresh Track" || song.Artist != "Fresh Artist" || song.Album != "Fresh Album" {
+		t.Fatalf("expected recommendation metadata on pending song, got %#v", song)
+	}
+	if song.ID != "" {
+		t.Fatalf("expected stub song to have no media file id, got %q", song.ID)
 	}
 }

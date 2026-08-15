@@ -52,9 +52,10 @@ const mapToAudioLists = (item) => {
     return {
       trackId,
       uuid: uuidv4(),
-      name: item.name,
+      name: item.name || item.title,
       song: item,
       musicSrc: item.radioPending ? null : item.streamUrl,
+      singer: item.artist || '',
       cover: item.cover,
       isRadio: true,
       radioPending: item.radioPending || false,

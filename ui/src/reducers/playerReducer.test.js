@@ -97,8 +97,38 @@ describe('playerReducer', () => {
     expect(result.queue[0].radioItemId).toBe('item-1')
     expect(result.queue[0].radioPending).toBe(false)
     expect(result.queue[0].name).toBe('Fresh Track')
+    expect(result.queue[0].singer).toBe('Artist')
     expect(result.queue[0].musicSrc).not.toBeNull()
     expect(result.queue[0].uuid).toBe('placeholder-uuid')
+  })
+
+  it('shows the pending download with its recommendation metadata', () => {
+    const state = {
+      queue: [],
+      current: {},
+      savedPlayIndex: 0,
+      clear: false,
+      autoPlay: false,
+      radioSession: { id: 'session-1' },
+    }
+    const result = playerReducer(state, {
+      type: PLAYER_SYNC_RADIO_TRACKS,
+      data: {
+        'radio-item-2': {
+          radioItemId: 'item-2',
+          radioPending: true,
+          name: 'Downloading: Fresh Track',
+          title: 'Fresh Track',
+          artist: 'Fresh Artist',
+          id: undefined,
+        },
+      },
+    })
+
+    expect(result.queue[0].radioPending).toBe(true)
+    expect(result.queue[0].name).toBe('Downloading: Fresh Track')
+    expect(result.queue[0].singer).toBe('Fresh Artist')
+    expect(result.queue[0].musicSrc).toBeNull()
   })
 
   it('appends pending radio placeholders and keeps playing track untouched', () => {
