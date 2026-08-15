@@ -10,6 +10,9 @@ services:
     image: home-music-navidrome:local
     environment:
       ND_BASEURL: /navidrome
+      ND_LASTFM_ENABLED: ${ND_LASTFM_ENABLED:-false}
+      ND_LASTFM_APIKEY: ${ND_LASTFM_APIKEY:-}
+      ND_LASTFM_SECRET: ${ND_LASTFM_SECRET:-}
     ports:
       - "127.0.0.1:4533:4533"
     volumes:
