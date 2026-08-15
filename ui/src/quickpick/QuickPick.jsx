@@ -4,7 +4,7 @@ import { useDataProvider, useNotify } from 'react-admin'
 import { useDispatch } from 'react-redux'
 import { useHistory } from 'react-router-dom'
 import { Artwork } from '../common/Artwork'
-import { playTracks, setRadioSession } from '../actions'
+import { playTracks, setRadioSession, syncRadioTracks } from '../actions'
 import {
   createPersonalRadio,
   getQuickPick,
@@ -21,6 +21,7 @@ const useStyles = makeStyles((theme) => ({
     padding: theme.spacing(3),
   },
   heading: { marginBottom: theme.spacing(2) },
+  section: { marginTop: theme.spacing(4), marginBottom: theme.spacing(2) },
   grid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
@@ -151,12 +152,7 @@ const QuickPick = () => {
             (key) => enriched.data[key].radioItemType !== 'seed',
           )
           if (rest.length)
-            dispatch({
-              type: 'PLAYER_ADD_TRACKS',
-              data: Object.fromEntries(
-                rest.map((key) => [key, enriched.data[key]]),
-              ),
-            })
+            dispatch(syncRadioTracks(enriched.data, rest))
         })
         .catch(() =>
           notify(
@@ -175,6 +171,58 @@ const QuickPick = () => {
       </div>
     )
 
+  const recommendations = items.filter(
+    (item) => item.kind === 'recommendation',
+  )
+  const favorites = items.filter((item) => item.kind !== 'recommendation')
+
+  const renderTiles = (tiles) =>
+    tiles.map((item) => {
+      const record = item.song || item.playlist
+      const title = item.song?.title || item.playlist?.name
+      const subtitle = item.song?.artist || 'Playlist'
+      const identity = `${subtitle}:${title}`
+      return (
+        <button
+          type="button"
+          key={`${item.kind}-${record.id}`}
+          className={classes.tile}
+          onClick={() =>
+            item.kind === 'playlist'
+              ? playPlaylist(item.playlist)
+              : playSongRadio(item.song)
+          }
+          aria-label={`Play ${title}${item.kind === 'song' ? ' radio' : ''}`}
+        >
+          <div
+            className={classes.fallback}
+            style={{ background: identityColor(identity) }}
+          >
+            {initials(item.song?.artist || title)}
+          </div>
+          <Artwork
+            record={record}
+            square
+            className={classes.artwork}
+            title=""
+          />
+          <div className={classes.shade} />
+          <div className={classes.label}>
+            <Typography className={classes.title} noWrap>
+              {title}
+            </Typography>
+            <Typography
+              className={classes.subtitle}
+              variant="body2"
+              noWrap
+            >
+              {subtitle}
+            </Typography>
+          </div>
+        </button>
+      )
+    })
+
   return (
     <main className={classes.root}>
       <Typography component="h1" variant="h4" className={classes.heading}>
@@ -185,53 +233,21 @@ const QuickPick = () => {
           Play a few songs or playlists and your favorites will appear here.
         </Typography>
       ) : (
-        <div className={classes.grid}>
-          {items.map((item) => {
-            const record = item.song || item.playlist
-            const title = item.song?.title || item.playlist?.name
-            const subtitle = item.song?.artist || 'Playlist'
-            const identity = `${subtitle}:${title}`
-            return (
-              <button
-                type="button"
-                key={`${item.kind}-${record.id}`}
-                className={classes.tile}
-                onClick={() =>
-                  item.kind === 'playlist'
-                    ? playPlaylist(item.playlist)
-                    : playSongRadio(item.song)
-                }
-                aria-label={`Play ${title}${item.kind === 'song' ? ' radio' : ''}`}
+        <>
+          <div className={classes.grid}>{renderTiles(favorites)}</div>
+          {recommendations.length > 0 && (
+            <>
+              <Typography
+                component="h2"
+                variant="h6"
+                className={classes.section}
               >
-                <div
-                  className={classes.fallback}
-                  style={{ background: identityColor(identity) }}
-                >
-                  {initials(item.song?.artist || title)}
-                </div>
-                <Artwork
-                  record={record}
-                  square
-                  className={classes.artwork}
-                  title=""
-                />
-                <div className={classes.shade} />
-                <div className={classes.label}>
-                  <Typography className={classes.title} noWrap>
-                    {title}
-                  </Typography>
-                  <Typography
-                    className={classes.subtitle}
-                    variant="body2"
-                    noWrap
-                  >
-                    {subtitle}
-                  </Typography>
-                </div>
-              </button>
-            )
-          })}
-        </div>
+                Smart picks from Last.fm
+              </Typography>
+              <div className={classes.grid}>{renderTiles(recommendations)}</div>
+            </>
+          )}
+        </>
       )}
     </main>
   )

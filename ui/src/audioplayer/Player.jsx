@@ -23,10 +23,11 @@ import {
   currentPlaying,
   refreshQueue,
   setPlayMode,
+  setRadioPlanning,
   setTranscodingProfile,
   setVolume,
   syncQueue,
-  setRadioPlanning,
+  syncRadioTracks,
 } from '../actions'
 import PlayerToolbar from './PlayerToolbar'
 import { sendNotification } from '../utils'
@@ -83,23 +84,8 @@ const Player = () => {
 
   const appendRadioItems = useCallback(
     (response) => {
-      const queued = new Set(
-        playerStateRef.current.queue
-          .map((item) => item.radioItemId)
-          .filter(Boolean),
-      )
       const songs = radioSongs(response)
-      const ids = songs.ids.filter(
-        (key) => !queued.has(songs.data[key].radioItemId),
-      )
-      if (ids.length) {
-        dispatch(
-          addTracks(
-            Object.fromEntries(ids.map((key) => [key, songs.data[key]])),
-            ids,
-          ),
-        )
-      }
+      dispatch(syncRadioTracks(songs.data, songs.ids))
     },
     [dispatch],
   )
@@ -138,6 +124,27 @@ const Player = () => {
 
   const radioSessionId = playerState.radioSession?.id
   const radioPlanningStatus = playerState.radioSession?.planningStatus
+
+  // Skip ahead past pending radio items: the buffer library songs queued after
+  // each download keep playing until the fresh track is ready. When a pending
+  // item becomes ready it is replaced in place by the refill sync. Called from
+  // onAudioPlayTrackChange, which fires before the library tries to load the
+  // target track.
+  const skipPendingRadioItem = useCallback(
+    (playId, audioLists) => {
+      const index = audioLists.findIndex(
+        (item) => item.__PLAYER_KEY__ === playId,
+      )
+      if (index < 0 || !audioLists[index]?.radioPending) return
+      const nextPlayable = audioLists
+        .slice(index + 1)
+        .find((item) => !item.radioPending)
+      if (nextPlayable) {
+        audioInstance && audioInstance.playByIndex(audioLists.indexOf(nextPlayable))
+      }
+    },
+    [audioInstance],
+  )
 
   // Discovery downloads happen after the seed starts playing. Poll while the
   // server is selecting, downloading, or waiting for the scanner so a ready
@@ -520,22 +527,32 @@ const Player = () => {
     ],
   )
 
-  const onAudioPlayTrackChange = useCallback(() => {
-    const playback = radioPlaybackRef.current
-    if (playback && !playback.completed) {
-      reportRadioFeedback(playback, 'manual_skip')
-    }
-    radioPlaybackRef.current = null
-    if (currentTrackId) {
-      subsonic.reportPlayback(
-        currentTrackId,
-        lastPositionMsRef.current,
-        'stopped',
-      )
-    }
-    setHeartbeatTrackId(null)
-    setCurrentTrackId(null)
-  }, [currentTrackId, reportRadioFeedback])
+  const onAudioPlayTrackChange = useCallback(
+    (playId, audioLists) => {
+      if (playerStateRef.current.radioSession?.id) {
+        skipPendingRadioItem(playId, audioLists)
+      }
+      const playback = radioPlaybackRef.current
+      if (playback && !playback.completed) {
+        reportRadioFeedback(playback, 'manual_skip')
+      }
+      radioPlaybackRef.current = null
+      if (currentTrackId) {
+        subsonic.reportPlayback(
+          currentTrackId,
+          lastPositionMsRef.current,
+          'stopped',
+        )
+      }
+      setHeartbeatTrackId(null)
+      setCurrentTrackId(null)
+    },
+    [
+      currentTrackId,
+      reportRadioFeedback,
+      skipPendingRadioItem,
+    ],
+  )
 
   const onAudioPause = useCallback(
     (info) => {

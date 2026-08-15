@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { radioErrorDetails, radioSongs } from './provider'
 
 describe('radioSongs', () => {
-  it('preserves server positions and hides held or downloading tracks', () => {
+  it('preserves server positions and marks downloading tracks as pending', () => {
     const result = radioSongs({
       session: { id: 'session-1' },
       items: [
@@ -16,7 +16,7 @@ describe('radioSongs', () => {
           id: 'library-2',
           position: 3,
           type: 'library',
-          status: 'held',
+          status: 'ready',
           song: { id: 'song-2' },
         },
         {
@@ -40,19 +40,41 @@ describe('radioSongs', () => {
           status: 'ready',
           song: { id: 'song-1' },
         },
+        {
+          id: 'failed-1',
+          position: 6,
+          type: 'discovery',
+          status: 'failed',
+          song: { id: 'song-5' },
+        },
       ],
     })
 
     expect(result.ids).toEqual([
       'radio-library-1',
+      'radio-fresh-1',
+      'radio-library-2',
       'radio-fresh-2',
       'radio-library-3',
     ])
     expect(result.ids.map((id) => result.data[id].radioItemId)).toEqual([
       'library-1',
+      'fresh-1',
+      'library-2',
       'fresh-2',
       'library-3',
     ])
+    expect(result.data['radio-fresh-1']).toEqual(
+      expect.objectContaining({
+        radioPending: true,
+        name: 'Pending download…',
+        id: undefined,
+        streamUrl: null,
+      }),
+    )
+    expect(result.data['radio-library-1']).toEqual(
+      expect.objectContaining({ radioPending: false, id: 'song-1' }),
+    )
   })
 })
 

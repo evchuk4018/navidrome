@@ -14,6 +14,7 @@ import {
   PLAYER_REFRESH_QUEUE,
   PLAYER_SET_RADIO_SESSION,
   PLAYER_SET_RADIO_PLANNING,
+  PLAYER_SYNC_RADIO_TRACKS,
 } from '../actions'
 import config from '../config'
 
@@ -47,15 +48,19 @@ const mapToAudioLists = (item) => {
   // If item comes from a playlist, trackId is mediaFileId
   const trackId = item.mediaFileId || item.id
 
-  if (item.isRadio) {
+  if (item.isRadio || item.radioPending) {
     return {
       trackId,
       uuid: uuidv4(),
       name: item.name,
       song: item,
-      musicSrc: item.streamUrl,
+      musicSrc: item.radioPending ? null : item.streamUrl,
       cover: item.cover,
       isRadio: true,
+      radioPending: item.radioPending || false,
+      radioSessionId: item.radioSessionId,
+      radioItemId: item.radioItemId,
+      radioItemType: item.radioItemType,
     }
   }
 
@@ -101,6 +106,7 @@ const mapToAudioLists = (item) => {
     radioSessionId: item.radioSessionId,
     radioItemId: item.radioItemId,
     radioItemType: item.radioItemType,
+    radioPending: item.radioPending || false,
   }
 }
 
@@ -136,6 +142,33 @@ const reduceSetTrack = (state, { data }) => {
 const reduceAddTracks = (state, { data }) => {
   const appended = Object.keys(data).map((id) => mapToAudioLists(data[id]))
   return { ...state, queue: [...state.queue, ...appended], clear: false }
+}
+
+// Replaces or appends radio items by radioItemId so pending placeholders
+// become playable in place when their download resolves. The placeholder's
+// uuid is preserved so the player treats the resolved track as the same item.
+const reduceSyncRadioTracks = (state, { data }) => {
+  const ids = Object.keys(data)
+  if (!ids.length) return state
+  const queue = [...state.queue]
+  const byRadioItemId = new Map(
+    queue.map((item) => [item.radioItemId, item]).filter(([id]) => id),
+  )
+  ids.forEach((id) => {
+    const next = mapToAudioLists(data[id])
+    const existing = byRadioItemId.get(next.radioItemId)
+    if (existing) {
+      const index = queue.findIndex(
+        (item) => item.radioItemId === next.radioItemId,
+      )
+      if (index >= 0) {
+        queue[index] = { ...next, uuid: existing.uuid }
+        return
+      }
+    }
+    queue.push(next)
+  })
+  return { ...state, queue, clear: false }
 }
 
 const reducePlayNext = (state, { data }) => {
@@ -224,6 +257,8 @@ export const playerReducer = (previousState = initialState, payload) => {
       return reduceSetTrack(previousState, payload)
     case PLAYER_ADD_TRACKS:
       return reduceAddTracks(previousState, payload)
+    case PLAYER_SYNC_RADIO_TRACKS:
+      return reduceSyncRadioTracks(previousState, payload)
     case PLAYER_PLAY_NEXT:
       return reducePlayNext(previousState, payload)
     case PLAYER_SET_VOLUME:

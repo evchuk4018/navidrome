@@ -11,6 +11,7 @@ export const TRANSCODING_SET_PROFILE = 'TRANSCODING_SET_PROFILE'
 export const PLAYER_REFRESH_QUEUE = 'PLAYER_REFRESH_QUEUE'
 export const PLAYER_SET_RADIO_SESSION = 'PLAYER_SET_RADIO_SESSION'
 export const PLAYER_SET_RADIO_PLANNING = 'PLAYER_SET_RADIO_PLANNING'
+export const PLAYER_SYNC_RADIO_TRACKS = 'PLAYER_SYNC_RADIO_TRACKS'
 
 export const setTrack = (data) => ({
   type: PLAYER_SET_TRACK,
@@ -126,3 +127,11 @@ export const setRadioPlanning = (planningStatus) => ({
   type: PLAYER_SET_RADIO_PLANNING,
   data: planningStatus,
 })
+
+export const syncRadioTracks = (data, ids) => {
+  const songs = filterSongs(data, ids)
+  return {
+    type: PLAYER_SYNC_RADIO_TRACKS,
+    data: songs,
+  }
+}

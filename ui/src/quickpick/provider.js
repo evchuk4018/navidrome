@@ -49,17 +49,26 @@ export const radioSongs = (response) => {
     (left, right) => left.position - right.position,
   )
   orderedItems
-    .filter(
-      (item) =>
-        item.song && (item.status === 'ready' || item.status === 'played'),
-    )
+    .filter((item) => item.status !== 'failed')
     .forEach((item) => {
       const key = `radio-${item.id}`
+      const pending = item.status === 'downloading'
       data[key] = {
         ...item.song,
         radioSessionId: response.session.id,
         radioItemId: item.id,
         radioItemType: item.type,
+        radioPending: pending,
+      }
+      if (pending) {
+        data[key] = {
+          ...data[key],
+          id: undefined,
+          name: 'Pending download…',
+          artist: '',
+          album: '',
+          streamUrl: null,
+        }
       }
       ids.push(key)
     })
