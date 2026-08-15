@@ -88,10 +88,10 @@ func CreateNativeAPIRouter(ctx context.Context) *nativeapi.Router {
 	musicDownloadJobRepository := persistence.NewMusicDownloadJobRepository(sqlDB)
 	service := music.New(client, ytdlpClient, beetsClient, musicDownloadJobRepository, modelScanner)
 	quickPickMetricsRepository := persistence.NewQuickPickMetricsRepository(sqlDB)
-	quickpickService := quickpick.New(dataStore, quickPickMetricsRepository)
-	personalRadioRepository := persistence.NewPersonalRadioRepository(sqlDB)
 	agentsAgents := agents.GetAgents(dataStore, manager)
 	matcherMatcher := matcher.New(dataStore)
+	quickpickService := quickpick.New(dataStore, quickPickMetricsRepository, agentsAgents, matcherMatcher)
+	personalRadioRepository := persistence.NewPersonalRadioRepository(sqlDB)
 	personalradioService := personalradio.New(dataStore, personalRadioRepository, agentsAgents, matcherMatcher, service, modelScanner)
 	router := nativeapi.New(ctx, dataStore, share, playlistsPlaylists, insights, library, user, maintenance, manager, uploader, service, quickpickService, personalradioService)
 	return router

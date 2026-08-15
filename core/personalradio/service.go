@@ -22,7 +22,7 @@ import (
 
 const (
 	discoveryCandidateLimit = 40
-	queueLowWatermark       = 6
+	queueLowWatermark       = 10
 	discoveryTTL            = 7 * 24 * time.Hour
 )
 
@@ -278,13 +278,6 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string) (*model.
 		}
 	}
 
-	for _, index := range releasableHeldItems(items) {
-		items[index].Status = model.RadioItemReady
-		if err := s.updateRadioItem(ctx, &items[index], "releasing library item after discovery resolution"); err != nil {
-			return nil, err
-		}
-	}
-
 	for i := range items {
 		if items[i].Status == model.RadioItemReady || items[i].Status == model.RadioItemPlayed {
 			if items[i].Song == nil {
@@ -525,10 +518,12 @@ func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, 
 	now := time.Now().UTC()
 	newItems := make([]model.PersonalRadioItem, 0, slotsToAdd)
 	previous, hasPrevious := lastPlannedItem(items)
-	blockedByDiscovery := lastDiscoveryIsDownloading(items)
-	nextType := model.RadioItemLibrary
-	if hasPrevious && previous.ItemType == model.RadioItemLibrary {
-		nextType = model.RadioItemDiscovery
+	// Discovery items lead so similar tracks are visible in the queue right
+	// away; each is followed by a ready library buffer so playback never
+	// stalls while the download lands.
+	nextType := model.RadioItemDiscovery
+	if hasPrevious && previous.ItemType == model.RadioItemDiscovery {
+		nextType = model.RadioItemLibrary
 	}
 	localIndex, discoveryIndex := 0, 0
 	for len(newItems) < slotsToAdd {
@@ -539,16 +534,12 @@ func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, 
 				if localIndex < len(pools.local) {
 					file := pools.local[localIndex]
 					localIndex++
-					status := model.RadioItemReady
-					if blockedByDiscovery {
-						status = model.RadioItemHeld
-					}
 					item := model.PersonalRadioItem{
 						ID:            id.NewRandom(),
 						SessionID:     session.ID,
 						Position:      position,
 						ItemType:      model.RadioItemLibrary,
-						Status:        status,
+						Status:        model.RadioItemReady,
 						MediaFileID:   file.ID,
 						RecordingMBID: file.MbzRecordingID,
 						Song:          &file,
@@ -571,7 +562,6 @@ func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, 
 						continue
 					}
 					newItems = append(newItems, item)
-					blockedByDiscovery = true
 					position++
 					nextType = model.RadioItemLibrary
 					added = true
@@ -1082,38 +1072,6 @@ func lastPlannedItem(items []model.PersonalRadioItem) (model.PersonalRadioItem, 
 		}
 	}
 	return model.PersonalRadioItem{}, false
-}
-
-func lastDiscoveryIsDownloading(items []model.PersonalRadioItem) bool {
-	for i := len(items) - 1; i >= 0; i-- {
-		if items[i].ItemType == model.RadioItemDiscovery {
-			return items[i].Status == model.RadioItemDownloading
-		}
-	}
-	return false
-}
-
-// releasableHeldItems returns library items whose closest preceding discovery
-// has resolved (success or failure). This preserves planned queue order while
-// allowing playback to continue immediately after a failed download.
-func releasableHeldItems(items []model.PersonalRadioItem) []int {
-	result := make([]int, 0)
-	for i := range items {
-		if items[i].Status != model.RadioItemHeld {
-			continue
-		}
-		blocked := false
-		for previous := i - 1; previous >= 0; previous-- {
-			if items[previous].ItemType == model.RadioItemDiscovery {
-				blocked = items[previous].Status == model.RadioItemDownloading
-				break
-			}
-		}
-		if !blocked {
-			result = append(result, i)
-		}
-	}
-	return result
 }
 
 func isPendingPlanningStatus(status string) bool {

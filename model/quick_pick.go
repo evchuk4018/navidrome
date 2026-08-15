@@ -7,11 +7,22 @@ const (
 	QuickPickPlaylist = "playlist"
 )
 
+// QuickPickRecommendationKind is the tile kind for Last.fm-driven smart picks.
+const QuickPickRecommendationKind = "recommendation"
+
+type QuickPickRecommendation struct {
+	Title         string `json:"title"`
+	Artist        string `json:"artist,omitempty"`
+	Album         string `json:"album,omitempty"`
+	RecordingMBID string `json:"recordingMbid,omitempty"`
+}
+
 type QuickPickItem struct {
-	Kind     string     `json:"kind"`
-	Song     *MediaFile `json:"song,omitempty"`
-	Playlist *Playlist  `json:"playlist,omitempty"`
-	Score    float64    `json:"-"`
+	Kind           string                   `json:"kind"`
+	Song           *MediaFile               `json:"song,omitempty"`
+	Playlist       *Playlist                `json:"playlist,omitempty"`
+	Recommendation *QuickPickRecommendation `json:"recommendation,omitempty"`
+	Score          float64                  `json:"-"`
 }
 
 type QuickPickResponse struct {
