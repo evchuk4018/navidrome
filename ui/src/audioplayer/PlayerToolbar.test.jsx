@@ -1,10 +1,10 @@
 import React from 'react'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { useMediaQuery } from '@material-ui/core'
-import { useGetOne } from 'react-admin'
+import { useGetOne, useTranslate } from 'react-admin'
 import { useDispatch } from 'react-redux'
 import { useToggleLove } from '../common'
-import { openSaveQueueDialog } from '../actions'
+import { openAddToPlaylist, openSaveQueueDialog } from '../actions'
 import PlayerToolbar from './PlayerToolbar'
 
 // Mock dependencies
@@ -18,6 +18,7 @@ vi.mock('@material-ui/core', async () => {
 
 vi.mock('react-admin', () => ({
   useGetOne: vi.fn(),
+  useTranslate: vi.fn(),
 }))
 
 vi.mock('react-redux', () => ({
@@ -35,6 +36,7 @@ vi.mock('../common', () => ({
 
 vi.mock('../actions', () => ({
   openSaveQueueDialog: vi.fn(),
+  openAddToPlaylist: vi.fn(),
 }))
 
 vi.mock('react-hotkeys', () => ({
@@ -51,7 +53,9 @@ describe('<PlayerToolbar />', () => {
     useGetOne.mockReturnValue({ data: mockSongData, loading: false })
     useToggleLove.mockReturnValue([mockToggleLove, false])
     useDispatch.mockReturnValue(mockDispatch)
+    useTranslate.mockReturnValue((key) => key)
     openSaveQueueDialog.mockReturnValue({ type: 'OPEN_SAVE_QUEUE_DIALOG' })
+    openAddToPlaylist.mockReturnValue({ type: 'OPEN_ADD_TO_PLAYLIST' })
   })
 
   afterEach(cleanup)
@@ -61,19 +65,38 @@ describe('<PlayerToolbar />', () => {
       useMediaQuery.mockReturnValue(true) // isDesktop = true
     })
 
-    it('renders desktop toolbar with both buttons', () => {
+    it('renders desktop toolbar with all three buttons', () => {
       render(<PlayerToolbar id="song-1" />)
 
-      // Both buttons should be in a single list item
+      // All buttons should be in a single list item
       const listItems = screen.getAllByRole('listitem')
       expect(listItems).toHaveLength(1)
 
-      // Verify both buttons are rendered
+      // Verify all three buttons are rendered
       expect(screen.getByTestId('save-queue-button')).toBeInTheDocument()
+      expect(screen.getByTestId('add-to-playlist-button')).toBeInTheDocument()
       expect(screen.getByTestId('love-button')).toBeInTheDocument()
 
       // Verify desktop classes are applied
       expect(listItems[0].className).toContain('toolbar')
+    })
+
+    it('opens add to playlist dialog with the current track id', () => {
+      render(<PlayerToolbar id="song-1" />)
+
+      fireEvent.click(screen.getByTestId('add-to-playlist-button'))
+
+      expect(openAddToPlaylist).toHaveBeenCalledWith({
+        selectedIds: ['song-1'],
+      })
+      expect(mockDispatch).toHaveBeenCalledWith({ type: 'OPEN_ADD_TO_PLAYLIST' })
+    })
+
+    it('disables add to playlist button when isRadio is true', () => {
+      render(<PlayerToolbar id="song-1" isRadio={true} />)
+
+      const addToPlaylistButton = screen.getByTestId('add-to-playlist-button')
+      expect(addToPlaylistButton).toBeDisabled()
     })
 
     it('disables save queue button when isRadio is true', () => {
@@ -114,15 +137,17 @@ describe('<PlayerToolbar />', () => {
 
       // Each button should be in its own list item
       const listItems = screen.getAllByRole('listitem')
-      expect(listItems).toHaveLength(2)
+      expect(listItems).toHaveLength(3)
 
-      // Verify both buttons are rendered
+      // Verify all three buttons are rendered
       expect(screen.getByTestId('save-queue-button')).toBeInTheDocument()
+      expect(screen.getByTestId('add-to-playlist-button')).toBeInTheDocument()
       expect(screen.getByTestId('love-button')).toBeInTheDocument()
 
       // Verify mobile classes are applied
       expect(listItems[0].className).toContain('mobileListItem')
       expect(listItems[1].className).toContain('mobileListItem')
+      expect(listItems[2].className).toContain('mobileListItem')
     })
 
     it('disables save queue button when isRadio is true', () => {
@@ -161,6 +186,9 @@ describe('<PlayerToolbar />', () => {
 
       const loveButton = screen.getByTestId('love-button')
       expect(loveButton).toBeDisabled()
+
+      const addToPlaylistButton = screen.getByTestId('add-to-playlist-button')
+      expect(addToPlaylistButton).toBeDisabled()
     })
   })
 })

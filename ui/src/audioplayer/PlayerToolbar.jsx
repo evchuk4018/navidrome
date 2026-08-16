@@ -1,12 +1,13 @@
 import React, { useCallback } from 'react'
 import { useDispatch } from 'react-redux'
-import { useGetOne } from 'react-admin'
+import { useGetOne, useTranslate } from 'react-admin'
 import { GlobalHotKeys } from 'react-hotkeys'
 import IconButton from '@material-ui/core/IconButton'
 import { useMediaQuery } from '@material-ui/core'
 import { RiSaveLine } from 'react-icons/ri'
+import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
 import { LoveButton, useToggleLove } from '../common'
-import { openSaveQueueDialog } from '../actions'
+import { openAddToPlaylist, openSaveQueueDialog } from '../actions'
 import { keyMap } from '../hotkeys'
 import { makeStyles } from '@material-ui/core/styles'
 
@@ -57,6 +58,7 @@ const useStyles = makeStyles((theme) => ({
 
 const PlayerToolbar = ({ id, isRadio }) => {
   const dispatch = useDispatch()
+  const translate = useTranslate()
   const { data, loading } = useGetOne('song', id, { enabled: !!id && !isRadio })
   const [toggleLove, toggling] = useToggleLove('song', data)
   const isDesktop = useMediaQuery('(min-width:810px)')
@@ -74,6 +76,15 @@ const PlayerToolbar = ({ id, isRadio }) => {
     [dispatch],
   )
 
+  const handleAddToPlaylist = useCallback(
+    (e) => {
+      if (!id) return
+      dispatch(openAddToPlaylist({ selectedIds: [id] }))
+      e.stopPropagation()
+    },
+    [dispatch, id],
+  )
+
   const buttonClass = isDesktop ? classes.button : classes.mobileButton
   const listItemClass = isDesktop ? classes.toolbar : classes.mobileListItem
 
@@ -86,6 +97,20 @@ const PlayerToolbar = ({ id, isRadio }) => {
       className={buttonClass}
     >
       <RiSaveLine className={!isDesktop ? classes.mobileIcon : undefined} />
+    </IconButton>
+  )
+
+  const addToPlaylistButton = (
+    <IconButton
+      size={isDesktop ? 'small' : undefined}
+      onClick={handleAddToPlaylist}
+      disabled={!id || isRadio}
+      data-testid="add-to-playlist-button"
+      className={buttonClass}
+      title={translate('resources.song.actions.addToPlaylist')}
+      aria-label={translate('resources.song.actions.addToPlaylist')}
+    >
+      <PlaylistAddIcon className={!isDesktop ? classes.mobileIcon : undefined} />
     </IconButton>
   )
 
@@ -105,11 +130,13 @@ const PlayerToolbar = ({ id, isRadio }) => {
       {isDesktop ? (
         <li className={`${listItemClass} item`}>
           {saveQueueButton}
+          {addToPlaylistButton}
           {loveButton}
         </li>
       ) : (
         <>
           <li className={`${listItemClass} item`}>{saveQueueButton}</li>
+          <li className={`${listItemClass} item`}>{addToPlaylistButton}</li>
           <li className={`${listItemClass} item`}>{loveButton}</li>
         </>
       )}
