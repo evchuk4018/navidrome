@@ -31,8 +31,57 @@ describe('configureMediaSessionTrackNavigation', () => {
 
     cleanup()
 
-    expect(setActionHandler).toHaveBeenLastCalledWith('nexttrack', null)
+    expect(setActionHandler).toHaveBeenCalledWith('nexttrack', null)
     expect(setActionHandler).toHaveBeenCalledWith('previoustrack', null)
+  })
+
+  it('wires the play action to the native audio element', () => {
+    const setActionHandler = vi.fn()
+    const play = vi.fn(() => Promise.resolve())
+
+    configureMediaSessionTrackNavigation(
+      { paused: true, play },
+      { setActionHandler },
+    )
+
+    const playHandler = setActionHandler.mock.calls.find(
+      ([action]) => action === 'play',
+    )[1]
+    playHandler()
+
+    expect(play).toHaveBeenCalledOnce()
+  })
+
+  it('wires the pause action to the native audio element', () => {
+    const setActionHandler = vi.fn()
+    const pause = vi.fn()
+
+    configureMediaSessionTrackNavigation(
+      { paused: false, pause },
+      { setActionHandler },
+    )
+
+    const pauseHandler = setActionHandler.mock.calls.find(
+      ([action]) => action === 'pause',
+    )[1]
+    pauseHandler()
+
+    expect(pause).toHaveBeenCalledOnce()
+  })
+
+  it('clears the play and pause handlers on cleanup', () => {
+    const setActionHandler = vi.fn()
+    const mediaSession = { setActionHandler }
+    const audioInstance = { play: vi.fn(), pause: vi.fn() }
+
+    const cleanup = configureMediaSessionTrackNavigation(
+      audioInstance,
+      mediaSession,
+    )
+    cleanup()
+
+    expect(setActionHandler).toHaveBeenCalledWith('play', null)
+    expect(setActionHandler).toHaveBeenCalledWith('pause', null)
   })
 
   it('does nothing when media session is unavailable', () => {

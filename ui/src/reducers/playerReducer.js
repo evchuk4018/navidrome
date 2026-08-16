@@ -15,6 +15,7 @@ import {
   PLAYER_SET_RADIO_SESSION,
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
+  PLAYER_RESOLVE_QUEUE_URLS,
 } from '../actions'
 import config from '../config'
 
@@ -331,6 +332,26 @@ export const playerReducer = (previousState = initialState, payload) => {
             }
           : previousState.radioSession,
       }
+    case PLAYER_RESOLVE_QUEUE_URLS: {
+      const resolvedUrls = payload.data || {}
+      const ids = Object.keys(resolvedUrls)
+      if (!ids.length) return previousState
+
+      let changed = false
+      const queue = previousState.queue.map((item) => {
+        const url = resolvedUrls[item.trackId]
+        if (item.isRadio || !url || typeof item.musicSrc !== 'function') {
+          return item
+        }
+        changed = true
+        return { ...item, musicSrc: url }
+      })
+      if (!changed) return previousState
+
+      // clear drives the player's quiet replacement path so the materialized
+      // list replaces its internal list without restarting playback.
+      return { ...previousState, queue, clear: true }
+    }
     default:
       return previousState
   }

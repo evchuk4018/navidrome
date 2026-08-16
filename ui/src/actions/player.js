@@ -12,6 +12,7 @@ export const PLAYER_REFRESH_QUEUE = 'PLAYER_REFRESH_QUEUE'
 export const PLAYER_SET_RADIO_SESSION = 'PLAYER_SET_RADIO_SESSION'
 export const PLAYER_SET_RADIO_PLANNING = 'PLAYER_SET_RADIO_PLANNING'
 export const PLAYER_SYNC_RADIO_TRACKS = 'PLAYER_SYNC_RADIO_TRACKS'
+export const PLAYER_RESOLVE_QUEUE_URLS = 'PLAYER_RESOLVE_QUEUE_URLS'
 
 export const setTrack = (data) => ({
   type: PLAYER_SET_TRACK,
@@ -135,3 +136,8 @@ export const syncRadioTracks = (data, ids) => {
     data: songs,
   }
 }
+
+export const resolveQueueUrls = (resolvedUrls) => ({
+  type: PLAYER_RESOLVE_QUEUE_URLS,
+  data: resolvedUrls,
+})

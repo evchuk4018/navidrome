@@ -7,6 +7,7 @@ import KeyboardArrowUpIcon from '@material-ui/icons/KeyboardArrowUp'
 import MusicNoteIcon from '@material-ui/icons/MusicNote'
 import { formatDuration } from '../utils'
 import { radioPlanningMessage } from '../quickpick/radioPlanning'
+import { togglePlayback } from './playback'
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -171,6 +172,7 @@ const clamp = (value, min, max) => Math.min(Math.max(value, min), max)
 const MiniPlayer = ({
   track,
   audioInstance,
+  audioContext,
   currentTime = 0,
   duration = 0,
   isPlaying = false,
@@ -198,17 +200,9 @@ const MiniPlayer = ({
   const handleTogglePlay = useCallback(
     (event) => {
       event.stopPropagation()
-      if (!audioInstance) return
-
-      if (typeof audioInstance.togglePlay === 'function') {
-        audioInstance.togglePlay()
-      } else if (audioInstance.paused) {
-        audioInstance.play()
-      } else {
-        audioInstance.pause()
-      }
+      togglePlayback(audioInstance, audioContext)
     },
-    [audioInstance],
+    [audioInstance, audioContext],
   )
 
   const handleTouchStart = useCallback((event) => {
@@ -310,6 +304,7 @@ const MiniPlayer = ({
 MiniPlayer.propTypes = {
   track: PropTypes.object,
   audioInstance: PropTypes.object,
+  audioContext: PropTypes.object,
   currentTime: PropTypes.number,
   duration: PropTypes.number,
   isPlaying: PropTypes.bool,

@@ -22,6 +22,7 @@ import {
   addTracks,
   currentPlaying,
   refreshQueue,
+  resolveQueueUrls,
   setPlayMode,
   setRadioPlanning,
   setTranscodingProfile,
@@ -38,6 +39,7 @@ import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
 import configureMediaSessionTrackNavigation from './mediaSession'
+import { resumeContext } from './playback'
 import {
   radioSongs,
   refillPersonalRadio,
@@ -267,6 +269,44 @@ const Player = () => {
     }
   }, [playerState.queue, playerState.savedPlayIndex])
 
+  const currentUuid = playerState.current?.uuid
+
+  useEffect(() => {
+    if (!playerState.queue.length || !currentUuid) return
+
+    const currentIdx = playerState.savedPlayIndex || 0
+    const pending = playerState.queue
+      .slice(currentIdx + 1, currentIdx + 4)
+      .filter(
+        (item) =>
+          !item.isRadio && item.trackId && typeof item.musicSrc === 'function',
+      )
+    if (pending.length === 0) return
+
+    let active = true
+    Promise.allSettled(
+      pending.map((item) =>
+        decisionService
+          .resolveStreamUrl(item.trackId)
+          .then((url) => [item.trackId, url]),
+      ),
+    ).then((results) => {
+      if (!active) return
+      const resolvedUrls = {}
+      results.forEach((r) => {
+        if (r.status === 'fulfilled' && r.value[1]) {
+          resolvedUrls[r.value[0]] = r.value[1]
+        }
+      })
+      if (Object.keys(resolvedUrls).length > 0) {
+        dispatch(resolveQueueUrls(resolvedUrls))
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [playerState.queue, playerState.savedPlayIndex, currentUuid, dispatch])
+
   const visible = authenticated && playerState.queue.length > 0
   const isRadio = playerState.current?.isRadio || false
   const classes = useStyle({
@@ -470,9 +510,7 @@ const Player = () => {
 
   const onAudioPlay = useCallback(
     (info) => {
-      if (context && context.state !== 'running') {
-        context.resume()
-      }
+      resumeContext(context)
 
       dispatch(currentPlaying(info))
       setMiniProgress({
@@ -696,8 +734,8 @@ const Player = () => {
   useEffect(() => {
     if (!audioInstance || isRadio) return
 
-    return configureMediaSessionTrackNavigation(audioInstance)
-  }, [audioInstance, isRadio, playerState.queue])
+    return configureMediaSessionTrackNavigation(audioInstance, undefined, context)
+  }, [audioInstance, isRadio, playerState.queue, context])
 
   // Report every seek (including programmatic ones the library does not surface
   // via onAudioSeeked, e.g. restartCurrentOnPrev). Debounce coalesces drag
@@ -734,6 +772,7 @@ const Player = () => {
         <MiniPlayer
           track={miniTrack}
           audioInstance={audioInstance}
+          audioContext={context}
           currentTime={miniProgress.currentTime}
           duration={miniProgress.duration || miniTrack?.duration || 0}
           isPlaying={miniIsPlaying}

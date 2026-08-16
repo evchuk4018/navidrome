@@ -1,8 +1,12 @@
+import { playAudio, pauseAudio } from './playback'
+
 const mediaSessionActions = [
   'seekbackward',
   'seekforward',
   'previoustrack',
   'nexttrack',
+  'play',
+  'pause',
 ]
 
 const getMediaSession = () => {
@@ -21,6 +25,7 @@ const setMediaSessionActionHandler = (mediaSession, action, handler) => {
 const configureMediaSessionTrackNavigation = (
   audioInstance,
   mediaSession = getMediaSession(),
+  context = null,
 ) => {
   if (!audioInstance || !mediaSession?.setActionHandler) return
 
@@ -31,6 +36,12 @@ const configureMediaSessionTrackNavigation = (
   })
   setMediaSessionActionHandler(mediaSession, 'nexttrack', () => {
     audioInstance.playNext?.()
+  })
+  setMediaSessionActionHandler(mediaSession, 'play', () => {
+    playAudio(audioInstance, context)
+  })
+  setMediaSessionActionHandler(mediaSession, 'pause', () => {
+    pauseAudio(audioInstance)
   })
 
   return () => {

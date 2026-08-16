@@ -51,19 +51,36 @@ describe('<MiniPlayer />', () => {
   })
 
   it('toggles playback without expanding the player', () => {
-    const togglePlay = vi.fn()
+    const play = vi.fn(() => Promise.resolve())
     const onExpand = vi.fn()
     render(
       <MiniPlayer
         track={track}
-        audioInstance={{ paused: true, togglePlay }}
+        audioInstance={{ paused: true, play }}
         onExpand={onExpand}
       />,
     )
 
     fireEvent.click(screen.getByTestId('mini-player-toggle'))
 
-    expect(togglePlay).toHaveBeenCalledOnce()
+    expect(play).toHaveBeenCalledOnce()
+    expect(onExpand).not.toHaveBeenCalled()
+  })
+
+  it('pauses when already playing', () => {
+    const pause = vi.fn()
+    const onExpand = vi.fn()
+    render(
+      <MiniPlayer
+        track={track}
+        audioInstance={{ paused: false, pause }}
+        onExpand={onExpand}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('mini-player-toggle'))
+
+    expect(pause).toHaveBeenCalledOnce()
     expect(onExpand).not.toHaveBeenCalled()
   })
 

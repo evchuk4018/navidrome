@@ -7,6 +7,7 @@ import {
   PLAYER_ADD_TRACKS,
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
+  PLAYER_RESOLVE_QUEUE_URLS,
 } from '../actions'
 
 describe('playerReducer', () => {
@@ -409,6 +410,93 @@ describe('playerReducer', () => {
       const action = { type: PLAYER_REFRESH_QUEUE, data: {} }
       const result = playerReducer(state, action)
       expect(result.playIndex).toBe(0)
+    })
+  })
+
+  describe('PLAYER_RESOLVE_QUEUE_URLS', () => {
+    it('materializes upcoming stream URLs without touching the current track', () => {
+      const currentMusicSrc = () => Promise.resolve('http://a')
+      const state = {
+        queue: [
+          {
+            trackId: 'a',
+            uuid: 'u-a',
+            name: 'A',
+            musicSrc: currentMusicSrc,
+          },
+          {
+            trackId: 'b',
+            uuid: 'u-b',
+            name: 'B',
+            musicSrc: () => Promise.resolve('http://b'),
+          },
+          {
+            trackId: 'c',
+            uuid: 'u-c',
+            name: 'C',
+            musicSrc: () => Promise.resolve('http://c'),
+          },
+        ],
+        current: { uuid: 'u-a' },
+        savedPlayIndex: 0,
+        playIndex: undefined,
+        clear: false,
+        volume: 1,
+      }
+      const action = {
+        type: PLAYER_RESOLVE_QUEUE_URLS,
+        data: { b: 'http://b-resolved', c: 'http://c-resolved' },
+      }
+      const result = playerReducer(state, action)
+
+      expect(result.queue).toHaveLength(3)
+      expect(result.queue[0]).toBe(state.queue[0])
+      expect(result.queue[0].musicSrc).toBe(currentMusicSrc)
+      expect(result.queue[1].musicSrc).toBe('http://b-resolved')
+      expect(result.queue[1].uuid).toBe('u-b')
+      expect(result.queue[2].musicSrc).toBe('http://c-resolved')
+      expect(result.savedPlayIndex).toBe(0)
+      expect(result.playIndex).toBeUndefined()
+      expect(result.current).toBe(state.current)
+    })
+
+    it('does not resolve radio or already-materialized items', () => {
+      const fnMusicSrc = () => Promise.resolve('http://b')
+      const state = {
+        queue: [
+          { trackId: 'radio', uuid: 'u-r', isRadio: true, musicSrc: 'stream' },
+          { trackId: 'b', uuid: 'u-b', musicSrc: fnMusicSrc },
+          { trackId: 'c', uuid: 'u-c', musicSrc: 'http://c' },
+        ],
+        savedPlayIndex: 0,
+        clear: false,
+        volume: 1,
+      }
+      const result = playerReducer(state, {
+        type: PLAYER_RESOLVE_QUEUE_URLS,
+        data: { radio: 'x', b: 'http://b-resolved', c: 'y' },
+      })
+
+      expect(result.queue[0].musicSrc).toBe('stream')
+      expect(result.queue[1].musicSrc).toBe('http://b-resolved')
+      expect(result.queue[2].musicSrc).toBe('http://c')
+    })
+
+    it('returns the same state when nothing is resolved', () => {
+      const state = {
+        queue: [
+          { trackId: 'a', uuid: 'u-a', musicSrc: () => Promise.resolve('x') },
+        ],
+        savedPlayIndex: 0,
+        clear: false,
+        volume: 1,
+      }
+      const result = playerReducer(state, {
+        type: PLAYER_RESOLVE_QUEUE_URLS,
+        data: {},
+      })
+
+      expect(result).toBe(state)
     })
   })
 })
