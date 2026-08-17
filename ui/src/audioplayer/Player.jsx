@@ -396,11 +396,19 @@ const Player = () => {
       }
     }
 
+    const handlePageShow = () => {
+      // iOS can emit pagehide while keeping the standalone PWA alive. A later
+      // play must resume heartbeat reporting instead of remaining marked stopped.
+      stoppedRef.current = false
+    }
+
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener('pagehide', handlePageHide)
+    window.addEventListener('pageshow', handlePageShow)
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
       window.removeEventListener('pagehide', handlePageHide)
+      window.removeEventListener('pageshow', handlePageShow)
     }
   }, [playerState, audioInstance])
 
@@ -530,6 +538,7 @@ const Player = () => {
 
   const onAudioPlay = useCallback(
     (info) => {
+      stoppedRef.current = false
       resumeContext(context)
 
       dispatch(currentPlaying(info))

@@ -28,7 +28,7 @@ describe('playback helpers', () => {
     expect(audio.play).not.toHaveBeenCalled()
   })
 
-  it('normalizes a rejected play() back to paused', async () => {
+  it('does not cancel recovery when play() is interrupted', async () => {
     const audio = {
       paused: true,
       play: vi.fn(() => Promise.reject(new Error('NotAllowedError'))),
@@ -39,7 +39,7 @@ describe('playback helpers', () => {
     await Promise.resolve()
 
     expect(audio.play).toHaveBeenCalledOnce()
-    expect(audio.pause).toHaveBeenCalledOnce()
+    expect(audio.pause).not.toHaveBeenCalled()
   })
 
   it('pauses a playing element', () => {
@@ -67,6 +67,43 @@ describe('playback helpers', () => {
 
     expect(paused.play).toHaveBeenCalledOnce()
     expect(playing.pause).toHaveBeenCalledOnce()
+  })
+
+  it('uses the player toggle for a ready paused element', () => {
+    const togglePlay = vi.fn()
+    const play = vi.fn()
+    const audio = {
+      paused: true,
+      readyState: 4,
+      networkState: 1,
+      togglePlay,
+      play,
+    }
+
+    togglePlayback(audio, null)
+
+    expect(togglePlay).toHaveBeenCalledOnce()
+    expect(play).not.toHaveBeenCalled()
+  })
+
+  it('reloads an evicted source before using native playback', () => {
+    const load = vi.fn()
+    const play = vi.fn(() => Promise.resolve())
+    const togglePlay = vi.fn()
+    const audio = {
+      paused: true,
+      readyState: 0,
+      networkState: 0,
+      load,
+      play,
+      togglePlay,
+    }
+
+    togglePlayback(audio, null)
+
+    expect(load).toHaveBeenCalledOnce()
+    expect(play).toHaveBeenCalledOnce()
+    expect(togglePlay).not.toHaveBeenCalled()
   })
 
   it('does nothing without an audio element', () => {
