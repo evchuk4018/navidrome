@@ -88,6 +88,7 @@ const Player = () => {
     currentTime: 0,
     duration: 0,
   })
+  const radioRefillRef = useRef({ sessionId: null, inFlight: false })
   const isMobilePlayer =
     /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
       navigator.userAgent,
@@ -134,6 +135,45 @@ const Player = () => {
     })
   }, [])
 
+  // The timer and playback callbacks can both request a refill. Keep those
+  // requests serialized so an older response cannot restore pending rows over
+  // a newer response that has already resolved them.
+  const requestRadioRefill = useCallback(
+    (sessionId) => {
+      if (!sessionId) return
+      const request = radioRefillRef.current
+      if (request.sessionId !== sessionId) {
+        request.sessionId = sessionId
+        request.inFlight = false
+      }
+      if (request.inFlight) return
+      request.inFlight = true
+      refillPersonalRadio(sessionId)
+        .then((response) => {
+          if (
+            radioRefillRef.current.sessionId === sessionId &&
+            playerStateRef.current.radioSession?.id === sessionId
+          ) {
+            updateRadioResponse(response)
+          }
+        })
+        .catch((error) => {
+          if (
+            radioRefillRef.current.sessionId === sessionId &&
+            playerStateRef.current.radioSession?.id === sessionId
+          ) {
+            reportRadioRefillError(sessionId, error)
+          }
+        })
+        .finally(() => {
+          if (radioRefillRef.current.sessionId === sessionId) {
+            radioRefillRef.current.inFlight = false
+          }
+        })
+    },
+    [reportRadioRefillError, updateRadioResponse],
+  )
+
   const reportRadioFeedback = useCallback((playback, event) => {
     if (!playback?.sessionId || !playback?.itemId) return
     sendRadioFeedback(playback.sessionId, {
@@ -174,31 +214,11 @@ const Player = () => {
   useEffect(() => {
     if (!radioSessionId || !isRadioPlanning(radioPlanningStatus)) return
 
-    let active = true
-    let inFlight = false
-    const poll = () => {
-      if (inFlight) return
-      inFlight = true
-      refillPersonalRadio(radioSessionId)
-        .then((response) => {
-          if (active) updateRadioResponse(response)
-        })
-        .catch((error) => reportRadioRefillError(radioSessionId, error))
-        .finally(() => {
-          inFlight = false
-        })
-    }
-    const timer = setInterval(poll, 3000)
+    const timer = setInterval(() => requestRadioRefill(radioSessionId), 3000)
     return () => {
-      active = false
       clearInterval(timer)
     }
-  }, [
-    radioSessionId,
-    radioPlanningStatus,
-    reportRadioRefillError,
-    updateRadioResponse,
-  ])
+  }, [radioSessionId, radioPlanningStatus, requestRadioRefill])
 
   useEffect(() => {
     if (playerState.queue.length === 0) {
@@ -569,9 +589,7 @@ const Player = () => {
         }
         radioPlaybackRef.current = playback
         reportRadioFeedback(playback, 'started')
-        refillPersonalRadio(playback.sessionId)
-          .then(updateRadioResponse)
-          .catch((error) => reportRadioRefillError(playback.sessionId, error))
+        requestRadioRefill(playback.sessionId)
       }
     },
     [
@@ -580,8 +598,7 @@ const Player = () => {
       showNotifications,
       currentTrackId,
       reportRadioFeedback,
-      reportRadioRefillError,
-      updateRadioResponse,
+      requestRadioRefill,
     ],
   )
 

@@ -28,6 +28,24 @@ const initialState = {
   radioSession: null,
 }
 
+// The music-player dependency uses musicSrc as a fallback identity when it
+// reconciles a quiet queue update. A null source is shared by every pending
+// radio item, so use one stable never-resolving source per item instead.
+const pendingRadioMusicSources = new Map()
+
+const pendingRadioMusicSrc = (item) => {
+  const key = JSON.stringify([
+    item.radioSessionId || '',
+    item.radioItemId || item.id || item.name || '',
+  ])
+  let source = pendingRadioMusicSources.get(key)
+  if (!source) {
+    source = () => new Promise(() => {})
+    pendingRadioMusicSources.set(key, source)
+  }
+  return source
+}
+
 const pad = (value) => {
   const str = value.toString()
   if (str.length === 1) {
@@ -55,7 +73,7 @@ const mapToAudioLists = (item) => {
       uuid: uuidv4(),
       name: item.name || item.title,
       song: item,
-      musicSrc: item.radioPending ? null : item.streamUrl,
+      musicSrc: item.radioPending ? pendingRadioMusicSrc(item) : item.streamUrl,
       singer: item.artist || '',
       cover: item.cover,
       isRadio: true,

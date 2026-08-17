@@ -160,7 +160,59 @@ describe('playerReducer', () => {
     expect(result.queue[0].radioPending).toBe(true)
     expect(result.queue[0].name).toBe('Downloading: Fresh Track')
     expect(result.queue[0].singer).toBe('Fresh Artist')
-    expect(result.queue[0].musicSrc).toBeNull()
+    expect(typeof result.queue[0].musicSrc).toBe('function')
+  })
+
+  it('keeps pending radio sources unique and stable across queue replacement', () => {
+    const state = {
+      queue: [],
+      current: {},
+      clear: false,
+      radioSession: { id: 'session-1' },
+    }
+    const pending = {
+      'radio-item-1': {
+        radioSessionId: 'session-1',
+        radioItemId: 'item-1',
+        radioPending: true,
+        name: 'Pending One',
+      },
+      'radio-item-2': {
+        radioSessionId: 'session-1',
+        radioItemId: 'item-2',
+        radioPending: true,
+        name: 'Pending Two',
+      },
+      'radio-item-3': {
+        radioSessionId: 'session-1',
+        radioItemId: 'item-3',
+        radioPending: true,
+        name: 'Pending Three',
+      },
+    }
+    const first = playerReducer(state, {
+      type: PLAYER_SYNC_RADIO_TRACKS,
+      data: pending,
+    })
+    const second = playerReducer(first, {
+      type: PLAYER_SYNC_RADIO_TRACKS,
+      data: {
+        ...pending,
+        'radio-item-1': {
+          radioSessionId: 'session-1',
+          radioItemId: 'item-1',
+          radioPending: false,
+          id: 'track-1',
+          title: 'Ready One',
+        },
+      },
+    })
+
+    expect(first.queue[0].musicSrc).not.toBe(first.queue[1].musicSrc)
+    expect(first.queue[1].musicSrc).not.toBe(first.queue[2].musicSrc)
+    expect(second.queue[1].musicSrc).toBe(first.queue[1].musicSrc)
+    expect(second.queue[2].musicSrc).toBe(first.queue[2].musicSrc)
+    expect(second.queue[1].musicSrc).not.toBe(second.queue[2].musicSrc)
   })
 
   it('appends pending radio placeholders and keeps playing track untouched', () => {
@@ -192,7 +244,7 @@ describe('playerReducer', () => {
     expect(result.queue[0]).toBe(current)
     expect(result.queue[1].radioItemId).toBe('item-2')
     expect(result.queue[1].radioPending).toBe(true)
-    expect(result.queue[1].musicSrc).toBeNull()
+    expect(typeof result.queue[1].musicSrc).toBe('function')
   })
 
   describe('pending track selection survives SYNC_QUEUE and premature CURRENT', () => {
