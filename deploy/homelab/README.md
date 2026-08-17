@@ -21,6 +21,11 @@ The live deployment layout is:
 | Local listener | `127.0.0.1:4533` |
 | Tailnet URL | `https://homelab.tail861ffd.ts.net/navidrome` |
 
+The homelab override automatically authenticates Navidrome as the existing
+`admin` user, so the web UI and API do not prompt for a login. This is intended
+for the private tailnet deployment; Navidrome remains bound to loopback and is
+not exposed publicly.
+
 This is not part of the Wowzer Bowser application stack. Do not use
 `/srv/storage/wowzerbowser/deployment.env`, its Compose project, or its
 PostgreSQL migration workflow for Navidrome. Navidrome owns the database in its
