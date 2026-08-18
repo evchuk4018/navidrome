@@ -62,17 +62,23 @@ func (r *musicDownloadJobRepository) GetForUser(id, userID string) (*model.Music
 	return job, nil
 }
 
+// GetAllForUser returns the download jobs for a user. A limit <= 0 returns every
+// job for the user (used by admin seeding); otherwise at most the most recent
+// `limit` jobs are returned.
 func (r *musicDownloadJobRepository) GetAllForUser(userID string, limit int) ([]model.MusicDownloadJob, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	query := musicDownloadJobSelect + " where user_id = ? order by created_at desc"
+	args := []any{userID}
+	if limit > 0 {
+		query += " limit ?"
+		args = append(args, limit)
 	}
-	rows, err := r.db.Query(musicDownloadJobSelect+" where user_id = ? order by created_at desc limit ?", userID, limit)
+	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	jobs := make([]model.MusicDownloadJob, 0, limit)
+	jobs := make([]model.MusicDownloadJob, 0)
 	for rows.Next() {
 		job, err := scanMusicDownloadJob(rows)
 		if err != nil {
