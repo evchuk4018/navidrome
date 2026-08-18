@@ -259,7 +259,17 @@ func queueSeedDownloads(ctx context.Context, user *model.User, unique []seedSong
 }
 
 func resolveSeedTrack(catalog music.Catalog, ctx context.Context, ref seedSongRef) (model.ExternalTrack, error) {
-	query := strings.TrimSpace(ref.Artist + " " + ref.Title)
+	// A structured Lucene query filters out covers/remixes whose titles merely
+	// mention the artist, which free-text search ranks above the original.
+	if track, err := resolveSeedTrackQuery(catalog, ctx, seedSearchQuery(ref), ref); err == nil {
+		return track, nil
+	}
+	// Fallback: search by artist alone and tolerate version/remix suffixes in
+	// the title, for references whose exact title does not exist in the catalog.
+	return resolveSeedTrackQuery(catalog, ctx, fmt.Sprintf(`artist:"%s"`, seedEscapeLucene(strings.TrimSpace(ref.Artist))), ref)
+}
+
+func resolveSeedTrackQuery(catalog music.Catalog, ctx context.Context, query string, ref seedSongRef) (model.ExternalTrack, error) {
 	songs, err := catalog.SearchSongs(ctx, query)
 	if err != nil {
 		return model.ExternalTrack{}, err
@@ -272,16 +282,42 @@ func resolveSeedTrack(catalog music.Catalog, ctx context.Context, ref seedSongRe
 	return model.ExternalTrack{}, model.ErrNotFound
 }
 
+// seedSearchQuery builds a MusicBrainz Lucene query that matches the credited
+// artist and the (credit-stripped) recording title.
+func seedSearchQuery(ref seedSongRef) string {
+	artist := strings.TrimSpace(ref.Artist)
+	title := strings.TrimSpace(stripSeedCredits(ref.Title))
+	return fmt.Sprintf(`artist:"%s" AND recording:"%s"`, seedEscapeLucene(artist), seedEscapeLucene(title))
+}
+
+func seedEscapeLucene(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	return strings.ReplaceAll(value, `"`, `\"`)
+}
+
 func seedTrackMatches(ref seedSongRef, track model.ExternalTrack) bool {
-	refTitle := normalizeLikedMusicTitle(stripSeedTitleSuffix(ref.Title))
 	refArtist := normalizeLikedMusicArtist(ref.Artist)
-	if refTitle == "" || refArtist == "" {
+	if refArtist == "" {
 		return false
 	}
-	if !seedTitlesMatch(track.Title, refTitle) {
+	if !likedMusicArtistValueMatches(track.ArtistName, refArtist) {
 		return false
 	}
-	return likedMusicArtistValueMatches(track.ArtistName, refArtist)
+	return seedTitleMatches(ref.Title, track.Title)
+}
+
+func seedTitleMatches(refTitle, trackTitle string) bool {
+	refNorm := normalizeLikedMusicTitle(stripSeedCredits(refTitle))
+	if refNorm == "" {
+		return false
+	}
+	if seedTitlesMatch(trackTitle, refNorm) {
+		return true
+	}
+	// A reference may describe a version (Remix, Acoustic, ...) that the tagged
+	// or catalogued track omits; accept the base title too.
+	refVersionless := normalizeLikedMusicTitle(stripSeedTitleSuffix(refTitle))
+	return refVersionless != "" && refVersionless != refNorm && seedTitlesMatch(trackTitle, refVersionless)
 }
 
 // seedTitlesMatch matches a raw track title against a normalized reference
@@ -300,6 +336,25 @@ func seedTitlesMatch(rawValue, refTitle string) bool {
 // reference like "WAP (feat. Megan Thee Stallion)" also matches a track tagged
 // simply "WAP".
 func stripSeedTitleSuffix(value string) string {
+	return stripSeedClauses(value, func(clause string) bool {
+		return strings.Contains(clause, "feat") ||
+			strings.Contains(clause, "with") ||
+			strings.Contains(clause, "&") ||
+			strings.Contains(clause, "remix") ||
+			strings.Contains(clause, "remaster") ||
+			strings.Contains(clause, "acoustic")
+	})
+}
+
+// stripSeedCredits removes only the parenthetical clauses describing featured
+// artists, keeping version markers such as "(Remix)" that are part of the title.
+func stripSeedCredits(value string) string {
+	return stripSeedClauses(value, func(clause string) bool {
+		return strings.Contains(clause, "feat") || strings.Contains(clause, "with") || strings.Contains(clause, "&")
+	})
+}
+
+func stripSeedClauses(value string, match func(string) bool) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return value
@@ -315,12 +370,7 @@ func stripSeedTitleSuffix(value string) string {
 			return strings.TrimSpace(value)
 		}
 		clause := lower[start+2 : start+relativeEnd]
-		if !strings.Contains(clause, "feat") &&
-			!strings.Contains(clause, "with") &&
-			!strings.Contains(clause, "&") &&
-			!strings.Contains(clause, "remix") &&
-			!strings.Contains(clause, "remaster") &&
-			!strings.Contains(clause, "acoustic") {
+		if !match(clause) {
 			return strings.TrimSpace(value)
 		}
 		value = strings.TrimSpace(value[:start] + value[start+relativeEnd+1:])

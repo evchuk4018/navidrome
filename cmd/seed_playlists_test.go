@@ -151,6 +151,57 @@ func TestStripSeedTitleSuffix(t *testing.T) {
 	}
 }
 
+func TestStripSeedCreditsKeepsVersionMarkers(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"WAP (feat. Megan Thee Stallion)", "WAP"},
+		{"One Dance (feat. Wizkid & Kyla)", "One Dance"},
+		{"Guess (Remix)", "Guess (Remix)"},
+		{"Snooze (Remix)", "Snooze (Remix)"},
+		{"That's What You Get (Acoustic)", "That's What You Get (Acoustic)"},
+		{"Karma Police", "Karma Police"},
+	}
+	for _, tc := range cases {
+		if got := stripSeedCredits(tc.in); got != tc.want {
+			t.Fatalf("stripSeedCredits(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSeedSearchQueryBuildsStructuredLucene(t *testing.T) {
+	ref := seedSongRef{Artist: `Kid LAROI & Justin Bieber`, Title: `STAY (feat. Someone)`}
+	query := seedSearchQuery(ref)
+	if !strings.Contains(query, `artist:"Kid LAROI & Justin Bieber"`) {
+		t.Fatalf("query missing artist clause: %q", query)
+	}
+	if !strings.Contains(query, `recording:"STAY"`) {
+		t.Fatalf("query missing stripped title clause: %q", query)
+	}
+	if strings.Contains(query, "(feat.") {
+		t.Fatalf("query should strip credit clauses: %q", query)
+	}
+}
+
+func TestSeedEscapeLucene(t *testing.T) {
+	if got := seedEscapeLucene(`a "quoted" \ title`); got != `a \"quoted\" \\ title` {
+		t.Fatalf("unexpected escaping: %q", got)
+	}
+}
+
+func TestSeedTitleMatchesToleratesVersionSuffix(t *testing.T) {
+	if !seedTitleMatches("Snooze (Remix)", "Snooze") {
+		t.Fatal("expected Snooze (Remix) reference to match Snooze")
+	}
+	if !seedTitleMatches("Guess (Remix)", "Guess") {
+		t.Fatal("expected Guess (Remix) reference to match Guess")
+	}
+	if seedTitleMatches("Red Wine Supernova", "Supernova") {
+		t.Fatal("did not expect partial title to match")
+	}
+}
+
 func TestSeedLibraryRowStripsCredits(t *testing.T) {
 	row := seedLibraryRow(seedSongRef{Artist: "Cardi B", Title: "WAP (feat. Megan Thee Stallion)"})
 	if row.Title != "WAP" || row.Artist != "Cardi B" {
