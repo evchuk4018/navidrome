@@ -319,11 +319,17 @@ export const playerReducer = (previousState = initialState, payload) => {
     }
     case PLAYER_SET_RADIO_SESSION: {
       const session = payload.data
+      // A new Quick Pick selection is not confirmed by CURRENT yet, so use
+      // its pending index before falling back to the last confirmed index.
+      const seedIndex =
+        previousState.playIndex != null
+          ? previousState.playIndex
+          : previousState.savedPlayIndex || 0
       return {
         ...previousState,
         radioSession: session,
         queue: previousState.queue.map((item, index) =>
-          index === (previousState.savedPlayIndex || 0)
+          index === seedIndex
             ? {
                 ...item,
                 radioSessionId: session.id,

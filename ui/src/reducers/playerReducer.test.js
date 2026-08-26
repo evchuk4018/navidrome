@@ -5,6 +5,8 @@ import {
   PLAYER_CURRENT,
   PLAYER_REFRESH_QUEUE,
   PLAYER_ADD_TRACKS,
+  PLAYER_PLAY_TRACKS,
+  PLAYER_SET_RADIO_SESSION,
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
   PLAYER_RESOLVE_QUEUE_URLS,
@@ -132,6 +134,64 @@ describe('playerReducer', () => {
     })
 
     expect(result).toBe(state)
+  })
+
+  it('associates a Quick Pick seed with the pending play index', () => {
+    const state = {
+      queue: [
+        { trackId: 'old-1', uuid: 'old-1-uuid' },
+        { trackId: 'old-2', uuid: 'old-2-uuid' },
+        { trackId: 'old-3', uuid: 'old-3-uuid' },
+      ],
+      current: { uuid: 'old-3-uuid' },
+      savedPlayIndex: 2,
+      clear: false,
+      radioSession: null,
+    }
+    const playing = playerReducer(state, {
+      type: PLAYER_PLAY_TRACKS,
+      id: 'new-seed',
+      data: {
+        'new-seed': {
+          id: 'new-seed',
+          title: 'New Seed',
+          artist: 'Artist',
+        },
+      },
+    })
+
+    expect(playing.playIndex).toBe(0)
+    expect(playing.savedPlayIndex).toBe(2)
+
+    const withSession = playerReducer(playing, {
+      type: PLAYER_SET_RADIO_SESSION,
+      data: {
+        id: 'session-1',
+        seedItemId: 'seed-item-1',
+      },
+    })
+
+    expect(withSession.queue).toHaveLength(1)
+    expect(withSession.queue[0].radioItemId).toBe('seed-item-1')
+    expect(withSession.queue[0].radioItemType).toBe('seed')
+
+    const synced = playerReducer(withSession, {
+      type: PLAYER_SYNC_RADIO_TRACKS,
+      data: {
+        'radio-seed-item-1': {
+          id: 'new-seed',
+          title: 'New Seed',
+          artist: 'Artist',
+          radioSessionId: 'session-1',
+          radioItemId: 'seed-item-1',
+          radioItemType: 'seed',
+          radioPending: false,
+        },
+      },
+    })
+
+    expect(synced).toBe(withSession)
+    expect(synced.queue).toHaveLength(1)
   })
 
   it('shows the pending download with its recommendation metadata', () => {
