@@ -29,7 +29,7 @@ type fakeSimilarityProvider struct {
 	bySeed map[string][]agents.Song
 }
 
-func (f fakeSimilarityProvider) GetSimilarSongsByTrackAll(context.Context, seedID string, string, string, string, int) ([]agents.Song, error) {
+func (f fakeSimilarityProvider) GetSimilarSongsByTrackAll(_ context.Context, seedID, _, _, _ string, _ int) ([]agents.Song, error) {
 	if songs, ok := f.bySeed[seedID]; ok {
 		return songs, nil
 	}
