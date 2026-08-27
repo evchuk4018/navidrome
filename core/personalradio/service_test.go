@@ -22,8 +22,8 @@ func (f fakeSimilarityProvider) GetSimilarSongsByTrackAll(context.Context, strin
 
 type fakePersonalRadioRepository struct {
 	model.PersonalRadioRepository
-	items   []model.PersonalRadioItem
-	session *model.PersonalRadioSession
+	items    []model.PersonalRadioItem
+	session  *model.PersonalRadioSession
 	feedback map[string]model.RadioTrackFeedback
 }
 
@@ -167,8 +167,8 @@ func TestRecommendationPoolsRankProviderCandidatesAndPreserveFiltering(t *testin
 	})
 	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
 	svc := &service{
-		ds:      ds,
-		repo:    &fakePersonalRadioRepository{},
+		ds:   ds,
+		repo: &fakePersonalRadioRepository{},
 		agents: fakeSimilarityProvider{songs: []agents.Song{
 			{ID: "local-low", Name: "Local Low", Artists: []agents.Artist{{Name: "Local Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.1, NormalizedScore: 0.1}}},
 			{ID: "external-low", Name: "External Low", MBID: "external-low-mbid", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.2, NormalizedScore: 0.2}}},

@@ -629,9 +629,9 @@ type candidatePools struct {
 }
 
 type rankedRadioCandidate struct {
-	candidate  recommendations.Candidate
-	local      *model.MediaFile
-	discovery  agents.Song
+	candidate   recommendations.Candidate
+	local       *model.MediaFile
+	discovery   agents.Song
 	isDiscovery bool
 }
 
@@ -1043,7 +1043,7 @@ func localSeedAffinity(seed *model.MediaFile, file model.MediaFile) float64 {
 	}
 	genreMatches := genreAffinity(genreSet(*seed), genreSet(file))
 	artistMatch := strings.EqualFold(file.Artist, seed.Artist) || (file.ArtistID != "" && file.ArtistID == seed.ArtistID)
-	compatibility := genreMatches*12
+	compatibility := genreMatches * 12
 	if artistMatch {
 		compatibility += 16
 	}

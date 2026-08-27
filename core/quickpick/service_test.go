@@ -25,7 +25,7 @@ func (f fakeMetrics) PlaylistMetrics(string, time.Time) (map[string]model.Playli
 func (f fakeMetrics) RecordPlaylistPlay(string, string, time.Time) error { return nil }
 
 type fakeSimilarityProvider struct {
-	songs   []agents.Song
+	songs  []agents.Song
 	bySeed map[string][]agents.Song
 }
 

@@ -23,8 +23,8 @@ const (
 // caller needs an identity distinct from the MediaFile fields. SeedAffinity is
 // a caller-provided [0,1] compatibility score for the candidate and its seed.
 type Candidate struct {
-	Key           string
-	SeedAffinity  float64
+	Key          string
+	SeedAffinity float64
 	model.MediaFile
 	SimilarityScores []agents.SimilarityScore
 }
