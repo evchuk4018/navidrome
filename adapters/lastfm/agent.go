@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -230,13 +231,33 @@ func (l *lastfmAgent) GetSimilarSongsByTrack(ctx context.Context, id, name, arti
 	}
 	res := make([]agents.Song, 0, len(resp))
 	for _, t := range resp {
-		res = append(res, agents.Song{
+		song := agents.Song{
 			Name:    t.Name,
 			MBID:    t.MBID,
 			Artists: []agents.Artist{{Name: t.Artist.Name, MBID: t.Artist.MBID}},
-		})
+		}
+		song.CandidateID = agents.CandidateID(song)
+		song.SimilarityScores = []agents.SimilarityScore{{
+			Provider:        lastFMAgentName,
+			Score:           t.Match,
+			NormalizedScore: normalizeLastFMMatch(t.Match),
+		}}
+		res = append(res, song)
 	}
 	return res, nil
+}
+
+func normalizeLastFMMatch(match float64) float64 {
+	if math.IsNaN(match) || math.IsInf(match, 0) {
+		return 0
+	}
+	if match < 0 {
+		return 0
+	}
+	if match > 1 {
+		return 1
+	}
+	return match
 }
 
 var (

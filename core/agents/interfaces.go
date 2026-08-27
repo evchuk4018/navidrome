@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/gohugoio/hashstructure"
 	"github.com/navidrome/navidrome/model"
@@ -33,6 +34,16 @@ type ExternalImage struct {
 	Size int
 }
 
+// SimilarityScore contains a provider's raw similarity score and its normalized
+// value, which is suitable for comparing results from different providers.
+type SimilarityScore struct {
+	Provider string
+	// Score is the raw score returned by Provider.
+	Score float64
+	// NormalizedScore is the provider score mapped to a [0,1] range.
+	NormalizedScore float64
+}
+
 type Song struct {
 	ID        string
 	Name      string
@@ -42,14 +53,42 @@ type Song struct {
 	Album     string
 	AlbumMBID string
 	Duration  uint32 // Duration in milliseconds, 0 means unknown
+	// CandidateID is the stable identity used to deduplicate recommendation candidates.
+	CandidateID string
+	// SimilarityScores contains recommendation metadata and is ignored by Equals.
+	SimilarityScores []SimilarityScore
 }
 
-// Equals reports strict whole-value equality, used to dedup identical input songs. It hashes
-// rather than comparing with ==, which the Artists slice makes illegal.
+// Equals reports strict equality of song metadata, used to dedup identical input songs.
+// Recommendation metadata is ignored so matcher semantics remain intact. It hashes rather
+// than comparing with ==, which the Artists slice makes illegal.
 func (s Song) Equals(other Song) bool {
+	s.CandidateID = ""
+	s.SimilarityScores = nil
+	other.CandidateID = ""
+	other.SimilarityScores = nil
 	h1, _ := hashstructure.Hash(s, nil)
 	h2, _ := hashstructure.Hash(other, nil)
 	return h1 == h2
+}
+
+// CandidateID returns a stable identity for a recommendation candidate. A normalized
+// recording MBID is preferred; when it is unavailable, normalized title and first-artist
+// text provide the fallback identity.
+func CandidateID(song Song) string {
+	if mbid := normalizeCandidateText(song.MBID); mbid != "" {
+		return "mbid:" + mbid
+	}
+
+	artist := ""
+	if len(song.Artists) > 0 {
+		artist = song.Artists[0].Name
+	}
+	return "title:" + normalizeCandidateText(song.Name) + "|artist:" + normalizeCandidateText(artist)
+}
+
+func normalizeCandidateText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
 var (

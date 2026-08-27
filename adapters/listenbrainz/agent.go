@@ -211,6 +211,15 @@ func (l *listenBrainzAgent) GetSimilarSongsByTrack(ctx context.Context, id strin
 		return nil, agents.ErrNotFound
 	}
 
+	// ListenBrainz scores have no stable global ceiling, so normalize relative to
+	// the maximum score in this provider result set instead of a fixed value.
+	maxScore := 0
+	for _, song := range resp {
+		if song.Score > maxScore {
+			maxScore = song.Score
+		}
+	}
+
 	songs := make([]agents.Song, len(resp))
 	for i, song := range resp {
 		songs[i] = agents.Song{
@@ -220,9 +229,22 @@ func (l *listenBrainzAgent) GetSimilarSongsByTrack(ctx context.Context, id strin
 			MBID:      song.MBID,
 			Name:      song.Name,
 		}
+		songs[i].CandidateID = agents.CandidateID(songs[i])
+		songs[i].SimilarityScores = []agents.SimilarityScore{{
+			Provider:        listenBrainzAgentName,
+			Score:           float64(song.Score),
+			NormalizedScore: normalizeListenBrainzScore(song.Score, maxScore),
+		}}
 	}
 
 	return songs, nil
+}
+
+func normalizeListenBrainzScore(score, maxScore int) float64 {
+	if maxScore <= 0 || score <= 0 {
+		return 0
+	}
+	return float64(score) / float64(maxScore)
 }
 
 func (l *listenBrainzAgent) PlaybackReport(context.Context, scrobbler.PlaybackSession) error {

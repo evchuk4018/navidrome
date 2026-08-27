@@ -24,6 +24,7 @@ type fakePersonalRadioRepository struct {
 	model.PersonalRadioRepository
 	items   []model.PersonalRadioItem
 	session *model.PersonalRadioSession
+	feedback map[string]model.RadioTrackFeedback
 }
 
 func (f *fakePersonalRadioRepository) GetSessionForUser(string, string) (*model.PersonalRadioSession, error) {
@@ -44,7 +45,7 @@ func (f *fakePersonalRadioRepository) AppendItems(_ string, items []model.Person
 }
 
 func (f *fakePersonalRadioRepository) GetFeedback(string, []string) (map[string]model.RadioTrackFeedback, error) {
-	return map[string]model.RadioTrackFeedback{}, nil
+	return f.feedback, nil
 }
 
 func (f *fakePersonalRadioRepository) UpdateItem(item *model.PersonalRadioItem) error {
@@ -153,6 +154,100 @@ func TestLocalCandidatesDoNotFallBackToUnrelatedLibrary(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Fatalf("expected no unrelated fallback tracks, got %#v", result)
+	}
+}
+
+func TestRecommendationPoolsRankProviderCandidatesAndPreserveFiltering(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop"},
+		{ID: "local-low", Title: "Local Low", Artist: "Local Artist", Genre: "Pop"},
+		{ID: "local-high", Title: "Local High", Artist: "Local Artist", Genre: "Pop"},
+		{ID: "local-seen", Title: "Local Seen", Artist: "Local Artist", Genre: "Pop"},
+	})
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	svc := &service{
+		ds:      ds,
+		repo:    &fakePersonalRadioRepository{},
+		agents: fakeSimilarityProvider{songs: []agents.Song{
+			{ID: "local-low", Name: "Local Low", Artists: []agents.Artist{{Name: "Local Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.1, NormalizedScore: 0.1}}},
+			{ID: "external-low", Name: "External Low", MBID: "external-low-mbid", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.2, NormalizedScore: 0.2}}},
+			{ID: "local-high", Name: "Local High", Artists: []agents.Artist{{Name: "Local Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.9, NormalizedScore: 0.9}}},
+			{ID: "external-high", Name: "External High", MBID: "external-high-mbid", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.8, NormalizedScore: 0.8}}},
+			{ID: "local-seen", Name: "Local Seen", Artists: []agents.Artist{{Name: "Local Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 1, NormalizedScore: 1}}},
+			{ID: "external-seen", Name: "External Seen", MBID: "external-seen-mbid", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.7, NormalizedScore: 0.7}}},
+			{ID: "external-no-mbid", Name: "External Without MBID", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", Score: 0.6, NormalizedScore: 0.6}}},
+		}},
+		matcher: matcher.New(ds),
+	}
+
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user"},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true, "local-seen": true},
+		map[string]bool{"external-seen-mbid": true},
+		4,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.local) != 2 || pools.local[0].ID != "local-high" || pools.local[1].ID != "local-low" {
+		t.Fatalf("local pool = %#v, want [local-high local-low]", pools.local)
+	}
+	if len(pools.discovery) != 2 || pools.discovery[0].MBID != "external-high-mbid" || pools.discovery[1].MBID != "external-low-mbid" {
+		t.Fatalf("discovery pool = %#v, want [external-high-mbid external-low-mbid]", pools.discovery)
+	}
+}
+
+func TestRecommendationPoolsPenalizeFatiguedDiscoveries(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop"}})
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	old := time.Now().UTC().Add(-400 * 24 * time.Hour)
+	repo := &fakePersonalRadioRepository{feedback: map[string]model.RadioTrackFeedback{
+		"fatigued-mbid": {EarlySkipCount: 5, LastEarlySkipAt: &old},
+	}}
+	svc := &service{
+		ds:   ds,
+		repo: repo,
+		agents: fakeSimilarityProvider{songs: []agents.Song{
+			{Name: "Fatigued", MBID: "fatigued-mbid", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", NormalizedScore: 0.9}}},
+			{Name: "Fresh", MBID: "fresh-mbid", Artists: []agents.Artist{{Name: "External Artist"}}, SimilarityScores: []agents.SimilarityScore{{Provider: "provider", NormalizedScore: 0.2}}},
+		}},
+		matcher: matcher.New(ds),
+	}
+
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user"},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true},
+		nil,
+		2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.discovery) != 2 || pools.discovery[0].MBID != "fresh-mbid" || pools.discovery[1].MBID != "fatigued-mbid" {
+		t.Fatalf("discovery pool = %#v, want [fresh-mbid fatigued-mbid]", pools.discovery)
+	}
+}
+
+func TestLocalCandidatesPreferArtistAffinityOverPopularity(t *testing.T) {
+	repo := tests.CreateMockMediaFileRepo()
+	repo.SetData(model.MediaFiles{
+		{ID: "seed", Artist: "Seed Artist", Genre: "Pop"},
+		{ID: "same-artist", Artist: "Seed Artist", Genre: "Pop"},
+		{ID: "same-genre", Artist: "Other Artist", Genre: "Pop", Annotations: model.Annotations{PlayCount: 100000}},
+	})
+	svc := &service{ds: &tests.MockDataStore{MockedMediaFile: repo}}
+	result, err := svc.localCandidates(context.Background(), repo.Data["seed"], map[string]bool{"seed": true}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 || result[0].ID != "same-artist" {
+		t.Fatalf("expected same-artist candidate, got %#v", result)
 	}
 }
 

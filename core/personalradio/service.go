@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/core/matcher"
 	musicservice "github.com/navidrome/navidrome/core/music"
+	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/id"
@@ -480,7 +480,7 @@ func (s *service) plan(ctx context.Context, session model.PersonalRadioSession, 
 			seen[item.MediaFileID] = true
 		}
 		if item.RecordingMBID != "" {
-			seenRecordings[item.RecordingMBID] = true
+			seenRecordings[normalizeRecordingMBID(item.RecordingMBID)] = true
 		}
 		position = max(position, item.Position+1)
 	}
@@ -628,9 +628,24 @@ type candidatePools struct {
 	discovery []agents.Song
 }
 
+type rankedRadioCandidate struct {
+	candidate  recommendations.Candidate
+	local      *model.MediaFile
+	discovery  agents.Song
+	isDiscovery bool
+}
+
 func (s *service) recommendationPools(ctx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count int) (candidatePools, error) {
-	pools := candidatePools{}
+	var pools candidatePools
 	localAdded := map[string]bool{}
+	normalizedSeenRecordings := make(map[string]bool, len(seenRecordings))
+	for recordingMBID := range seenRecordings {
+		normalizedSeenRecordings[normalizeRecordingMBID(recordingMBID)] = true
+	}
+	seenRecordings = normalizedSeenRecordings
+	rankedCandidates := make([]rankedRadioCandidate, 0, discoveryCandidateLimit+count)
+	fatigue := map[string]float64{}
+	now := time.Now().UTC()
 	stats := map[string]int{}
 	if s.agents == nil || s.matcher == nil {
 		log.Warn(ctx, "Personal radio external recommendation path is unavailable",
@@ -641,28 +656,28 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 			"matcherConfigured", s.matcher != nil)
 	}
 	if s.agents != nil && s.matcher != nil {
-		recommendations, recErr := s.agents.GetSimilarSongsByTrackAll(ctx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, discoveryCandidateLimit)
+		providerRecommendations, recErr := s.agents.GetSimilarSongsByTrackAll(ctx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, discoveryCandidateLimit)
 		if recErr != nil {
 			log.Debug(ctx, "Personal radio similarity provider returned no candidates",
 				"sessionID", session.ID,
 				"userID", session.UserID,
 				"seedID", seed.ID,
 				"error", recErr)
-		} else if len(recommendations) > 0 {
-			stats["providerCandidates"] = len(recommendations)
-			matches, matchErr := s.matcher.MatchSongsIndexed(ctx, recommendations)
+		} else if len(providerRecommendations) > 0 {
+			stats["providerCandidates"] = len(providerRecommendations)
+			matches, matchErr := s.matcher.MatchSongsIndexed(ctx, providerRecommendations)
 			if matchErr != nil {
 				log.Warn(ctx, "Unable to compare personal radio recommendations with the library",
 					"sessionID", session.ID,
 					"userID", session.UserID,
 					"seedID", seed.ID,
-					"candidateCount", len(recommendations),
+					"candidateCount", len(providerRecommendations),
 					"error", matchErr)
 			} else {
-				mbids := make([]string, 0, len(recommendations))
-				for _, song := range recommendations {
-					if song.MBID != "" {
-						mbids = append(mbids, song.MBID)
+				mbids := make([]string, 0, len(providerRecommendations))
+				for _, song := range providerRecommendations {
+					if recordingMBID := normalizeRecordingMBID(song.MBID); recordingMBID != "" {
+						mbids = append(mbids, recordingMBID)
 					}
 				}
 				feedback, feedbackErr := s.repo.GetFeedback(session.UserID, mbids)
@@ -674,7 +689,13 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 						"error", feedbackErr)
 					feedback = map[string]model.RadioTrackFeedback{}
 				}
-				for i, song := range recommendations {
+				normalizedFeedback := make(map[string]model.RadioTrackFeedback, len(feedback))
+				for recordingMBID, value := range feedback {
+					normalizedFeedback[normalizeRecordingMBID(recordingMBID)] = value
+				}
+				for i, song := range providerRecommendations {
+					recordingMBID := normalizeRecordingMBID(song.MBID)
+					song.MBID = recordingMBID
 					candidateFields := []any{
 						"sessionID", session.ID,
 						"userID", session.UserID,
@@ -685,10 +706,22 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 						"candidateTitle", song.Name,
 						"candidateAlbum", song.Album,
 					}
+					feedbackForSong := normalizedFeedback[recordingMBID]
 					if local, ok := matches[i]; ok {
 						if !local.Missing && !seen[local.ID] && !localAdded[local.ID] {
-							pools.local = append(pools.local, local)
 							localAdded[local.ID] = true
+							key := radioLocalCandidateKey(local.ID)
+							localCopy := local
+							rankedCandidates = append(rankedCandidates, rankedRadioCandidate{
+								candidate: recommendations.Candidate{
+									Key:              key,
+									SeedAffinity:     localSeedAffinity(seed, local),
+									MediaFile:        local,
+									SimilarityScores: song.SimilarityScores,
+								},
+								local: &localCopy,
+							})
+							fatigue[local.ID] = radioFeedbackFatigue(feedbackForSong)
 							stats["matchedLocal"]++
 							traceRadioCandidate(ctx, "Personal radio candidate accepted from library",
 								append(candidateFields,
@@ -711,8 +744,8 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 						}
 						continue
 					}
-					if song.MBID == "" || seenRecordings[song.MBID] {
-						if song.MBID == "" {
+					if recordingMBID == "" || seenRecordings[recordingMBID] {
+						if recordingMBID == "" {
 							stats["missingMBID"]++
 							traceRadioCandidate(ctx, "Personal radio candidate rejected because it has no recording MBID",
 								append(candidateFields, "decision", "missing_mbid"))
@@ -723,19 +756,34 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 						}
 						continue
 					}
-					f := feedback[song.MBID]
-					cooldownDays := min(365, 30*(f.EarlySkipCount+1))
-					if f.LastEarlySkipAt != nil && time.Since(*f.LastEarlySkipAt) < time.Duration(cooldownDays)*24*time.Hour {
+					cooldownDays := min(365, 30*(feedbackForSong.EarlySkipCount+1))
+					if feedbackForSong.LastEarlySkipAt != nil && now.Sub(feedbackForSong.LastEarlySkipAt.UTC()) < time.Duration(cooldownDays)*24*time.Hour {
 						stats["feedbackCooldown"]++
 						traceRadioCandidate(ctx, "Personal radio candidate rejected by feedback cooldown",
 							append(candidateFields,
 								"decision", "feedback_cooldown",
-								"earlySkipCount", f.EarlySkipCount,
+								"earlySkipCount", feedbackForSong.EarlySkipCount,
 								"cooldownDays", cooldownDays,
-								"lastEarlySkipAt", f.LastEarlySkipAt))
+								"lastEarlySkipAt", feedbackForSong.LastEarlySkipAt))
 						continue
 					}
-					pools.discovery = append(pools.discovery, song)
+					key := radioDiscoveryCandidateKey(song)
+					rankedCandidates = append(rankedCandidates, rankedRadioCandidate{
+						candidate: recommendations.Candidate{
+							Key: key,
+							MediaFile: model.MediaFile{
+								ID:             key,
+								Title:          song.Name,
+								Artist:         firstSongArtist(song),
+								Album:          song.Album,
+								MbzRecordingID: song.MBID,
+							},
+							SimilarityScores: song.SimilarityScores,
+						},
+						discovery:   song,
+						isDiscovery: true,
+					})
+					fatigue[key] = radioFeedbackFatigue(feedbackForSong)
 					stats["acceptedDiscovery"]++
 					traceRadioCandidate(ctx, "Personal radio candidate accepted for discovery download",
 						append(candidateFields, "decision", "discovery"))
@@ -756,15 +804,40 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 	for mediaFileID := range localAdded {
 		metadataSeen[mediaFileID] = true
 	}
-	fallback, err := s.localCandidates(ctx, seed, metadataSeen, count)
+	fallback, err := s.localCandidateFiles(ctx, seed, metadataSeen)
 	if err != nil {
 		return candidatePools{}, fmt.Errorf("load local fallback candidates: %w", err)
 	}
 	stats["localFallback"] = len(fallback)
 	for _, file := range fallback {
 		if !localAdded[file.ID] {
-			pools.local = append(pools.local, file)
 			localAdded[file.ID] = true
+			key := radioLocalCandidateKey(file.ID)
+			fileCopy := file
+			rankedCandidates = append(rankedCandidates, rankedRadioCandidate{
+				candidate: recommendations.Candidate{Key: key, SeedAffinity: localSeedAffinity(seed, file), MediaFile: file},
+				local:     &fileCopy,
+			})
+		}
+	}
+	ranked := make([]recommendations.Candidate, 0, len(rankedCandidates))
+	sources := make(map[string]rankedRadioCandidate, len(rankedCandidates))
+	for _, candidate := range rankedCandidates {
+		ranked = append(ranked, candidate.candidate)
+		sources[candidate.candidate.Key] = candidate
+	}
+	for _, candidate := range recommendations.Rank(ranked, recommendations.Options{
+		Now:     now,
+		Fatigue: fatigue,
+	}) {
+		source, ok := sources[candidate.Key]
+		if !ok {
+			continue
+		}
+		if source.isDiscovery {
+			pools.discovery = append(pools.discovery, source.discovery)
+		} else if source.local != nil {
+			pools.local = append(pools.local, *source.local)
 		}
 	}
 	log.Debug(ctx, "Personal radio candidate filtering completed",
@@ -776,6 +849,26 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 		"discoveryPool", len(pools.discovery),
 		"fallbackRequested", count)
 	return pools, nil
+}
+
+func radioLocalCandidateKey(mediaFileID string) string {
+	return "local:" + mediaFileID
+}
+
+func normalizeRecordingMBID(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
+}
+
+func radioDiscoveryCandidateKey(song agents.Song) string {
+	return "discovery:" + agents.CandidateID(song)
+}
+
+func radioFeedbackFatigue(feedback model.RadioTrackFeedback) float64 {
+	negativeFeedback := feedback.EarlySkipCount + feedback.NeutralSkipCount
+	if negativeFeedback <= 0 {
+		return 0
+	}
+	return min(1, float64(negativeFeedback)/5)
 }
 
 func (s *service) queueDiscovery(ctx context.Context, session model.PersonalRadioSession, discovery agents.Song, position int, now time.Time) (model.PersonalRadioItem, bool) {
@@ -884,12 +977,34 @@ func traceRadioCandidate(ctx context.Context, message string, fields []any) {
 	log.Trace(append([]any{ctx, message}, fields...)...)
 }
 
-type scoredFile struct {
-	file  model.MediaFile
-	score float64
+func (s *service) localCandidates(ctx context.Context, seed *model.MediaFile, seen map[string]bool, count int) (model.MediaFiles, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	files, err := s.localCandidateFiles(ctx, seed, seen)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]recommendations.Candidate, 0, len(files))
+	for _, file := range files {
+		candidates = append(candidates, recommendations.Candidate{
+			Key:          radioLocalCandidateKey(file.ID),
+			SeedAffinity: localSeedAffinity(seed, file),
+			MediaFile:    file,
+		})
+	}
+	ranked := recommendations.Rank(candidates, recommendations.Options{
+		Now:   time.Now().UTC(),
+		Limit: count,
+	})
+	result := make(model.MediaFiles, 0, len(ranked))
+	for _, candidate := range ranked {
+		result = append(result, candidate.MediaFile)
+	}
+	return result, nil
 }
 
-func (s *service) localCandidates(ctx context.Context, seed *model.MediaFile, seen map[string]bool, count int) (model.MediaFiles, error) {
+func (s *service) localCandidateFiles(ctx context.Context, seed *model.MediaFile, seen map[string]bool) (model.MediaFiles, error) {
 	byID := map[string]model.MediaFile{}
 	for _, options := range []model.QueryOptions{
 		{Sort: "play_count", Order: "desc", Max: 500},
@@ -909,41 +1024,30 @@ func (s *service) localCandidates(ctx context.Context, seed *model.MediaFile, se
 	for _, file := range byID {
 		files = append(files, file)
 	}
-	seedGenres := genreSet(*seed)
-	candidates := make([]scoredFile, 0, len(files))
+	candidates := make(model.MediaFiles, 0, len(files))
 	for _, file := range files {
 		if seen[file.ID] || file.Missing {
 			continue
 		}
-		genreMatches := genreAffinity(seedGenres, genreSet(file))
-		artistMatch := strings.EqualFold(file.Artist, seed.Artist) || (file.ArtistID != "" && file.ArtistID == seed.ArtistID)
-		compatibility := genreMatches * 12
-		if artistMatch {
-			compatibility += 16
-		}
-		if compatibility == 0 {
+		if localSeedAffinity(seed, file) == 0 {
 			continue
 		}
-		score := compatibility + 0.8*math.Log1p(float64(file.PlayCount)) + localRecencyScore(file)
-		if file.Starred {
-			score += 4
-		}
-		candidates = append(candidates, scoredFile{file: file, score: score})
+		candidates = append(candidates, file)
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
-	result := make(model.MediaFiles, 0, count)
-	added := map[string]bool{}
-	for _, candidate := range candidates {
-		if added[candidate.file.ID] || seen[candidate.file.ID] {
-			continue
-		}
-		result = append(result, candidate.file)
-		added[candidate.file.ID] = true
-		if len(result) == count {
-			break
-		}
+	return candidates, nil
+}
+
+func localSeedAffinity(seed *model.MediaFile, file model.MediaFile) float64 {
+	if seed == nil {
+		return 0
 	}
-	return result, nil
+	genreMatches := genreAffinity(genreSet(*seed), genreSet(file))
+	artistMatch := strings.EqualFold(file.Artist, seed.Artist) || (file.ArtistID != "" && file.ArtistID == seed.ArtistID)
+	compatibility := genreMatches*12
+	if artistMatch {
+		compatibility += 16
+	}
+	return compatibility / 52
 }
 
 func genreSet(file model.MediaFile) map[string]bool {
@@ -1023,20 +1127,6 @@ func genreFamily(value string) string {
 	default:
 		return ""
 	}
-}
-
-func localRecencyScore(file model.MediaFile) float64 {
-	now := time.Now().UTC()
-	score := 0.0
-	if file.PlayDate != nil {
-		days := math.Max(0, now.Sub(file.PlayDate.UTC()).Hours()/24)
-		score += 3 * math.Exp(-days/30)
-	}
-	if !file.CreatedAt.IsZero() {
-		days := math.Max(0, now.Sub(file.CreatedAt.UTC()).Hours()/24)
-		score += 2 * math.Exp(-days/45)
-	}
-	return score
 }
 
 func hasDownloadingItems(items []model.PersonalRadioItem) bool {

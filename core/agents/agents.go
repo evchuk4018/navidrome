@@ -360,7 +360,14 @@ func (a *Agents) GetSimilarSongsByTrackAll(ctx context.Context, id, name, artist
 		if len(results) == 0 {
 			continue
 		}
-		byAgent = append(byAgent, results)
+		provider := ag.AgentName()
+		annotated := make([]Song, 0, len(results))
+		for _, candidate := range results {
+			candidate.CandidateID = CandidateID(candidate)
+			candidate.SimilarityScores = annotateSimilarityScores(candidate.SimilarityScores, provider)
+			annotated = append(annotated, candidate)
+		}
+		byAgent = append(byAgent, annotated)
 		log.Debug(ctx, "Got similarity candidates", "method", "GetSimilarSongsByTrackAll", "agent", ag.AgentName(), "count", len(results))
 	}
 
@@ -368,29 +375,45 @@ func (a *Agents) GetSimilarSongsByTrackAll(ctx context.Context, id, name, artist
 		return nil, ErrNotFound
 	}
 
+	// Merge every fetched result before applying the count limit, so duplicates outside
+	// the candidate window can still contribute their provider scores.
+	merged := make(map[string]Song)
+	for _, results := range byAgent {
+		for _, candidate := range results {
+			key := songCandidateKey(candidate)
+			if existing, ok := merged[key]; ok {
+				existing.SimilarityScores = mergeSimilarityScores(existing.SimilarityScores, candidate.SimilarityScores)
+				merged[key] = existing
+				continue
+			}
+			candidate.SimilarityScores = mergeSimilarityScores(nil, candidate.SimilarityScores)
+			merged[key] = candidate
+		}
+	}
+
 	// Round-robin the providers so a large result set from the first provider
 	// cannot crowd all later providers out of the candidate window.
 	result := make([]Song, 0, count)
 	seen := make(map[string]struct{}, count)
 	for round := 0; len(result) < count; round++ {
-		added := false
+		hasCandidates := false
 		for _, results := range byAgent {
 			if round >= len(results) {
 				continue
 			}
+			hasCandidates = true
 			candidate := results[round]
 			key := songCandidateKey(candidate)
 			if _, exists := seen[key]; exists {
 				continue
 			}
 			seen[key] = struct{}{}
-			result = append(result, candidate)
-			added = true
+			result = append(result, merged[key])
 			if len(result) == count {
 				break
 			}
 		}
-		if !added {
+		if !hasCandidates {
 			break
 		}
 	}
@@ -400,14 +423,50 @@ func (a *Agents) GetSimilarSongsByTrackAll(ctx context.Context, id, name, artist
 }
 
 func songCandidateKey(song Song) string {
-	if song.MBID != "" {
-		return "mbid:" + strings.ToLower(strings.TrimSpace(song.MBID))
+	return CandidateID(song)
+}
+
+func annotateSimilarityScores(scores []SimilarityScore, provider string) []SimilarityScore {
+	if len(scores) == 0 {
+		return []SimilarityScore{{Provider: provider}}
 	}
-	artist := ""
-	if len(song.Artists) > 0 {
-		artist = song.Artists[0].Name
+	annotated := make([]SimilarityScore, 0, len(scores)+1)
+	hasProvider := false
+	for _, score := range scores {
+		score.Provider = strings.TrimSpace(score.Provider)
+		if score.Provider == "" {
+			score.Provider = provider
+		}
+		if strings.EqualFold(score.Provider, provider) {
+			hasProvider = true
+		}
+		annotated = append(annotated, score)
 	}
-	return "title:" + strings.ToLower(strings.TrimSpace(song.Name)) + "|artist:" + strings.ToLower(strings.TrimSpace(artist))
+	if !hasProvider {
+		annotated = append(annotated, SimilarityScore{Provider: provider})
+	}
+	return annotated
+}
+
+func mergeSimilarityScores(existing []SimilarityScore, incoming []SimilarityScore) []SimilarityScore {
+	for _, candidate := range incoming {
+		found := false
+		for i, current := range existing {
+			if !strings.EqualFold(strings.TrimSpace(current.Provider), strings.TrimSpace(candidate.Provider)) {
+				continue
+			}
+			found = true
+			if candidate.NormalizedScore > current.NormalizedScore ||
+				candidate.NormalizedScore == current.NormalizedScore && candidate.Score > current.Score {
+				existing[i] = candidate
+			}
+			break
+		}
+		if !found {
+			existing = append(existing, candidate)
+		}
+	}
+	return existing
 }
 
 // GetSimilarSongsByAlbum returns similar songs for a given album.

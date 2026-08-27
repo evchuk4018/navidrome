@@ -321,10 +321,99 @@ var _ = Describe("Agents", func() {
 		Describe("GetSimilarSongsByTrackAll", func() {
 			It("returns candidates from an enabled similarity agent", func() {
 				Expect(ag.GetSimilarSongsByTrackAll(ctx, "123", "test song", "test artist", "mb123", 2)).To(Equal([]Song{{
-					Name: "Similar Song",
-					MBID: "mbid555",
+					Name:             "Similar Song",
+					MBID:             "mbid555",
+					CandidateID:      "mbid:mbid555",
+					SimilarityScores: []SimilarityScore{{Provider: "fake"}},
 				}}))
 				Expect(mock.Args).To(HaveExactElements("123", "test song", "test artist", "mb123", 2))
+			})
+
+			It("merges provider scores before applying the count limit", func() {
+				first := &testSimilarityAgent{
+					name: "first-similarity",
+					songs: []Song{
+						{
+							Name:             "Shared Song",
+							MBID:             "shared-mbid",
+							SimilarityScores: []SimilarityScore{{Provider: "first-similarity", Score: 0.8, NormalizedScore: 0.8}},
+						},
+						{Name: "First Only", MBID: "first-mbid", SimilarityScores: []SimilarityScore{{Provider: "first-similarity", Score: 0.4, NormalizedScore: 0.4}}},
+					},
+				}
+				second := &testSimilarityAgent{
+					name: "second-similarity",
+					songs: []Song{
+						{
+							Name:             "Shared Song",
+							MBID:             "shared-mbid",
+							SimilarityScores: []SimilarityScore{{Provider: "second-similarity", Score: 0.7, NormalizedScore: 0.7}},
+						},
+						{Name: "Second Only", MBID: "second-mbid", SimilarityScores: []SimilarityScore{{Provider: "second-similarity", Score: 0.3, NormalizedScore: 0.3}}},
+					},
+				}
+				Register(first.name, func(model.DataStore) Interface { return first })
+				Register(second.name, func(model.DataStore) Interface { return second })
+				conf.Server.Agents = first.name + "," + second.name
+				ag = createAgents(ds, nil)
+
+				one, err := ag.GetSimilarSongsByTrackAll(ctx, "123", "test song", "test artist", "mb123", 1)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(one).To(Equal([]Song{{
+					Name:        "Shared Song",
+					MBID:        "shared-mbid",
+					CandidateID: "mbid:shared-mbid",
+					SimilarityScores: []SimilarityScore{
+						{Provider: first.name, Score: 0.8, NormalizedScore: 0.8},
+						{Provider: second.name, Score: 0.7, NormalizedScore: 0.7},
+					},
+				}}))
+
+				all, err := ag.GetSimilarSongsByTrackAll(ctx, "123", "test song", "test artist", "mb123", 3)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(all).To(Equal([]Song{
+					{
+						Name:        "Shared Song",
+						MBID:        "shared-mbid",
+						CandidateID: "mbid:shared-mbid",
+						SimilarityScores: []SimilarityScore{
+							{Provider: first.name, Score: 0.8, NormalizedScore: 0.8},
+							{Provider: second.name, Score: 0.7, NormalizedScore: 0.7},
+						},
+					},
+					{Name: "First Only", MBID: "first-mbid", CandidateID: "mbid:first-mbid", SimilarityScores: []SimilarityScore{{Provider: first.name, Score: 0.4, NormalizedScore: 0.4}}},
+					{Name: "Second Only", MBID: "second-mbid", CandidateID: "mbid:second-mbid", SimilarityScores: []SimilarityScore{{Provider: second.name, Score: 0.3, NormalizedScore: 0.3}}},
+				}))
+			})
+
+			It("continues round-robin after a duplicate-only round", func() {
+				first := &testSimilarityAgent{
+					name: "duplicate-first",
+					songs: []Song{
+						{Name: "First", MBID: "first-mbid"},
+						{Name: "First Again", MBID: "first-mbid"},
+						{Name: "Later", MBID: "later-mbid"},
+					},
+				}
+				second := &testSimilarityAgent{
+					name: "duplicate-second",
+					songs: []Song{
+						{Name: "Second", MBID: "second-mbid"},
+						{Name: "Second Again", MBID: "second-mbid"},
+					},
+				}
+				Register(first.name, func(model.DataStore) Interface { return first })
+				Register(second.name, func(model.DataStore) Interface { return second })
+				conf.Server.Agents = first.name + "," + second.name
+				ag = createAgents(ds, nil)
+
+				result, err := ag.GetSimilarSongsByTrackAll(ctx, "123", "test song", "test artist", "mb123", 3)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(result).To(Equal([]Song{
+					{Name: "First", MBID: "first-mbid", CandidateID: "mbid:first-mbid", SimilarityScores: []SimilarityScore{{Provider: first.name}}},
+					{Name: "Second", MBID: "second-mbid", CandidateID: "mbid:second-mbid", SimilarityScores: []SimilarityScore{{Provider: second.name}}},
+					{Name: "Later", MBID: "later-mbid", CandidateID: "mbid:later-mbid", SimilarityScores: []SimilarityScore{{Provider: first.name}}},
+				}))
 			})
 		})
 
@@ -550,6 +639,17 @@ type emptyAgent struct {
 
 func (e *emptyAgent) AgentName() string {
 	return "empty"
+}
+
+type testSimilarityAgent struct {
+	name  string
+	songs []Song
+}
+
+func (a *testSimilarityAgent) AgentName() string { return a.name }
+
+func (a *testSimilarityAgent) GetSimilarSongsByTrack(_ context.Context, _, _, _, _ string, _ int) ([]Song, error) {
+	return a.songs, nil
 }
 
 type testImageAgent struct {
