@@ -9,14 +9,17 @@ export const getQuickPick = () => jsonRequest('/quick-pick')
 export const recordPlaylistPlay = (playlistId) =>
   httpClient(`${REST_URL}/playlist/${playlistId}/plays`, { method: 'POST' })
 
-export const createPersonalRadio = (seedMediaFileId) =>
+export const createPersonalRadio = (seedMediaFileId, mode) =>
   jsonRequest('/personal-radio/sessions', {
     method: 'POST',
-    body: JSON.stringify({ seedMediaFileId }),
+    body: JSON.stringify({ seedMediaFileId, ...(mode ? { mode } : {}) }),
   })
 
-export const refillPersonalRadio = (sessionId) =>
-  jsonRequest(`/personal-radio/sessions/${sessionId}`)
+export const refillPersonalRadio = (sessionId, context = {}) =>
+  jsonRequest(`/personal-radio/sessions/${sessionId}/refill`, {
+    method: 'POST',
+    body: JSON.stringify(context),
+  })
 
 export const radioErrorDetails = (error) => {
   const body = error?.body

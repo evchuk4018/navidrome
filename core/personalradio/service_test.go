@@ -2,6 +2,7 @@ package personalradio
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,9 +23,12 @@ func (f fakeSimilarityProvider) GetSimilarSongsByTrackAll(context.Context, strin
 
 type fakePersonalRadioRepository struct {
 	model.PersonalRadioRepository
-	items    []model.PersonalRadioItem
-	session  *model.PersonalRadioSession
-	feedback map[string]model.RadioTrackFeedback
+	items          []model.PersonalRadioItem
+	session        *model.PersonalRadioSession
+	feedback       map[string]model.RadioTrackFeedback
+	transitions    map[string]model.RadioTransitionFeedback
+	discoveries    map[string]model.DiscoveryTrack
+	feedbackEvents []string
 }
 
 func (f *fakePersonalRadioRepository) GetSessionForUser(string, string) (*model.PersonalRadioSession, error) {
@@ -33,6 +37,15 @@ func (f *fakePersonalRadioRepository) GetSessionForUser(string, string) (*model.
 	}
 	session := *f.session
 	return &session, nil
+}
+
+func (f *fakePersonalRadioRepository) UpdateSession(session *model.PersonalRadioSession) error {
+	if f.session == nil {
+		f.session = &model.PersonalRadioSession{}
+	}
+	copy := *session
+	f.session = &copy
+	return nil
 }
 
 func (f *fakePersonalRadioRepository) GetItems(string) ([]model.PersonalRadioItem, error) {
@@ -48,6 +61,140 @@ func (f *fakePersonalRadioRepository) GetFeedback(string, []string) (map[string]
 	return f.feedback, nil
 }
 
+func (f *fakePersonalRadioRepository) GetRecentAcceptedItems(sessionID string, limit int) ([]model.PersonalRadioItem, error) {
+	var accepted []model.PersonalRadioItem
+	for i := len(f.items) - 1; i >= 0 && len(accepted) < limit; i-- {
+		item := f.items[i]
+		if item.SessionID == sessionID && model.IsAcceptedRadioPlaybackOutcome(item.PlaybackOutcome) {
+			accepted = append(accepted, item)
+		}
+	}
+	return accepted, nil
+}
+
+func (f *fakePersonalRadioRepository) RecordPlaybackFeedback(userID, sessionID string, request model.PersonalRadioFeedbackRequest, now time.Time) (*model.RadioPlaybackFeedbackResult, error) {
+	if f.transitions == nil {
+		f.transitions = map[string]model.RadioTransitionFeedback{}
+	}
+	for i := range f.items {
+		item := &f.items[i]
+		if item.ID != request.ItemID || item.SessionID != sessionID {
+			continue
+		}
+		if userID == "" {
+			return nil, model.ErrNotFound
+		}
+		item.Status = model.RadioItemPlayed
+		if request.ListenedMS > item.ListenedMS {
+			item.ListenedMS = request.ListenedMS
+		}
+		if request.DurationMS > item.DurationMS {
+			item.DurationMS = request.DurationMS
+		}
+		item.LastFeedbackAt = &now
+		applied := false
+		var delta string
+		switch request.Event {
+		case model.RadioFeedbackStarted:
+			if item.PlaybackOutcome == "" {
+				item.PlaybackOutcome, applied = model.RadioPlaybackStarted, true
+				if source := f.latestAccepted(sessionID, item.ID); source != nil && item.TransitionSourceKey == "" {
+					item.TransitionSourceItemID = source.ID
+					item.TransitionSourceKey = model.RadioTrackKey(source.RecordingMBID, source.MediaFileID)
+				}
+				delta = "attempt"
+			}
+		case model.RadioFeedbackThresholdReached:
+			if item.PlaybackOutcome != model.RadioPlaybackCompleted && item.PlaybackOutcome != model.RadioPlaybackLateSkip && item.PlaybackOutcome != model.RadioPlaybackKeep && item.PlaybackOutcome != model.RadioPlaybackAccepted {
+				item.PlaybackOutcome, applied, delta = model.RadioPlaybackAccepted, true, "accepted"
+			}
+		case model.RadioFeedbackCompleted:
+			if item.PlaybackOutcome != model.RadioPlaybackCompleted {
+				item.PlaybackOutcome, applied, delta = model.RadioPlaybackCompleted, true, "completed"
+			}
+		case model.RadioFeedbackManualSkip:
+			if item.PlaybackOutcome != model.RadioPlaybackCompleted && item.PlaybackOutcome != model.RadioPlaybackKeep && item.PlaybackOutcome != model.RadioPlaybackLateSkip {
+				threshold := int64(30000)
+				if item.DurationMS > 0 {
+					threshold = minInt64ForTest(threshold, item.DurationMS/5)
+				}
+				if model.IsAcceptedRadioPlaybackOutcome(item.PlaybackOutcome) || item.ListenedMS >= threshold {
+					item.PlaybackOutcome, applied, delta = model.RadioPlaybackLateSkip, true, "neutral"
+				} else if item.PlaybackOutcome != model.RadioPlaybackEarlySkip {
+					item.PlaybackOutcome, applied, delta = model.RadioPlaybackEarlySkip, true, "early"
+				}
+			}
+		case model.RadioFeedbackKeep:
+			if item.PlaybackOutcome != model.RadioPlaybackCompleted && item.PlaybackOutcome != model.RadioPlaybackKeep {
+				item.PlaybackOutcome, applied, delta = model.RadioPlaybackKeep, true, "keep"
+			}
+		}
+		if applied && item.TransitionSourceKey != "" && delta != "" {
+			key := item.TransitionSourceKey + "\x00" + model.RadioTrackKey(item.RecordingMBID, item.MediaFileID)
+			transition := f.transitions[key]
+			transition.UserID, transition.SourceKey, transition.TargetKey = userID, item.TransitionSourceKey, model.RadioTrackKey(item.RecordingMBID, item.MediaFileID)
+			switch delta {
+			case "attempt":
+				transition.AttemptCount++
+			case "accepted":
+				transition.AcceptedCount++
+			case "completed":
+				transition.CompletedCount++
+			case "early":
+				transition.EarlySkipCount++
+			case "neutral":
+				transition.NeutralSkipCount++
+			case "keep":
+				transition.KeepCount++
+			}
+			transition.UpdatedAt = now
+			f.transitions[key] = transition
+		}
+		return &model.RadioPlaybackFeedbackResult{Item: *item, Applied: applied}, nil
+	}
+	return nil, model.ErrNotFound
+}
+
+func (f *fakePersonalRadioRepository) latestAccepted(sessionID, excludeID string) *model.PersonalRadioItem {
+	for i := len(f.items) - 1; i >= 0; i-- {
+		if f.items[i].SessionID == sessionID && f.items[i].ID != excludeID && model.IsAcceptedRadioPlaybackOutcome(f.items[i].PlaybackOutcome) {
+			item := f.items[i]
+			return &item
+		}
+	}
+	return nil
+}
+
+func (f *fakePersonalRadioRepository) GetTransitionsForTargets(_ string, sourceKey string, targetKeys []string) (map[string]model.RadioTransitionFeedback, error) {
+	result := map[string]model.RadioTransitionFeedback{}
+	for _, targetKey := range targetKeys {
+		if feedback, ok := f.transitions[sourceKey+"\x00"+targetKey]; ok {
+			result[targetKey] = feedback
+		}
+	}
+	return result, nil
+}
+
+func (f *fakePersonalRadioRepository) GetTopTransitions(_ string, sourceKey string, limit int) ([]model.RadioTransitionFeedback, error) {
+	var result []model.RadioTransitionFeedback
+	for _, feedback := range f.transitions {
+		if feedback.SourceKey == sourceKey {
+			result = append(result, feedback)
+			if len(result) == limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func minInt64ForTest(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
+}
+
 func (f *fakePersonalRadioRepository) UpdateItem(item *model.PersonalRadioItem) error {
 	for i := range f.items {
 		if f.items[i].ID == item.ID {
@@ -60,6 +207,27 @@ func (f *fakePersonalRadioRepository) UpdateItem(item *model.PersonalRadioItem) 
 }
 
 func (f *fakePersonalRadioRepository) UpsertDiscovery(*model.DiscoveryTrack) error {
+	return nil
+}
+
+func (f *fakePersonalRadioRepository) GetDiscoveryByRecording(_ string, recordingMBID string) (*model.DiscoveryTrack, error) {
+	if track, ok := f.discoveries[recordingMBID]; ok {
+		copy := track
+		return &copy, nil
+	}
+	return nil, model.ErrNotFound
+}
+
+func (f *fakePersonalRadioRepository) UpdateDiscovery(track *model.DiscoveryTrack) error {
+	if f.discoveries == nil {
+		f.discoveries = map[string]model.DiscoveryTrack{}
+	}
+	f.discoveries[track.RecordingMBID] = *track
+	return nil
+}
+
+func (f *fakePersonalRadioRepository) RecordFeedback(_ string, recordingMBID, event string, _ time.Time) error {
+	f.feedbackEvents = append(f.feedbackEvents, recordingMBID+":"+event)
 	return nil
 }
 
@@ -86,6 +254,45 @@ func TestEarlySkipThreshold(t *testing.T) {
 		if got := earlySkipThresholdMS(test.duration); got != test.want {
 			t.Fatalf("earlySkipThresholdMS(%d) = %d, want %d", test.duration, got, test.want)
 		}
+	}
+}
+
+func TestFeedbackPersistsLibraryOutcomeAndKeepsDiscoveryLifecycle(t *testing.T) {
+	repo := &fakePersonalRadioRepository{
+		session: &model.PersonalRadioSession{ID: "session", UserID: "user", Status: model.PersonalRadioActive},
+		items: []model.PersonalRadioItem{
+			{ID: "library-item", SessionID: "session", ItemType: model.RadioItemLibrary, RecordingMBID: "LIB-MBID"},
+			{ID: "discovery-item", SessionID: "session", ItemType: model.RadioItemDiscovery, RecordingMBID: "DISC-MBID"},
+		},
+		discoveries: map[string]model.DiscoveryTrack{
+			"disc-mbid": {ID: "discovery", UserID: "user", RecordingMBID: "disc-mbid", State: model.DiscoveryTemporary},
+		},
+	}
+	svc := &service{repo: repo}
+	if err := svc.Feedback(context.Background(), "user", "session", model.PersonalRadioFeedbackRequest{
+		ItemID: "library-item", Event: model.RadioFeedbackThresholdReached, ListenedMS: 30000, DurationMS: 100000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.items[0].PlaybackOutcome != model.RadioPlaybackAccepted {
+		t.Fatalf("library playback outcome = %q, want accepted", repo.items[0].PlaybackOutcome)
+	}
+	if len(repo.feedbackEvents) != 1 || repo.feedbackEvents[0] != "lib-mbid:threshold_reached" {
+		t.Fatalf("library feedback events = %v", repo.feedbackEvents)
+	}
+
+	if err := svc.Feedback(context.Background(), "user", "session", model.PersonalRadioFeedbackRequest{
+		ItemID: "discovery-item", Event: model.RadioFeedbackStarted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Feedback(context.Background(), "user", "session", model.PersonalRadioFeedbackRequest{
+		ItemID: "discovery-item", Event: model.RadioFeedbackThresholdReached, ListenedMS: 30000, DurationMS: 100000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := repo.discoveries["disc-mbid"].State; got != model.DiscoveryKept {
+		t.Fatalf("discovery state = %q, want kept", got)
 	}
 }
 
@@ -234,6 +441,83 @@ func TestRecommendationPoolsPenalizeFatiguedDiscoveries(t *testing.T) {
 	}
 }
 
+func TestRecommendationPoolsInjectStrongLearnedTransition(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop", MbzRecordingID: "seed-mbid"},
+		{ID: "learned", Title: "Learned", Artist: "Jazz Artist", Genre: "Jazz", MbzRecordingID: "learned-mbid"},
+	})
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	repo := &fakePersonalRadioRepository{transitions: map[string]model.RadioTransitionFeedback{
+		"mbid:seed-mbid\x00mbid:learned-mbid": {
+			UserID: "user", SourceKey: "mbid:seed-mbid", TargetKey: "mbid:learned-mbid",
+			TargetMediaFileID: "learned", AttemptCount: 4, AcceptedCount: 3, CompletedCount: 1,
+		},
+	}}
+	svc := &service{
+		ds:      ds,
+		repo:    repo,
+		agents:  fakeSimilarityProvider{},
+		matcher: matcher.New(ds),
+	}
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user"},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true},
+		map[string]bool{"seed-mbid": true},
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.local) != 1 || pools.local[0].ID != "learned" {
+		t.Fatalf("learned local pool = %#v, want learned", pools.local)
+	}
+	if pools.ranked[0].candidate.TransitionAffinity <= 0 {
+		t.Fatalf("learned transition affinity = %v, want positive", pools.ranked[0].candidate.TransitionAffinity)
+	}
+}
+
+func TestBuildRadioContextKeepsOriginalAndAcceptedSeeds(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "a", Title: "A", Artist: "Artist A", Genre: "Pop", MbzRecordingID: "a-mbid"},
+		{ID: "b", Title: "B", Artist: "Artist B", Genre: "Pop", MbzRecordingID: "b-mbid"},
+		{ID: "c", Title: "C", Artist: "Artist C", Genre: "Rock", MbzRecordingID: "c-mbid"},
+		{ID: "x", Title: "X", Artist: "Artist X", Genre: "Metal", MbzRecordingID: "x-mbid"},
+	})
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	repo := &fakePersonalRadioRepository{items: []model.PersonalRadioItem{
+		{ID: "seed-item", SessionID: "session", ItemType: model.RadioItemSeed, MediaFileID: "a", PlaybackOutcome: model.RadioPlaybackAccepted},
+		{ID: "b-item", SessionID: "session", ItemType: model.RadioItemLibrary, MediaFileID: "b", PlaybackOutcome: model.RadioPlaybackAccepted},
+		{ID: "c-item", SessionID: "session", ItemType: model.RadioItemLibrary, MediaFileID: "c", PlaybackOutcome: model.RadioPlaybackCompleted},
+		{ID: "x-item", SessionID: "session", ItemType: model.RadioItemLibrary, MediaFileID: "x", PlaybackOutcome: model.RadioPlaybackEarlySkip},
+	}}
+	svc := &service{ds: ds, repo: repo}
+	context, err := svc.buildRadioContext(context.Background(), model.PersonalRadioSession{
+		ID: "session", SeedMediaFileID: "a", UserID: "user",
+	}, repo.items, model.RefillPersonalRadioRequest{
+		CurrentItemID: "c-item", QueuedItemIDs: []string{"c-item", "x-item"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.Seeds) != 3 {
+		t.Fatalf("context seeds = %#v, want original/current/recent accepted", context.Seeds)
+	}
+	keys := make([]string, 0, len(context.Seeds))
+	for _, seed := range context.Seeds {
+		keys = append(keys, model.RadioTrackKey(seed.File.MbzRecordingID, seed.File.ID))
+	}
+	if got := strings.Join(keys, ","); got != "mbid:a-mbid,mbid:c-mbid,mbid:b-mbid" {
+		t.Fatalf("context seed keys = %q", got)
+	}
+	if context.QueuedItemIDs["x-item"] != true || !context.ClientQueueProvided {
+		t.Fatalf("client queue context was not reconciled: %#v", context)
+	}
+}
+
 func TestLocalCandidatesPreferArtistAffinityOverPopularity(t *testing.T) {
 	repo := tests.CreateMockMediaFileRepo()
 	repo.SetData(model.MediaFiles{
@@ -292,45 +576,39 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 	if len(repo.items) != 11 {
 		t.Fatalf("expected seed plus ten planned items, got %d", len(repo.items))
 	}
-	// Discovery items lead so the fresh similar tracks are visible in the queue
-	// immediately; each is followed by a ready library buffer so playback never
-	// stalls while the download lands.
-	wantTypes := []string{
-		model.RadioItemDiscovery, model.RadioItemLibrary,
-		model.RadioItemDiscovery, model.RadioItemLibrary,
-		model.RadioItemDiscovery, model.RadioItemLibrary,
-		model.RadioItemDiscovery, model.RadioItemLibrary,
-		model.RadioItemDiscovery, model.RadioItemLibrary,
+	// Balanced composition targets roughly 65/35 over the refill and does not
+	// force a discovery/library alternation.
+	planned := repo.items[1:]
+	if got := countRadioItemsByType(planned, model.RadioItemDiscovery); got != 4 {
+		t.Fatalf("expected four balanced discovery items, got %d", got)
 	}
-	wantStatuses := []string{
-		model.RadioItemDownloading, model.RadioItemReady,
-		model.RadioItemDownloading, model.RadioItemReady,
-		model.RadioItemDownloading, model.RadioItemReady,
-		model.RadioItemDownloading, model.RadioItemReady,
-		model.RadioItemDownloading, model.RadioItemReady,
+	if got := countRadioItemsByType(planned, model.RadioItemLibrary); got != 6 {
+		t.Fatalf("expected six balanced library items, got %d", got)
 	}
-	for i, item := range repo.items[1:] {
-		if item.Position != i+1 || item.ItemType != wantTypes[i] || item.Status != wantStatuses[i] {
-			t.Fatalf("item %d = position %d, type %q, status %q", i, item.Position, item.ItemType, item.Status)
+	for i, item := range planned {
+		if item.Position != i+1 {
+			t.Fatalf("item %d has position %d, want %d", i, item.Position, i+1)
 		}
 	}
-	if len(music.requests) != 5 {
-		t.Fatalf("expected five discovery downloads, got %d", len(music.requests))
+	if len(music.requests) != 4 {
+		t.Fatalf("expected four discovery downloads, got %d", len(music.requests))
 	}
-	for i, request := range music.requests {
-		if request.ID != []string{"fresh-1", "fresh-2", "fresh-3", "fresh-4", "fresh-5"}[i] || request.Origin != model.MusicDownloadOriginRadio {
+	for _, request := range music.requests {
+		if !strings.HasPrefix(request.ID, "fresh-") || request.Origin != model.MusicDownloadOriginRadio {
 			t.Fatalf("unexpected discovery request %#v", request)
 		}
 	}
 	// The Last.fm recommendation metadata rides on the download request so the
 	// queue can show what is being fetched while the download is in flight.
-	for i, request := range music.requests[:2] {
-		want := []struct {
-			title, artist, album string
-		}{{"Fresh One", "Fresh Artist", "Fresh Album"}, {"Fresh Two", "Fresh Artist", "Fresh Album"}}[i]
-		if request.Title != want.title || request.Artist != want.artist || request.Album != want.album {
-			t.Fatalf("recommendation metadata missing from request %#v", request)
+	var freshOne *model.ExternalDownloadRequest
+	for i := range music.requests {
+		if music.requests[i].ID == "fresh-1" {
+			freshOne = &music.requests[i]
+			break
 		}
+	}
+	if freshOne == nil || freshOne.Title != "Fresh One" || freshOne.Artist != "Fresh Artist" || freshOne.Album != "Fresh Album" {
+		t.Fatalf("recommendation metadata missing from request %#v", music.requests)
 	}
 
 	// Polling while all ten slots are ready or downloading must not enqueue
@@ -338,28 +616,47 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 	if err := svc.plan(context.Background(), session, mediaRepo.Data["seed"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 11 || len(music.requests) != 5 {
+	if len(repo.items) != 11 || len(music.requests) != 4 {
 		t.Fatalf("in-flight work was duplicated: %d items, %d downloads", len(repo.items), len(music.requests))
 	}
 
 	// A failed discovery no longer counts toward capacity. The next plan skips
-	// its seen MBID and appends the next ranked discovery/buffer pair.
-	repo.items[1].Status = model.RadioItemFailed
+	// its seen MBID and appends the next ranked discovery without requiring a
+	// mechanical library pair.
+	failedIndex := -1
+	for index, item := range repo.items {
+		if item.ItemType == model.RadioItemDiscovery {
+			failedIndex = index
+			break
+		}
+	}
+	if failedIndex < 0 {
+		t.Fatal("expected at least one discovery item")
+	}
+	repo.items[failedIndex].Status = model.RadioItemFailed
 	if err := svc.plan(context.Background(), session, mediaRepo.Data["seed"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 13 || len(music.requests) != 6 {
-		t.Fatalf("expected one replacement pair: %d items, %d downloads", len(repo.items), len(music.requests))
+	if len(repo.items) != 12 || len(music.requests) != 5 {
+		t.Fatalf("expected one replacement item: %d items, %d downloads", len(repo.items), len(music.requests))
 	}
-	if replacement := music.requests[5]; replacement.ID != "fresh-6" {
-		t.Fatalf("expected failed discovery to advance to fresh-6, got %#v", replacement)
+	replacement := music.requests[4]
+	if replacement.ID == "" || replacement.ID == "fresh-1" {
+		t.Fatalf("expected failed discovery to advance to a new candidate, got %#v", replacement)
 	}
 	if repo.items[11].ItemType != model.RadioItemDiscovery || repo.items[11].Status != model.RadioItemDownloading {
-		t.Fatalf("expected replacement discovery first, got %#v", repo.items[11])
+		t.Fatalf("expected replacement discovery, got %#v", repo.items[11])
 	}
-	if repo.items[12].ItemType != model.RadioItemLibrary || repo.items[12].Status != model.RadioItemReady {
-		t.Fatalf("expected replacement library buffer, got %#v", repo.items[12])
+}
+
+func countRadioItemsByType(items []model.PersonalRadioItem, itemType string) int {
+	count := 0
+	for _, item := range items {
+		if item.ItemType == itemType {
+			count++
+		}
 	}
+	return count
 }
 
 func TestOutstandingCountsReadyAndDownloadingBuffers(t *testing.T) {
@@ -400,7 +697,7 @@ func TestRefillFailsCompletedDownloadWithoutLibraryMatch(t *testing.T) {
 		planningStatus: map[string]string{},
 	}
 
-	response, err := svc.Refill(context.Background(), "user", "session")
+	response, err := svc.Refill(context.Background(), "user", "session", model.RefillPersonalRadioRequest{})
 	if err != nil {
 		t.Fatalf("Refill returned error: %v", err)
 	}
@@ -435,7 +732,7 @@ func TestRefillExposesPendingDownloadMetadata(t *testing.T) {
 		planningStatus: map[string]string{},
 	}
 
-	response, err := svc.Refill(context.Background(), "user", "session")
+	response, err := svc.Refill(context.Background(), "user", "session", model.RefillPersonalRadioRequest{})
 	if err != nil {
 		t.Fatalf("Refill returned error: %v", err)
 	}

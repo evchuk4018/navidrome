@@ -14,17 +14,21 @@ import (
 )
 
 const (
-	countSaturation = 10
-	recencyHalfLife = 14 * 24 * time.Hour
+	countSaturation    = 10
+	recencyHalfLife    = 14 * 24 * time.Hour
+	transitionHalfLife = 90 * 24 * time.Hour
 )
 
 // Candidate is a track with optional similarity-provider metadata. Key can be
 // used when the candidate is not backed by a library MediaFile, or when the
 // caller needs an identity distinct from the MediaFile fields. SeedAffinity is
-// a caller-provided [0,1] compatibility score for the candidate and its seed.
+// a caller-provided [0,1] compatibility score for the candidate and its seed;
+// SessionAffinity represents aggregate in-session compatibility.
 type Candidate struct {
-	Key          string
-	SeedAffinity float64
+	Key                string
+	SeedAffinity       float64
+	SessionAffinity    float64
+	TransitionAffinity float64
 	model.MediaFile
 	SimilarityScores []agents.SimilarityScore
 }
@@ -32,25 +36,29 @@ type Candidate struct {
 // Weights controls the contribution of each ranking signal. Recency and
 // Fatigue are penalties, so their contributions are negative.
 type Weights struct {
-	Similarity      float64
-	SeedAffinity    float64
-	PlayHistory     float64
-	RecentListening float64
-	Starred         float64
-	Recency         float64
-	Fatigue         float64
+	Similarity         float64
+	SeedAffinity       float64
+	SessionAffinity    float64
+	PlayHistory        float64
+	RecentListening    float64
+	Starred            float64
+	Recency            float64
+	Fatigue            float64
+	TransitionAffinity float64
 }
 
 // DefaultWeights returns the default signal weights used by Rank.
 func DefaultWeights() Weights {
 	return Weights{
-		Similarity:      1,
-		SeedAffinity:    1,
-		PlayHistory:     0.25,
-		RecentListening: 0.75,
-		Starred:         0.75,
-		Recency:         0.5,
-		Fatigue:         1,
+		Similarity:         1,
+		SeedAffinity:       1,
+		SessionAffinity:    1,
+		PlayHistory:        0.25,
+		RecentListening:    0.75,
+		Starred:            0.75,
+		Recency:            0.5,
+		Fatigue:            1,
+		TransitionAffinity: 1.5,
 	}
 }
 
@@ -72,13 +80,15 @@ type Options struct {
 // Recency and Fatigue are negative when they apply. The fields sum to the
 // RankedCandidate.Score value.
 type ScoreBreakdown struct {
-	Similarity      float64
-	SeedAffinity    float64
-	PlayHistory     float64
-	RecentListening float64
-	Starred         float64
-	Recency         float64
-	Fatigue         float64
+	Similarity         float64
+	SeedAffinity       float64
+	SessionAffinity    float64
+	PlayHistory        float64
+	RecentListening    float64
+	Starred            float64
+	Recency            float64
+	Fatigue            float64
+	TransitionAffinity float64
 }
 
 // RankedCandidate is a candidate and its total score plus inspectable score
@@ -145,18 +155,64 @@ func scoreCandidate(candidate Candidate, options Options, weights Weights) Score
 	fatigue := lookupFloat64(options.Fatigue, candidate.Key, candidate.MediaFile)
 
 	return ScoreBreakdown{
-		Similarity:      weights.Similarity * providerSimilarity(candidate.SimilarityScores),
-		SeedAffinity:    weights.SeedAffinity * clamp(candidate.SeedAffinity, 0, 1),
-		PlayHistory:     weights.PlayHistory * normalizedCount(candidate.PlayCount),
-		RecentListening: weights.RecentListening * normalizedCount(recentPlays),
-		Starred:         weights.Starred * boolScore(candidate.Starred),
-		Recency:         weights.Recency * recencyPenalty(candidate.PlayDate, options.Now),
-		Fatigue:         weights.Fatigue * -clamp(fatigue, 0, 1),
+		Similarity:         weights.Similarity * providerSimilarity(candidate.SimilarityScores),
+		SeedAffinity:       weights.SeedAffinity * clamp(candidate.SeedAffinity, 0, 1),
+		SessionAffinity:    weights.SessionAffinity * clamp(candidate.SessionAffinity, 0, 1),
+		PlayHistory:        weights.PlayHistory * normalizedCount(candidate.PlayCount),
+		RecentListening:    weights.RecentListening * normalizedCount(recentPlays),
+		Starred:            weights.Starred * boolScore(candidate.Starred),
+		Recency:            weights.Recency * recencyPenalty(candidate.PlayDate, options.Now),
+		Fatigue:            weights.Fatigue * -clamp(fatigue, 0, 1),
+		TransitionAffinity: weights.TransitionAffinity * clamp(candidate.TransitionAffinity, -1, 1),
 	}
 }
 
 func (s ScoreBreakdown) total() float64 {
-	return s.Similarity + s.SeedAffinity + s.PlayHistory + s.RecentListening + s.Starred + s.Recency + s.Fatigue
+	return s.Similarity + s.SeedAffinity + s.SessionAffinity + s.PlayHistory + s.RecentListening + s.Starred +
+		s.Recency + s.Fatigue + s.TransitionAffinity
+}
+
+// TransitionAffinity converts contextual playback history into a bounded
+// signed signal. Positive outcomes raise the signal, early skips lower it,
+// confidence prevents one observation from dominating, and old evidence fades
+// without changing the persisted aggregate.
+func TransitionAffinity(feedback model.RadioTransitionFeedback, now time.Time) float64 {
+	positive := float64(feedback.AcceptedCount) +
+		1.5*float64(feedback.CompletedCount) + 2*float64(feedback.KeepCount)
+	negative := 1.5*float64(feedback.EarlySkipCount) + 0.25*float64(feedback.NeutralSkipCount)
+	observations := positive + negative
+	rawPreference := (positive + 2) / (observations + 4)
+	confidence := 1 - math.Exp(-float64(maxInt(feedback.AttemptCount, 0))/4)
+	affinity := (2*rawPreference - 1) * confidence
+
+	if !now.IsZero() {
+		lastEvidence := latestTransitionEvidence(feedback)
+		if !lastEvidence.IsZero() {
+			age := now.Sub(lastEvidence.UTC())
+			if age < 0 {
+				age = 0
+			}
+			affinity *= math.Exp(-float64(age) / float64(transitionHalfLife))
+		}
+	}
+	return clamp(affinity, -1, 1)
+}
+
+func latestTransitionEvidence(feedback model.RadioTransitionFeedback) time.Time {
+	latest := time.Time{}
+	for _, candidate := range []*time.Time{feedback.LastAttemptAt, feedback.LastPositiveAt, feedback.LastNegativeAt} {
+		if candidate != nil && candidate.After(latest) {
+			latest = *candidate
+		}
+	}
+	return latest
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func providerSimilarity(scores []agents.SimilarityScore) float64 {
@@ -224,8 +280,21 @@ func mergeCandidates(left, right Candidate) Candidate {
 	if candidateSortKey(right.MediaFile) < candidateSortKey(left.MediaFile) {
 		merged.MediaFile = right.MediaFile
 	}
+	if math.Abs(right.TransitionAffinity) > math.Abs(left.TransitionAffinity) {
+		merged.TransitionAffinity = right.TransitionAffinity
+	}
+	merged.SessionAffinity = combineAffinity(left.SessionAffinity, right.SessionAffinity)
+	if right.SeedAffinity > left.SeedAffinity {
+		merged.SeedAffinity = right.SeedAffinity
+	}
 	merged.SimilarityScores = mergeSimilarityScores(left.SimilarityScores, right.SimilarityScores)
 	return merged
+}
+
+func combineAffinity(left, right float64) float64 {
+	left = clamp(left, 0, 1)
+	right = clamp(right, 0, 1)
+	return 1 - (1-left)*(1-right)
 }
 
 func mergeSimilarityScores(left, right []agents.SimilarityScore) []agents.SimilarityScore {

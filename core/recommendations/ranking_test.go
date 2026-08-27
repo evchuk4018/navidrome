@@ -58,6 +58,9 @@ func TestRankUsesAllSignalsAndExposesBreakdown(t *testing.T) {
 	if result.Breakdown.SeedAffinity <= 0 {
 		t.Error("seed affinity contribution should be positive")
 	}
+	if result.Breakdown.SessionAffinity != 0 {
+		t.Error("session affinity should be zero when it is not provided")
+	}
 	if result.Breakdown.PlayHistory <= 0 {
 		t.Error("play history contribution should be positive")
 	}
@@ -76,6 +79,7 @@ func TestRankUsesAllSignalsAndExposesBreakdown(t *testing.T) {
 
 	breakdownTotal := result.Breakdown.Similarity +
 		result.Breakdown.SeedAffinity +
+		result.Breakdown.SessionAffinity +
 		result.Breakdown.PlayHistory +
 		result.Breakdown.RecentListening +
 		result.Breakdown.Starred +
@@ -112,6 +116,58 @@ func TestRankUsesSeedAffinity(t *testing.T) {
 	}
 	if results[0].Breakdown.SeedAffinity <= results[1].Breakdown.SeedAffinity {
 		t.Fatalf("seed affinity contributions = %v, %v; want strong > weak", results[0].Breakdown.SeedAffinity, results[1].Breakdown.SeedAffinity)
+	}
+}
+
+func TestTransitionAffinityIsSmoothedAndBounded(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	if got := TransitionAffinity(model.RadioTransitionFeedback{}, now); got != 0 {
+		t.Fatalf("zero transition affinity = %v, want 0", got)
+	}
+	one := TransitionAffinity(model.RadioTransitionFeedback{
+		AttemptCount: 1, AcceptedCount: 1, LastPositiveAt: timePtr(now),
+	}, now)
+	repeated := TransitionAffinity(model.RadioTransitionFeedback{
+		AttemptCount: 8, AcceptedCount: 8, CompletedCount: 4, LastPositiveAt: timePtr(now),
+	}, now)
+	negative := TransitionAffinity(model.RadioTransitionFeedback{
+		AttemptCount: 8, EarlySkipCount: 8, LastNegativeAt: timePtr(now),
+	}, now)
+	if !(one > 0 && repeated > one && negative < 0) {
+		t.Fatalf("transition affinities = one:%v repeated:%v negative:%v", one, repeated, negative)
+	}
+	if repeated > 1 || negative < -1 {
+		t.Fatalf("transition affinity escaped bounds: repeated:%v negative:%v", repeated, negative)
+	}
+	mixed := TransitionAffinity(model.RadioTransitionFeedback{
+		AttemptCount: 8, AcceptedCount: 3, EarlySkipCount: 2, LastPositiveAt: timePtr(now), LastNegativeAt: timePtr(now),
+	}, now)
+	if math.Abs(mixed) >= math.Abs(one) {
+		t.Fatalf("mixed affinity = %v, want closer to neutral than one positive = %v", mixed, one)
+	}
+}
+
+func TestTransitionAffinityDecaysWithAge(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
+	feedback := model.RadioTransitionFeedback{
+		AttemptCount: 8, CompletedCount: 8, LastPositiveAt: timePtr(now.Add(-180 * 24 * time.Hour)),
+	}
+	fresh := TransitionAffinity(feedback, now.Add(-180*24*time.Hour))
+	old := TransitionAffinity(feedback, now)
+	if !(fresh > old && old > 0) {
+		t.Fatalf("fresh affinity = %v, old affinity = %v; want fresh > old > 0", fresh, old)
+	}
+}
+
+func TestRankIncludesTransitionContributionInBreakdown(t *testing.T) {
+	results := Rank([]Candidate{{Key: "learned", TransitionAffinity: 0.5}}, Options{
+		Weights: Weights{TransitionAffinity: 2},
+	})
+	if len(results) != 1 {
+		t.Fatalf("Rank() returned %d candidates, want 1", len(results))
+	}
+	if !almostEqual(results[0].Breakdown.TransitionAffinity, 1) || !almostEqual(results[0].Score, 1) {
+		t.Fatalf("transition breakdown/score = %v/%v, want 1/1", results[0].Breakdown.TransitionAffinity, results[0].Score)
 	}
 }
 

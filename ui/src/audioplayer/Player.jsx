@@ -135,6 +135,38 @@ const Player = () => {
     })
   }, [])
 
+  const radioRefillContext = useCallback((sessionId) => {
+    const state = playerStateRef.current
+    const queue = state.queue || []
+    const playback = radioPlaybackRef.current
+    const currentFromPlayback =
+      playback?.sessionId === sessionId
+        ? queue.find((item) => item.radioItemId === playback.itemId)
+        : undefined
+    const current =
+      currentFromPlayback ||
+      (state.current?.radioSessionId === sessionId
+        ? state.current
+        : queue[Math.max(0, state.savedPlayIndex ?? state.playIndex ?? 0)])
+    const currentIndexFromQueue = current?.radioItemId
+      ? queue.findIndex((item) => item.radioItemId === current.radioItemId)
+      : -1
+    const currentIndex =
+      currentIndexFromQueue >= 0
+        ? currentIndexFromQueue
+        : Math.max(0, state.savedPlayIndex ?? state.playIndex ?? 0)
+    const queuedItemIds = queue
+      .slice(currentIndex + 1)
+      .filter((item) => item.radioSessionId === sessionId && item.radioItemId)
+      .map((item) => item.radioItemId)
+    return {
+      ...(current?.radioSessionId === sessionId && current.radioItemId
+        ? { currentItemId: current.radioItemId }
+        : {}),
+      queuedItemIds,
+    }
+  }, [])
+
   // The timer and playback callbacks can both request a refill. Keep those
   // requests serialized so an older response cannot restore pending rows over
   // a newer response that has already resolved them.
@@ -148,7 +180,7 @@ const Player = () => {
       }
       if (request.inFlight) return
       request.inFlight = true
-      refillPersonalRadio(sessionId)
+      refillPersonalRadio(sessionId, radioRefillContext(sessionId))
         .then((response) => {
           if (
             radioRefillRef.current.sessionId === sessionId &&
@@ -171,7 +203,7 @@ const Player = () => {
           }
         })
     },
-    [reportRadioRefillError, updateRadioResponse],
+    [radioRefillContext, reportRadioRefillError, updateRadioResponse],
   )
 
   const reportRadioFeedback = useCallback((playback, event) => {
@@ -517,7 +549,6 @@ const Player = () => {
         )
         const threshold = Math.min(30000, playback.durationMs / 5)
         if (
-          info.radioItemType === 'discovery' &&
           !playback.thresholdSent &&
           threshold > 0 &&
           playback.listenedMs >= threshold

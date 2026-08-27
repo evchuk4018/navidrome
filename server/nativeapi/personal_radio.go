@@ -14,6 +14,7 @@ func (api *Router) addPersonalRadioRoute(r chi.Router) {
 	r.Route("/personal-radio", func(r chi.Router) {
 		r.Post("/sessions", api.createPersonalRadio)
 		r.Get("/sessions/{id}", api.refillPersonalRadio)
+		r.Post("/sessions/{id}/refill", api.refillPersonalRadio)
 		r.Post("/sessions/{id}/feedback", api.personalRadioFeedback)
 	})
 }
@@ -33,7 +34,7 @@ func (api *Router) createPersonalRadio(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	response, err := api.personalRadio.Create(r.Context(), user.ID, payload.SeedMediaFileID)
+	response, err := api.personalRadio.Create(r.Context(), user.ID, payload)
 	if err != nil {
 		log.Error(r.Context(), "Personal radio session creation failed",
 			"userID", user.ID,
@@ -56,7 +57,14 @@ func (api *Router) refillPersonalRadio(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	response, err := api.personalRadio.Refill(r.Context(), user.ID, chi.URLParam(r, "id"))
+	var payload model.RefillPersonalRadioRequest
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&payload); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+	}
+	response, err := api.personalRadio.Refill(r.Context(), user.ID, chi.URLParam(r, "id"), payload)
 	if err != nil {
 		log.Error(r.Context(), "Personal radio refill failed",
 			"userID", user.ID,
