@@ -518,6 +518,32 @@ func TestBuildRadioContextKeepsOriginalAndAcceptedSeeds(t *testing.T) {
 	}
 }
 
+func TestBuildRadioContextDoesNotTreatEmptyClientQueueAsAuthoritative(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{{
+		ID: "seed", Title: "Seed", Artist: "Seed Artist", MbzRecordingID: "seed-mbid",
+	}})
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	repo := &fakePersonalRadioRepository{}
+	svc := &service{ds: ds, repo: repo}
+
+	radioContext, err := svc.buildRadioContext(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", SeedMediaFileID: "seed", UserID: "user"},
+		[]model.PersonalRadioItem{{
+			ID: "seed-item", SessionID: "session", ItemType: model.RadioItemSeed,
+			Status: model.RadioItemReady, MediaFileID: "seed",
+		}},
+		model.RefillPersonalRadioRequest{CurrentItemID: "seed-item", QueuedItemIDs: []string{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if radioContext.ClientQueueProvided {
+		t.Fatal("empty client queue must fall back to server-side outstanding items")
+	}
+}
+
 func TestLocalCandidatesPreferArtistAffinityOverPopularity(t *testing.T) {
 	repo := tests.CreateMockMediaFileRepo()
 	repo.SetData(model.MediaFiles{

@@ -53,17 +53,20 @@ func (s *service) buildRadioContext(ctx context.Context, session model.PersonalR
 	}
 
 	context := &radioContext{
-		OriginalSeed:        original,
-		CurrentItemID:       strings.TrimSpace(request.CurrentItemID),
-		QueuedItemIDs:       map[string]bool{},
-		ClientQueueProvided: request.CurrentItemID != "" || request.QueuedItemIDs != nil,
+		OriginalSeed:  original,
+		CurrentItemID: strings.TrimSpace(request.CurrentItemID),
+		QueuedItemIDs: map[string]bool{},
 	}
 	validItems := make(map[string]model.PersonalRadioItem, len(items))
 	for _, item := range items {
 		validItems[item.ID] = item
 	}
+	// A seed-only queue is the normal startup state while the asynchronous plan
+	// is still reaching the client. Keep using the server's persisted queue in
+	// that case so a refill cannot schedule the same plan again.
 	if current, ok := validItems[context.CurrentItemID]; ok && current.ItemType != model.RadioItemSeed {
 		context.QueuedItemIDs[current.ID] = true
+		context.ClientQueueProvided = true
 	}
 	for _, itemID := range request.QueuedItemIDs {
 		itemID = strings.TrimSpace(itemID)
@@ -72,6 +75,7 @@ func (s *service) buildRadioContext(ctx context.Context, session model.PersonalR
 		}
 		if item, ok := validItems[itemID]; ok && item.ItemType != model.RadioItemSeed {
 			context.QueuedItemIDs[itemID] = true
+			context.ClientQueueProvided = true
 		}
 	}
 
