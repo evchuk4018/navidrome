@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/model"
 )
 
@@ -69,6 +70,22 @@ func (t *nullableSQLiteTime) scanString(value string) error {
 
 func NewQuickPickMetricsRepository(db *sql.DB) model.QuickPickMetricsRepository {
 	return &quickPickMetricsRepository{db: db}
+}
+
+// The metrics repository is already a shared, user-scoped SQL dependency for
+// Quick Pick. Expose the optional taste provider on the concrete type so the
+// service can consume persistent personalization without changing the public
+// constructor or lightweight test doubles.
+func (r *quickPickMetricsRepository) Rebuild(userID string, now time.Time) error {
+	return newTasteAffinityRepository(r.db).Rebuild(userID, now)
+}
+
+func (r *quickPickMetricsRepository) EnsureFresh(userID string, now time.Time) error {
+	return newTasteAffinityRepository(r.db).EnsureFresh(userID, now)
+}
+
+func (r *quickPickMetricsRepository) AffinityForCandidates(userID string, candidates []recommendations.TasteCandidateIdentity) (map[string]recommendations.TasteAffinity, error) {
+	return newTasteAffinityRepository(r.db).AffinityForCandidates(userID, candidates)
 }
 
 func (r *quickPickMetricsRepository) SongRecentPlays(userID string, since time.Time) (map[string]int64, error) {

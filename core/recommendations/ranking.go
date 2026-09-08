@@ -19,6 +19,59 @@ const (
 	transitionHalfLife = 90 * 24 * time.Hour
 )
 
+// TasteAffinity contains the four explainable dimensions used to compose a
+// candidate's long-term taste signal. Every value, including Score, is
+// bounded to [0,1]. The ranker does not calculate these values; a
+// personalization repository attaches them in batches before ranking.
+type TasteAffinity struct {
+	Track  float64
+	Artist float64
+	Genre  float64
+	Album  float64
+	Score  float64
+}
+
+// TasteCandidateIdentity is the batch lookup identity for a candidate. A
+// candidate may have several genre or artist keys when the source exposes
+// multiple tags/participants.
+type TasteCandidateIdentity struct {
+	Key        string
+	TrackKey   string
+	ArtistKeys []string
+	GenreKeys  []string
+	AlbumKey   string
+}
+
+// TasteAffinityRepository is intentionally optional for consumers. This lets
+// lightweight callers and tests use the shared ranker without a database while
+// the SQL store can provide a persistent, restart-safe profile.
+type TasteAffinityRepository interface {
+	Rebuild(userID string, now time.Time) error
+	EnsureFresh(userID string, now time.Time) error
+	AffinityForCandidates(userID string, candidates []TasteCandidateIdentity) (map[string]TasteAffinity, error)
+}
+
+// ComposeTasteAffinity combines entity-level evidence into the bootstrap
+// long-term taste signal. The weights are deliberately explicit and bounded;
+// later learned-ranking work can tune their influence without changing the
+// persisted evidence model.
+func ComposeTasteAffinity(track, artist, genre, album float64) TasteAffinity {
+	affinity := TasteAffinity{
+		Track:  clamp(track, 0, 1),
+		Artist: clamp(artist, 0, 1),
+		Genre:  clamp(genre, 0, 1),
+		Album:  clamp(album, 0, 1),
+	}
+	affinity.Score = clamp(
+		0.45*affinity.Track+
+			0.30*affinity.Artist+
+			0.20*affinity.Genre+
+			0.05*affinity.Album,
+		0, 1,
+	)
+	return affinity
+}
+
 // Candidate is a track with optional similarity-provider metadata. Key can be
 // used when the candidate is not backed by a library MediaFile, or when the
 // caller needs an identity distinct from the MediaFile fields. SeedAffinity is
@@ -29,6 +82,8 @@ type Candidate struct {
 	SeedAffinity       float64
 	SessionAffinity    float64
 	TransitionAffinity float64
+	TasteAffinity      float64
+	TasteDetails       TasteAffinity
 	model.MediaFile
 	SimilarityScores []agents.SimilarityScore
 }
@@ -45,6 +100,7 @@ type Weights struct {
 	Recency            float64
 	Fatigue            float64
 	TransitionAffinity float64
+	TasteAffinity      float64
 }
 
 // DefaultWeights returns the default signal weights used by Rank.
@@ -59,6 +115,7 @@ func DefaultWeights() Weights {
 		Recency:            0.5,
 		Fatigue:            1,
 		TransitionAffinity: 1.5,
+		TasteAffinity:      0.8,
 	}
 }
 
@@ -89,6 +146,14 @@ type ScoreBreakdown struct {
 	Recency            float64
 	Fatigue            float64
 	TransitionAffinity float64
+	// TasteTrackAffinity, TasteArtistAffinity, TasteGenreAffinity, and
+	// TasteAlbumAffinity are raw explainability fields. TasteAffinity is the
+	// weighted contribution included in the total score.
+	TasteTrackAffinity  float64
+	TasteArtistAffinity float64
+	TasteGenreAffinity  float64
+	TasteAlbumAffinity  float64
+	TasteAffinity       float64
 }
 
 // RankedCandidate is a candidate and its total score plus inspectable score
@@ -155,21 +220,33 @@ func scoreCandidate(candidate Candidate, options Options, weights Weights) Score
 	fatigue := lookupFloat64(options.Fatigue, candidate.Key, candidate.MediaFile)
 
 	return ScoreBreakdown{
-		Similarity:         weights.Similarity * providerSimilarity(candidate.SimilarityScores),
-		SeedAffinity:       weights.SeedAffinity * clamp(candidate.SeedAffinity, 0, 1),
-		SessionAffinity:    weights.SessionAffinity * clamp(candidate.SessionAffinity, 0, 1),
-		PlayHistory:        weights.PlayHistory * normalizedCount(candidate.PlayCount),
-		RecentListening:    weights.RecentListening * normalizedCount(recentPlays),
-		Starred:            weights.Starred * boolScore(candidate.Starred),
-		Recency:            weights.Recency * recencyPenalty(candidate.PlayDate, options.Now),
-		Fatigue:            weights.Fatigue * -clamp(fatigue, 0, 1),
-		TransitionAffinity: weights.TransitionAffinity * clamp(candidate.TransitionAffinity, -1, 1),
+		Similarity:          weights.Similarity * providerSimilarity(candidate.SimilarityScores),
+		SeedAffinity:        weights.SeedAffinity * clamp(candidate.SeedAffinity, 0, 1),
+		SessionAffinity:     weights.SessionAffinity * clamp(candidate.SessionAffinity, 0, 1),
+		PlayHistory:         weights.PlayHistory * normalizedCount(candidate.PlayCount),
+		RecentListening:     weights.RecentListening * normalizedCount(recentPlays),
+		Starred:             weights.Starred * boolScore(candidate.Starred),
+		Recency:             weights.Recency * recencyPenalty(candidate.PlayDate, options.Now),
+		Fatigue:             weights.Fatigue * -clamp(fatigue, 0, 1),
+		TransitionAffinity:  weights.TransitionAffinity * clamp(candidate.TransitionAffinity, -1, 1),
+		TasteTrackAffinity:  clamp(candidate.TasteDetails.Track, 0, 1),
+		TasteArtistAffinity: clamp(candidate.TasteDetails.Artist, 0, 1),
+		TasteGenreAffinity:  clamp(candidate.TasteDetails.Genre, 0, 1),
+		TasteAlbumAffinity:  clamp(candidate.TasteDetails.Album, 0, 1),
+		TasteAffinity:       weights.TasteAffinity * effectiveTasteAffinity(candidate),
 	}
 }
 
 func (s ScoreBreakdown) total() float64 {
 	return s.Similarity + s.SeedAffinity + s.SessionAffinity + s.PlayHistory + s.RecentListening + s.Starred +
-		s.Recency + s.Fatigue + s.TransitionAffinity
+		s.Recency + s.Fatigue + s.TransitionAffinity + s.TasteAffinity
+}
+
+func effectiveTasteAffinity(candidate Candidate) float64 {
+	if candidate.TasteAffinity != 0 {
+		return clamp(candidate.TasteAffinity, 0, 1)
+	}
+	return clamp(candidate.TasteDetails.Score, 0, 1)
 }
 
 // TransitionAffinity converts contextual playback history into a bounded
@@ -287,6 +364,10 @@ func mergeCandidates(left, right Candidate) Candidate {
 	if right.SeedAffinity > left.SeedAffinity {
 		merged.SeedAffinity = right.SeedAffinity
 	}
+	if right.TasteAffinity > left.TasteAffinity || right.TasteDetails.Score > left.TasteDetails.Score {
+		merged.TasteAffinity = right.TasteAffinity
+		merged.TasteDetails = right.TasteDetails
+	}
 	merged.SimilarityScores = mergeSimilarityScores(left.SimilarityScores, right.SimilarityScores)
 	return merged
 }
@@ -347,6 +428,63 @@ func mediaFileIdentity(mediaFile model.MediaFile) string {
 		return "path:" + path
 	}
 	return "title:" + normalize(mediaFile.Title) + "|artist:" + normalize(mediaFile.Artist) + "|album:" + normalize(mediaFile.Album)
+}
+
+// TasteIdentityForMediaFile creates the stable entity keys shared by all
+// recommendation surfaces. Track identity follows the radio MBID-first rule;
+// the textual fallback is only used for a candidate that has neither a local
+// media-file ID nor a recording MBID.
+func TasteIdentityForMediaFile(key string, mediaFile model.MediaFile) TasteCandidateIdentity {
+	key = strings.TrimSpace(key)
+	trackKey := model.RadioTrackKey(mediaFile.MbzRecordingID, mediaFile.ID)
+	if trackKey == "" {
+		trackKey = "track:title:" + normalize(mediaFile.Title) + "|artist:" + normalize(mediaFile.Artist)
+	}
+	if key == "" {
+		key = trackKey
+	}
+
+	artistKeys := make([]string, 0, 2)
+	if artistID := strings.TrimSpace(mediaFile.ArtistID); artistID != "" {
+		artistKeys = append(artistKeys, "artist:id:"+normalize(artistID))
+	}
+	if artist := normalize(mediaFile.Artist); artist != "" {
+		artistKeys = append(artistKeys, "artist:name:"+artist)
+	}
+
+	genreKeys := make([]string, 0, 1+len(mediaFile.Genres))
+	if genre := normalize(mediaFile.Genre); genre != "" {
+		genreKeys = append(genreKeys, "genre:"+genre)
+	}
+	for _, genre := range mediaFile.Genres {
+		if value := normalize(genre.Name); value != "" {
+			genreKeys = appendUnique(genreKeys, "genre:"+value)
+		}
+	}
+
+	albumKey := ""
+	if albumID := strings.TrimSpace(mediaFile.AlbumID); albumID != "" {
+		albumKey = "album:id:" + normalize(albumID)
+	} else if album := normalize(mediaFile.Album); album != "" {
+		albumKey = "album:name:" + album + "|artist:" + normalize(mediaFile.Artist)
+	}
+
+	return TasteCandidateIdentity{
+		Key:        key,
+		TrackKey:   trackKey,
+		ArtistKeys: artistKeys,
+		GenreKeys:  genreKeys,
+		AlbumKey:   albumKey,
+	}
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func candidateSortKey(mediaFile model.MediaFile) string {

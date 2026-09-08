@@ -31,6 +31,8 @@ const (
 	RadioPlanningRetrying       = "retrying"
 	RadioPlanningReady          = "ready"
 	RadioPlanningNoDiscovery    = "no_discovery"
+	RadioPlanningExhausted      = "exhausted"
+	RadioPlanningError          = "error"
 	DiscoveryTemporary          = "temporary"
 	DiscoveryKept               = "kept"
 	DiscoveryDeletePending      = "delete_pending"

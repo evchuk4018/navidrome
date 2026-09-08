@@ -74,10 +74,24 @@ func (s *service) Get(ctx context.Context, userID string) (*model.QuickPickRespo
 	songScores := make(map[string]float64, len(byID))
 	rankingInputs := make([]recommendations.Candidate, 0, len(byID))
 	for _, song := range byID {
-		rankingInputs = append(rankingInputs, recommendations.Candidate{
+		candidate := recommendations.Candidate{
 			Key:       "quickpick:" + song.ID,
 			MediaFile: song,
-		})
+		}
+		rankingInputs = append(rankingInputs, candidate)
+	}
+	if taste, ok := s.metrics.(recommendations.TasteAffinityRepository); ok {
+		identities := make([]recommendations.TasteCandidateIdentity, 0, len(rankingInputs))
+		for _, candidate := range rankingInputs {
+			identities = append(identities, recommendations.TasteIdentityForMediaFile(candidate.Key, candidate.MediaFile))
+		}
+		if affinity, affinityErr := taste.AffinityForCandidates(userID, identities); affinityErr == nil {
+			for i := range rankingInputs {
+				value := affinity[rankingInputs[i].Key]
+				rankingInputs[i].TasteAffinity = value.Score
+				rankingInputs[i].TasteDetails = value
+			}
+		}
 	}
 	for _, rankedSong := range recommendations.Rank(rankingInputs, recommendations.Options{
 		Now:         now,

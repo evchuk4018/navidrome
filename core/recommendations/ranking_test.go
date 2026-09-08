@@ -119,6 +119,62 @@ func TestRankUsesSeedAffinity(t *testing.T) {
 	}
 }
 
+func TestComposeTasteAffinityIsBoundedAndExplainable(t *testing.T) {
+	affinity := ComposeTasteAffinity(2, -1, math.NaN(), math.Inf(1))
+	if affinity.Track != 1 || affinity.Artist != 0 || affinity.Genre != 0 || affinity.Album != 0 {
+		t.Fatalf("bounded taste dimensions = %#v", affinity)
+	}
+	if affinity.Score < 0 || affinity.Score > 1 {
+		t.Fatalf("composed taste affinity = %v, want [0,1]", affinity.Score)
+	}
+	if got := ComposeTasteAffinity(1, 1, 1, 1).Score; !almostEqual(got, 1) {
+		t.Fatalf("maximum taste affinity = %v, want 1", got)
+	}
+}
+
+func TestRankUsesExplicitTasteAffinityWeight(t *testing.T) {
+	results := Rank([]Candidate{
+		{Key: "track-loved", TasteDetails: ComposeTasteAffinity(1, 0, 0, 0)},
+		{Key: "artist-loved", TasteDetails: ComposeTasteAffinity(0, 1, 0, 0)},
+	}, Options{Weights: Weights{TasteAffinity: 2}})
+	if len(results) != 2 || results[0].Key != "track-loved" {
+		t.Fatalf("taste-ranked candidates = %#v, want track-loved first", results)
+	}
+	if results[0].Breakdown.TasteAffinity <= results[1].Breakdown.TasteAffinity {
+		t.Fatalf("taste contributions = %v, %v; want track-loved larger", results[0].Breakdown.TasteAffinity, results[1].Breakdown.TasteAffinity)
+	}
+	if !almostEqual(results[0].Breakdown.TasteTrackAffinity, 1) {
+		t.Fatalf("track taste detail = %v, want 1", results[0].Breakdown.TasteTrackAffinity)
+	}
+}
+
+func TestTasteBreakdownContributesToScoreExactly(t *testing.T) {
+	result := Rank([]Candidate{{Key: "taste", TasteAffinity: 0.7}}, Options{
+		Weights: Weights{TasteAffinity: 1},
+	})[0]
+	if !almostEqual(result.Score, result.Breakdown.TasteAffinity) {
+		t.Fatalf("score = %v, taste contribution = %v", result.Score, result.Breakdown.TasteAffinity)
+	}
+}
+
+func TestTasteIdentityUsesRadioTrackKey(t *testing.T) {
+	identity := TasteIdentityForMediaFile("quickpick:song", model.MediaFile{
+		ID:             "file-1",
+		MbzRecordingID: " RECORDING-1 ",
+		ArtistID:       "artist-1",
+		Artist:         "Artist",
+		AlbumID:        "album-1",
+		Album:          "Album",
+		Genre:          "Rock",
+	})
+	if identity.TrackKey != "mbid:recording-1" || identity.Key != "quickpick:song" {
+		t.Fatalf("taste identity = %#v", identity)
+	}
+	if len(identity.ArtistKeys) != 2 || identity.AlbumKey != "album:id:album-1" || len(identity.GenreKeys) != 1 {
+		t.Fatalf("taste entity keys = %#v", identity)
+	}
+}
+
 func TestTransitionAffinityIsSmoothedAndBounded(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
 	if got := TransitionAffinity(model.RadioTransitionFeedback{}, now); got != 0 {

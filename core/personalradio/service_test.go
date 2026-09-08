@@ -2,6 +2,9 @@ package personalradio
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -479,6 +482,123 @@ func TestRecommendationPoolsInjectStrongLearnedTransition(t *testing.T) {
 	}
 }
 
+func TestRecommendationPoolsUseAnyEligibleLocalTrackAsLastFallback(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop"},
+		{ID: "unrelated", Title: "Unrelated", Artist: "Other Artist", Genre: "Metal"},
+	})
+	svc := &service{
+		ds:   &tests.MockDataStore{MockedMediaFile: mediaRepo},
+		repo: &fakePersonalRadioRepository{},
+	}
+
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user"},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true},
+		nil,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.local) != 1 || pools.local[0].ID != "unrelated" {
+		t.Fatalf("local fallback = %#v, want unrelated", pools.local)
+	}
+}
+
+func TestRecommendationPoolsSkipUnreadableLocalTracks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "playable.mp3"), []byte("audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop"},
+		{ID: "missing", Title: "Missing", Artist: "Other Artist", LibraryPath: root, Path: "missing.mp3"},
+		{ID: "playable", Title: "Playable", Artist: "Other Artist", LibraryPath: root, Path: "playable.mp3"},
+	})
+	svc := &service{
+		ds:   &tests.MockDataStore{MockedMediaFile: mediaRepo},
+		repo: &fakePersonalRadioRepository{},
+	}
+
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user"},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true},
+		nil,
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.local) != 1 || pools.local[0].ID != "playable" {
+		t.Fatalf("local fallback = %#v, want playable", pools.local)
+	}
+}
+
+type pagedMediaFileRepository struct {
+	model.MediaFileRepository
+	files model.MediaFiles
+}
+
+func (r *pagedMediaFileRepository) GetAll(options ...model.QueryOptions) (model.MediaFiles, error) {
+	max, offset := len(r.files), 0
+	if len(options) > 0 {
+		if options[0].Max > 0 && options[0].Max < max {
+			max = options[0].Max
+		}
+		offset = options[0].Offset
+	}
+	if offset >= len(r.files) {
+		return nil, nil
+	}
+	end := min(offset+max, len(r.files))
+	return append(model.MediaFiles(nil), r.files[offset:end]...), nil
+}
+
+func TestExhaustiveLocalFallbackSearchesPastFirstPage(t *testing.T) {
+	files := make(model.MediaFiles, 0, localFallbackPageSize+2)
+	files = append(files, model.MediaFile{ID: "seed", Title: "Seed", Artist: "Seed Artist", Genre: "Pop"})
+	for i := 0; i < localFallbackPageSize; i++ {
+		files = append(files, model.MediaFile{ID: fmt.Sprintf("missing-%03d", i), Missing: true})
+	}
+	files = append(files, model.MediaFile{ID: "last-playable", Title: "Last", Artist: "Other Artist"})
+	repo := &pagedMediaFileRepository{files: files}
+	svc := &service{ds: &tests.MockDataStore{MockedMediaFile: repo}}
+
+	candidates, stats, err := svc.localCandidateFilesForFallback(
+		context.Background(),
+		files[0],
+		map[string]bool{"seed": true},
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != "last-playable" || stats.pages < 2 {
+		t.Fatalf("candidates = %#v, stats = %#v, want last-playable after two pages", candidates, stats)
+	}
+}
+
+func TestStatusForReadyItemsIncludesLibraryTracks(t *testing.T) {
+	items := []model.PersonalRadioItem{{ItemType: model.RadioItemSeed, Status: model.RadioItemReady}, {
+		ItemType: model.RadioItemLibrary,
+		Status:   model.RadioItemReady,
+	}}
+	if status := statusForReadyItems(items); status != model.RadioPlanningReady {
+		t.Fatalf("status = %q, want ready", status)
+	}
+	if status := statusForReadyItems(nil); status != model.RadioPlanningExhausted {
+		t.Fatalf("empty status = %q, want exhausted", status)
+	}
+}
+
 func TestBuildRadioContextKeepsOriginalAndAcceptedSeeds(t *testing.T) {
 	mediaRepo := tests.CreateMockMediaFileRepo()
 	mediaRepo.SetData(model.MediaFiles{
@@ -730,8 +850,8 @@ func TestRefillFailsCompletedDownloadWithoutLibraryMatch(t *testing.T) {
 	if repo.items[0].Status != model.RadioItemFailed {
 		t.Fatalf("expected unmatched completed download to fail, got %q", repo.items[0].Status)
 	}
-	if response.PlanningStatus != model.RadioPlanningNoDiscovery {
-		t.Fatalf("expected terminal no-discovery status after failed completed download, got %q", response.PlanningStatus)
+	if response.PlanningStatus != model.RadioPlanningExhausted {
+		t.Fatalf("expected exhausted status after failed completed download, got %q", response.PlanningStatus)
 	}
 }
 

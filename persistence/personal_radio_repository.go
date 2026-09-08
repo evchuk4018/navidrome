@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/model"
 )
 
@@ -16,6 +17,21 @@ type personalRadioRepository struct {
 
 func NewPersonalRadioRepository(db *sql.DB) model.PersonalRadioRepository {
 	return &personalRadioRepository{db: db}
+}
+
+// Personal Radio and Quick Pick share the same optional long-term taste
+// provider. Keeping the methods on the concrete repository preserves the
+// existing PersonalRadioRepository interface for callers and test fakes.
+func (r *personalRadioRepository) Rebuild(userID string, now time.Time) error {
+	return newTasteAffinityRepository(r.db).Rebuild(userID, now)
+}
+
+func (r *personalRadioRepository) EnsureFresh(userID string, now time.Time) error {
+	return newTasteAffinityRepository(r.db).EnsureFresh(userID, now)
+}
+
+func (r *personalRadioRepository) AffinityForCandidates(userID string, candidates []recommendations.TasteCandidateIdentity) (map[string]recommendations.TasteAffinity, error) {
+	return newTasteAffinityRepository(r.db).AffinityForCandidates(userID, candidates)
 }
 
 func (r *personalRadioRepository) CreateSession(session *model.PersonalRadioSession, items []model.PersonalRadioItem) error {
