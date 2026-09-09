@@ -28,6 +28,7 @@ const (
 	queueLowWatermark        = 10
 	discoveryTTL             = 7 * 24 * time.Hour
 	localFallbackPageSize    = 500
+	radioFeedbackBatchSize   = 500
 	providerPlanningTimeout  = 5 * time.Second
 )
 
@@ -763,10 +764,10 @@ func (s *service) recommendationPools(ctx context.Context, session model.Persona
 func (s *service) recommendationPoolsWithLimit(ctx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count, providerLimit int, seedWeight float64) (candidatePools, error) {
 	providerCtx, cancel := context.WithTimeout(ctx, providerPlanningTimeout)
 	defer cancel()
-	return s.recommendationPoolsWithLimitContext(ctx, providerCtx, session, seed, seen, seenRecordings, count, providerLimit, seedWeight)
+	return s.recommendationPoolsWithLimitContext(ctx, providerCtx, session, seed, seen, seenRecordings, count, providerLimit, seedWeight, true)
 }
 
-func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count, providerLimit int, seedWeight float64) (candidatePools, error) {
+func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count, providerLimit int, seedWeight float64, loadFeedback bool) (candidatePools, error) {
 	var pools candidatePools
 	localAdded := map[string]bool{}
 	localAddedKeys := map[string]bool{}
@@ -810,25 +811,6 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 					"candidateCount", len(providerRecommendations),
 					"error", matchErr)
 			} else {
-				mbids := make([]string, 0, len(providerRecommendations))
-				for _, song := range providerRecommendations {
-					if recordingMBID := normalizeRecordingMBID(song.MBID); recordingMBID != "" {
-						mbids = append(mbids, recordingMBID)
-					}
-				}
-				feedback, feedbackErr := s.repo.GetFeedback(session.UserID, mbids)
-				if feedbackErr != nil {
-					log.Warn(ctx, "Personal radio could not load recommendation feedback",
-						"sessionID", session.ID,
-						"userID", session.UserID,
-						"mbidCount", len(mbids),
-						"error", feedbackErr)
-					feedback = map[string]model.RadioTrackFeedback{}
-				}
-				normalizedFeedback := make(map[string]model.RadioTrackFeedback, len(feedback))
-				for recordingMBID, value := range feedback {
-					normalizedFeedback[normalizeRecordingMBID(recordingMBID)] = value
-				}
 				for i, song := range providerRecommendations {
 					recordingMBID := normalizeRecordingMBID(song.MBID)
 					song.MBID = recordingMBID
@@ -842,7 +824,6 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 						"candidateTitle", song.Name,
 						"candidateAlbum", song.Album,
 					}
-					feedbackForSong := normalizedFeedback[recordingMBID]
 					if local, ok := matches[i]; ok {
 						localKey := radioMediaFileCandidateKey(local)
 						localRecordingMBID := model.NormalizeRecordingMBID(local.MbzRecordingID)
@@ -866,7 +847,6 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 								},
 								local: &localCopy,
 							})
-							fatigue[local.ID] = radioFeedbackFatigue(feedbackForSong)
 							stats["matchedLocal"]++
 							traceRadioCandidate(ctx, "Personal radio candidate accepted from library",
 								append(candidateFields,
@@ -918,7 +898,6 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 						discovery:   song,
 						isDiscovery: true,
 					})
-					fatigue[key] = radioFeedbackFatigue(feedbackForSong)
 					stats["acceptedDiscovery"]++
 					traceRadioCandidate(ctx, "Personal radio candidate accepted for discovery download",
 						append(candidateFields, "decision", "discovery"))
@@ -1086,6 +1065,10 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 	}
 	rankedCandidates = filteredCandidates
 	s.applyTasteAffinities(session.UserID, rankedCandidates)
+	if loadFeedback {
+		s.applyRadioFeedbackFatigue(ctx, session, rankedCandidates, fatigue)
+	}
+	s.applyLocalFallbackFeatures(rankedCandidates, []radioSeed{{File: seed, Weight: 1}}, session, now, fatigue)
 	pools.candidates = append(pools.candidates, rankedCandidates...)
 	pools.fatigue = fatigue
 	ranked := make([]recommendations.Candidate, 0, len(rankedCandidates))
@@ -1159,6 +1142,87 @@ func (s *service) applyTasteAffinities(userID string, candidates []rankedRadioCa
 	}
 }
 
+func (s *service) applyRadioFeedbackFatigue(ctx context.Context, session model.PersonalRadioSession, candidates []rankedRadioCandidate, fatigue map[string]float64) {
+	if s.repo == nil || len(candidates) == 0 {
+		return
+	}
+	mbidSet := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		if recordingMBID := normalizeRecordingMBID(candidate.candidate.MediaFile.MbzRecordingID); recordingMBID != "" {
+			mbidSet[recordingMBID] = true
+		}
+	}
+	if len(mbidSet) == 0 {
+		return
+	}
+	mbids := make([]string, 0, len(mbidSet))
+	for recordingMBID := range mbidSet {
+		mbids = append(mbids, recordingMBID)
+	}
+	feedback, err := s.loadRadioTrackFeedback(session.UserID, mbids)
+	if err != nil {
+		log.Warn(ctx, "Personal radio could not load local candidate feedback",
+			"sessionID", session.ID, "userID", session.UserID, "mbidCount", len(mbids), "error", err)
+	}
+	for _, candidate := range candidates {
+		recordingMBID := normalizeRecordingMBID(candidate.candidate.MediaFile.MbzRecordingID)
+		value := radioFeedbackFatigue(feedback[recordingMBID])
+		if value <= 0 {
+			continue
+		}
+		if existing := fatigue[candidate.candidate.Key]; value > existing {
+			fatigue[candidate.candidate.Key] = value
+		}
+		if candidate.candidate.MediaFile.ID != "" {
+			if existing := fatigue[candidate.candidate.MediaFile.ID]; value > existing {
+				fatigue[candidate.candidate.MediaFile.ID] = value
+			}
+		}
+	}
+}
+
+func (s *service) loadRadioTrackFeedback(userID string, recordingMBIDs []string) (map[string]model.RadioTrackFeedback, error) {
+	result := map[string]model.RadioTrackFeedback{}
+	if s.repo == nil || len(recordingMBIDs) == 0 {
+		return result, nil
+	}
+	unique := make(map[string]bool, len(recordingMBIDs))
+	for _, recordingMBID := range recordingMBIDs {
+		if normalized := normalizeRecordingMBID(recordingMBID); normalized != "" {
+			unique[normalized] = true
+		}
+	}
+	mbids := make([]string, 0, len(unique))
+	for recordingMBID := range unique {
+		mbids = append(mbids, recordingMBID)
+	}
+	for start := 0; start < len(mbids); start += radioFeedbackBatchSize {
+		end := min(start+radioFeedbackBatchSize, len(mbids))
+		feedback, err := s.repo.GetFeedback(userID, mbids[start:end])
+		if err != nil {
+			return result, err
+		}
+		for recordingMBID, value := range feedback {
+			result[normalizeRecordingMBID(recordingMBID)] = value
+		}
+	}
+	return result, nil
+}
+
+func (s *service) applyLocalFallbackFeatures(candidates []rankedRadioCandidate, seeds []radioSeed, session model.PersonalRadioSession, now time.Time, fatigue map[string]float64) {
+	for i := range candidates {
+		if !isLocalFallbackSource(candidates[i].source) || candidates[i].local == nil {
+			continue
+		}
+		candidateFatigue := fatigue[candidates[i].candidate.Key]
+		if value := fatigue[candidates[i].candidate.MediaFile.ID]; value > candidateFatigue {
+			candidateFatigue = value
+		}
+		features := buildLocalFallbackFeatures(candidates[i].candidate, seeds, string(session.Mode), now, candidateFatigue)
+		candidates[i].candidate.LocalFallback = &features
+	}
+}
+
 func (s *service) recommendationPoolsForContext(ctx context.Context, session model.PersonalRadioSession, radioContext *radioContext, seen map[string]bool, seenRecordings map[string]bool, count int) (candidatePools, error) {
 	if radioContext == nil || len(radioContext.Seeds) == 0 {
 		return candidatePools{}, fmt.Errorf("radio context has no seeds")
@@ -1173,7 +1237,7 @@ func (s *service) recommendationPoolsForContext(ctx context.Context, session mod
 		if seed.File == nil {
 			continue
 		}
-		seedPools, err := s.recommendationPoolsWithLimitContext(ctx, providerCtx, session, seed.File, workingSeen, workingRecordings, count, providerLimitForRadioSeed(seed), seed.Weight)
+		seedPools, err := s.recommendationPoolsWithLimitContext(ctx, providerCtx, session, seed.File, workingSeen, workingRecordings, count, providerLimitForRadioSeed(seed), seed.Weight, false)
 		if err != nil {
 			return candidatePools{}, err
 		}
@@ -1188,6 +1252,9 @@ func (s *service) recommendationPoolsForContext(ctx context.Context, session mod
 		return candidatePools{fatigue: fatigue}, nil
 	}
 	result := candidatePools{candidates: all, fatigue: fatigue}
+	now := time.Now().UTC()
+	s.applyRadioFeedbackFatigue(ctx, session, all, fatigue)
+	s.applyLocalFallbackFeatures(all, radioContext.Seeds, session, now, fatigue)
 	ranked := make([]recommendations.Candidate, 0, len(all))
 	sources := make(map[string]rankedRadioCandidate, len(all))
 	for _, candidate := range all {
@@ -1200,7 +1267,7 @@ func (s *service) recommendationPoolsForContext(ctx context.Context, session mod
 			sources[key] = candidate
 		}
 	}
-	for _, candidate := range recommendations.Rank(ranked, recommendations.Options{Now: time.Now().UTC(), Fatigue: fatigue}) {
+	for _, candidate := range recommendations.Rank(ranked, recommendations.Options{Now: now, Fatigue: fatigue}) {
 		source, ok := sources[candidate.Key]
 		if !ok {
 			continue
@@ -1509,7 +1576,7 @@ func (s *service) localCandidateFilesForFallback(ctx context.Context, seed *mode
 				stats.rejected++
 				continue
 			}
-			if requireAffinity && localSeedAffinity(seed, file) <= 0 {
+			if requireAffinity && !localFallbackHasAffinity(seed, file) {
 				stats.rejected++
 				continue
 			}

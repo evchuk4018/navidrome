@@ -79,11 +79,15 @@ func composeRadioCandidates(candidates []rankedRadioCandidate, options radioComp
 
 	selected := make([]rankedRadioCandidate, 0, options.Slots)
 	remaining := append([]rankedRadioCandidate(nil), ordered...)
+	hasPreferredFallback := hasRadioFallbackStage(remaining, "tasteFallback")
 	discoveries, locals := 0, 0
 	for len(selected) < options.Slots && len(remaining) > 0 {
 		best := -1
 		bestScore := math.Inf(-1)
 		for index, candidate := range remaining {
+			if candidate.source == "exhaustiveFallback" && hasPreferredFallback && hasRadioFallbackStage(remaining, "tasteFallback") {
+				continue
+			}
 			isDiscovery := candidate.isDiscovery
 			if isDiscovery && discoveries >= discoveryNeeded && hasRadioCandidateOfType(remaining, false) {
 				continue
@@ -104,6 +108,9 @@ func composeRadioCandidates(candidates []rankedRadioCandidate, options radioComp
 			// from the remaining ranked stream rather than returning a short
 			// queue when one side of the pool is exhausted.
 			for index, candidate := range remaining {
+				if candidate.source == "exhaustiveFallback" && hasPreferredFallback && hasRadioFallbackStage(remaining, "tasteFallback") {
+					continue
+				}
 				score := candidateSelectionScore(candidate, artistCounts, albumCounts)
 				if score > bestScore {
 					best, bestScore = index, score
@@ -141,6 +148,9 @@ func candidateSelectionScore(candidate rankedRadioCandidate, artistCounts, album
 	artist := normalizeCompositionValue(candidate.candidate.MediaFile.Artist)
 	album := normalizeCompositionValue(candidate.candidate.MediaFile.Album)
 	transition := candidate.ranked.Breakdown.TransitionAffinity
+	if transition == 0 {
+		transition = candidate.candidate.TransitionAffinity
+	}
 	penaltyScale := 1.0
 	if transition > 0.75 {
 		penaltyScale = 0.25
@@ -152,6 +162,15 @@ func candidateSelectionScore(candidate rankedRadioCandidate, artistCounts, album
 		score -= penaltyScale * (0.45 + 0.35*float64(count-1))
 	}
 	return score
+}
+
+func hasRadioFallbackStage(candidates []rankedRadioCandidate, stage string) bool {
+	for _, candidate := range candidates {
+		if candidate.source == stage {
+			return true
+		}
+	}
+	return false
 }
 
 func hasRadioCandidateOfType(candidates []rankedRadioCandidate, discovery bool) bool {

@@ -17,6 +17,13 @@ const (
 	countSaturation    = 10
 	recencyHalfLife    = 14 * 24 * time.Hour
 	transitionHalfLife = 90 * 24 * time.Hour
+
+	localFallbackSeedWeight       = 0.35
+	localFallbackHistoryWeight    = 0.20
+	localFallbackTransitionWeight = 0.15
+	localFallbackGenreWeight      = 0.10
+	localFallbackFreshnessWeight  = 0.10
+	localFallbackDiscoveryWeight  = 0.10
 )
 
 // TasteAffinity contains the four explainable dimensions used to compose a
@@ -72,6 +79,20 @@ func ComposeTasteAffinity(track, artist, genre, album float64) TasteAffinity {
 	return affinity
 }
 
+// LocalFallbackFeatures contains normalized, explainable signals for a local
+// fallback candidate. These signals are intentionally separate from the
+// provider-oriented ranker so a local library fallback can still be ranked
+// when no similarity provider score exists.
+type LocalFallbackFeatures struct {
+	SeedSimilarity      float64
+	ListeningHistory    float64
+	TransitionRelevance float64
+	GenreOverlap        float64
+	Freshness           float64
+	DiscoveryPreference float64
+	FatiguePenalty      float64
+}
+
 // Candidate is a track with optional similarity-provider metadata. Key can be
 // used when the candidate is not backed by a library MediaFile, or when the
 // caller needs an identity distinct from the MediaFile fields. SeedAffinity is
@@ -84,6 +105,7 @@ type Candidate struct {
 	TransitionAffinity float64
 	TasteAffinity      float64
 	TasteDetails       TasteAffinity
+	LocalFallback      *LocalFallbackFeatures
 	model.MediaFile
 	SimilarityScores []agents.SimilarityScore
 }
@@ -154,6 +176,15 @@ type ScoreBreakdown struct {
 	TasteGenreAffinity  float64
 	TasteAlbumAffinity  float64
 	TasteAffinity       float64
+	// Local fallback fields are weighted contributions from
+	// LocalFallbackFeatures. They are zero for ordinary candidates.
+	LocalFallbackSeedSimilarity      float64
+	LocalFallbackListeningHistory    float64
+	LocalFallbackTransitionRelevance float64
+	LocalFallbackGenreOverlap        float64
+	LocalFallbackFreshness           float64
+	LocalFallbackDiscoveryPreference float64
+	LocalFallbackFatiguePenalty      float64
 }
 
 // RankedCandidate is a candidate and its total score plus inspectable score
@@ -216,6 +247,10 @@ func Rank(candidates []Candidate, options Options) []RankedCandidate {
 }
 
 func scoreCandidate(candidate Candidate, options Options, weights Weights) ScoreBreakdown {
+	if candidate.LocalFallback != nil {
+		return scoreLocalFallback(*candidate.LocalFallback)
+	}
+
 	recentPlays := lookupInt64(options.RecentPlays, candidate.Key, candidate.MediaFile)
 	fatigue := lookupFloat64(options.Fatigue, candidate.Key, candidate.MediaFile)
 
@@ -237,9 +272,24 @@ func scoreCandidate(candidate Candidate, options Options, weights Weights) Score
 	}
 }
 
+func scoreLocalFallback(features LocalFallbackFeatures) ScoreBreakdown {
+	return ScoreBreakdown{
+		LocalFallbackSeedSimilarity:      localFallbackSeedWeight * clamp(features.SeedSimilarity, 0, 1),
+		LocalFallbackListeningHistory:    localFallbackHistoryWeight * clamp(features.ListeningHistory, 0, 1),
+		LocalFallbackTransitionRelevance: localFallbackTransitionWeight * clamp(features.TransitionRelevance, 0, 1),
+		LocalFallbackGenreOverlap:        localFallbackGenreWeight * clamp(features.GenreOverlap, 0, 1),
+		LocalFallbackFreshness:           localFallbackFreshnessWeight * clamp(features.Freshness, 0, 1),
+		LocalFallbackDiscoveryPreference: localFallbackDiscoveryWeight * clamp(features.DiscoveryPreference, 0, 1),
+		LocalFallbackFatiguePenalty:      -clamp(features.FatiguePenalty, 0, 1),
+	}
+}
+
 func (s ScoreBreakdown) total() float64 {
 	return s.Similarity + s.SeedAffinity + s.SessionAffinity + s.PlayHistory + s.RecentListening + s.Starred +
-		s.Recency + s.Fatigue + s.TransitionAffinity + s.TasteAffinity
+		s.Recency + s.Fatigue + s.TransitionAffinity + s.TasteAffinity +
+		s.LocalFallbackSeedSimilarity + s.LocalFallbackListeningHistory + s.LocalFallbackTransitionRelevance +
+		s.LocalFallbackGenreOverlap + s.LocalFallbackFreshness + s.LocalFallbackDiscoveryPreference +
+		s.LocalFallbackFatiguePenalty
 }
 
 func effectiveTasteAffinity(candidate Candidate) float64 {
@@ -369,7 +419,37 @@ func mergeCandidates(left, right Candidate) Candidate {
 		merged.TasteDetails = right.TasteDetails
 	}
 	merged.SimilarityScores = mergeSimilarityScores(left.SimilarityScores, right.SimilarityScores)
+	if len(merged.SimilarityScores) == 0 {
+		merged.LocalFallback = mergeLocalFallbackFeatures(left.LocalFallback, right.LocalFallback)
+	} else {
+		// A provider-matched candidate wins over a fallback representation of
+		// the same track, preserving the provider scoring path.
+		merged.LocalFallback = nil
+	}
 	return merged
+}
+
+func mergeLocalFallbackFeatures(left, right *LocalFallbackFeatures) *LocalFallbackFeatures {
+	if left == nil && right == nil {
+		return nil
+	}
+	if left == nil {
+		copy := *right
+		return &copy
+	}
+	if right == nil {
+		copy := *left
+		return &copy
+	}
+	return &LocalFallbackFeatures{
+		SeedSimilarity:      math.Max(clamp(left.SeedSimilarity, 0, 1), clamp(right.SeedSimilarity, 0, 1)),
+		ListeningHistory:    math.Max(clamp(left.ListeningHistory, 0, 1), clamp(right.ListeningHistory, 0, 1)),
+		TransitionRelevance: math.Max(clamp(left.TransitionRelevance, 0, 1), clamp(right.TransitionRelevance, 0, 1)),
+		GenreOverlap:        math.Max(clamp(left.GenreOverlap, 0, 1), clamp(right.GenreOverlap, 0, 1)),
+		Freshness:           math.Max(clamp(left.Freshness, 0, 1), clamp(right.Freshness, 0, 1)),
+		DiscoveryPreference: math.Max(clamp(left.DiscoveryPreference, 0, 1), clamp(right.DiscoveryPreference, 0, 1)),
+		FatiguePenalty:      math.Max(clamp(left.FatiguePenalty, 0, 1), clamp(right.FatiguePenalty, 0, 1)),
+	}
 }
 
 func combineAffinity(left, right float64) float64 {
@@ -410,6 +490,10 @@ func betterSimilarity(left, right agents.SimilarityScore) bool {
 func cloneCandidate(candidate Candidate) Candidate {
 	clone := candidate
 	clone.SimilarityScores = append([]agents.SimilarityScore(nil), candidate.SimilarityScores...)
+	if candidate.LocalFallback != nil {
+		features := *candidate.LocalFallback
+		clone.LocalFallback = &features
+	}
 	return clone
 }
 

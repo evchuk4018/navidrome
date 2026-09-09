@@ -90,6 +90,74 @@ func TestRankUsesAllSignalsAndExposesBreakdown(t *testing.T) {
 	}
 }
 
+func TestRankUsesFixedLocalFallbackBlend(t *testing.T) {
+	result := Rank([]Candidate{{
+		Key: "fallback",
+		LocalFallback: &LocalFallbackFeatures{
+			SeedSimilarity:      1,
+			ListeningHistory:    1,
+			TransitionRelevance: 1,
+			GenreOverlap:        1,
+			Freshness:           1,
+			DiscoveryPreference: 1,
+			FatiguePenalty:      0.2,
+		},
+	}}, Options{})[0]
+
+	if !almostEqual(result.Score, 0.8) {
+		t.Fatalf("local fallback score = %v, want 0.8", result.Score)
+	}
+	if !almostEqual(result.Breakdown.LocalFallbackSeedSimilarity, 0.35) ||
+		!almostEqual(result.Breakdown.LocalFallbackListeningHistory, 0.20) ||
+		!almostEqual(result.Breakdown.LocalFallbackTransitionRelevance, 0.15) ||
+		!almostEqual(result.Breakdown.LocalFallbackGenreOverlap, 0.10) ||
+		!almostEqual(result.Breakdown.LocalFallbackFreshness, 0.10) ||
+		!almostEqual(result.Breakdown.LocalFallbackDiscoveryPreference, 0.10) ||
+		!almostEqual(result.Breakdown.LocalFallbackFatiguePenalty, -0.2) {
+		t.Fatalf("local fallback breakdown = %#v", result.Breakdown)
+	}
+	if !almostEqual(result.Score, result.Breakdown.total()) {
+		t.Fatalf("local fallback score = %v, breakdown total = %v", result.Score, result.Breakdown.total())
+	}
+}
+
+func TestRankClampsLocalFallbackFeatures(t *testing.T) {
+	result := Rank([]Candidate{{
+		Key: "fallback",
+		LocalFallback: &LocalFallbackFeatures{
+			SeedSimilarity:      math.Inf(1),
+			ListeningHistory:    -1,
+			TransitionRelevance: math.NaN(),
+			GenreOverlap:        2,
+			Freshness:           0.5,
+			DiscoveryPreference: 0.5,
+			FatiguePenalty:      math.Inf(1),
+		},
+	}}, Options{})[0]
+
+	if math.IsNaN(result.Score) || math.IsInf(result.Score, 0) {
+		t.Fatalf("local fallback score = %v, want finite", result.Score)
+	}
+	if result.Score < -1 || result.Score > 1 {
+		t.Fatalf("local fallback score = %v, want normalized range", result.Score)
+	}
+	if result.Breakdown.LocalFallbackSeedSimilarity != 0 || result.Breakdown.LocalFallbackListeningHistory != 0 ||
+		result.Breakdown.LocalFallbackTransitionRelevance != 0 || result.Breakdown.LocalFallbackGenreOverlap != 0.1 ||
+		result.Breakdown.LocalFallbackFreshness != 0.05 || result.Breakdown.LocalFallbackDiscoveryPreference != 0.05 ||
+		result.Breakdown.LocalFallbackFatiguePenalty != 0 {
+		t.Fatalf("clamped local fallback breakdown = %#v", result.Breakdown)
+	}
+}
+
+func TestRankKeepsNonFallbackScoringUnchanged(t *testing.T) {
+	result := Rank([]Candidate{{Key: "legacy", SeedAffinity: 0.4}}, Options{
+		Weights: Weights{SeedAffinity: 1},
+	})[0]
+	if !almostEqual(result.Score, 0.4) || result.Breakdown.LocalFallbackSeedSimilarity != 0 {
+		t.Fatalf("legacy score/breakdown = %v/%#v", result.Score, result.Breakdown)
+	}
+}
+
 func TestRankUsesCandidateKeyForExternalSignals(t *testing.T) {
 	results := Rank([]Candidate{{
 		Key: "discovery:mbid:one",

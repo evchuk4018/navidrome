@@ -12,6 +12,7 @@ import (
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/core/matcher"
 	musicservice "github.com/navidrome/navidrome/core/music"
+	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/tests"
 )
@@ -367,6 +368,91 @@ func TestLocalCandidatesDoNotFallBackToUnrelatedLibrary(t *testing.T) {
 	}
 }
 
+func TestBuildLocalFallbackFeaturesDistinguishesSameGenreTracks(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
+	seed := &model.MediaFile{
+		ID:       "seed",
+		ArtistID: "seed-artist",
+		Artist:   "Seed Artist",
+		AlbumID:  "seed-album",
+		Genre:    "Pop",
+		Year:     2020,
+	}
+	closeCandidate := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: model.MediaFile{
+		ID:       "close",
+		ArtistID: "seed-artist",
+		Artist:   "Seed Artist",
+		AlbumID:  "other-album",
+		Genre:    "Pop",
+		Year:     2020,
+	}}, []radioSeed{{File: seed, Weight: 1}}, string(model.RadioModeBalanced), now, 0)
+	distantCandidate := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: model.MediaFile{
+		ID:       "distant",
+		ArtistID: "other-artist",
+		Artist:   "Other Artist",
+		AlbumID:  "other-album",
+		Genre:    "Pop",
+		Year:     1980,
+		Annotations: model.Annotations{
+			PlayCount: 100,
+			PlayDate:  personalRadioTimePtr(now.Add(-time.Hour)),
+		},
+	}}, []radioSeed{{File: seed, Weight: 1}}, string(model.RadioModeBalanced), now, 0)
+
+	if closeCandidate.SeedSimilarity <= distantCandidate.SeedSimilarity {
+		t.Fatalf("close seed similarity = %v, distant = %v", closeCandidate.SeedSimilarity, distantCandidate.SeedSimilarity)
+	}
+	if closeCandidate.GenreOverlap != distantCandidate.GenreOverlap {
+		t.Fatalf("same-genre overlap differs: close = %v, distant = %v", closeCandidate.GenreOverlap, distantCandidate.GenreOverlap)
+	}
+	if closeCandidate.Freshness <= distantCandidate.Freshness {
+		t.Fatalf("close freshness = %v, distant = %v", closeCandidate.Freshness, distantCandidate.Freshness)
+	}
+}
+
+func TestBuildLocalFallbackFeaturesUsesCurrentSessionSeed(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
+	original := &model.MediaFile{ID: "original", ArtistID: "original-artist", Artist: "Original Artist", Genre: "Pop", Year: 2020}
+	current := &model.MediaFile{ID: "current", ArtistID: "current-artist", Artist: "Current Artist", Genre: "Jazz", Year: 2022}
+	seeds := []radioSeed{{File: original, Weight: 0.35}, {File: current, Weight: 0.65}}
+
+	currentMatch := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: model.MediaFile{ID: "current-match", ArtistID: "current-artist", Artist: "Current Artist", Genre: "Jazz", Year: 2022}}, seeds, string(model.RadioModeBalanced), now, 0)
+	originalMatch := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: model.MediaFile{ID: "original-match", ArtistID: "original-artist", Artist: "Original Artist", Genre: "Pop", Year: 2020}}, seeds, string(model.RadioModeBalanced), now, 0)
+	if currentMatch.SeedSimilarity <= originalMatch.SeedSimilarity {
+		t.Fatalf("current-session seed similarity = %v, original-only = %v", currentMatch.SeedSimilarity, originalMatch.SeedSimilarity)
+	}
+	if currentMatch.GenreOverlap <= originalMatch.GenreOverlap {
+		t.Fatalf("current-session genre overlap = %v, original-only = %v", currentMatch.GenreOverlap, originalMatch.GenreOverlap)
+	}
+}
+
+func TestBuildLocalFallbackFeaturesChangesDiscoveryPreferenceByMode(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
+	seed := &model.MediaFile{ID: "seed", Artist: "Seed Artist", Genre: "Pop", Year: 2020}
+	unheard := model.MediaFile{ID: "unheard", Artist: "New Artist", Genre: "Pop", Year: 2020, CreatedAt: now.Add(-24 * time.Hour)}
+	familiar := model.MediaFile{
+		ID: "familiar", Artist: "Known Artist", Genre: "Pop", Year: 2020,
+		Annotations: model.Annotations{PlayCount: 100, PlayDate: personalRadioTimePtr(now.Add(-30 * 24 * time.Hour))},
+		CreatedAt:   now.Add(-2 * 365 * 24 * time.Hour),
+	}
+
+	discoverUnheard := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: unheard}, []radioSeed{{File: seed, Weight: 1}}, string(model.RadioModeDiscover), now, 0)
+	discoverFamiliar := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: familiar}, []radioSeed{{File: seed, Weight: 1}}, string(model.RadioModeDiscover), now, 0)
+	familiarUnheard := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: unheard}, []radioSeed{{File: seed, Weight: 1}}, string(model.RadioModeFamiliar), now, 0)
+	familiarKnown := buildLocalFallbackFeatures(recommendations.Candidate{MediaFile: familiar}, []radioSeed{{File: seed, Weight: 1}}, string(model.RadioModeFamiliar), now, 0)
+
+	if discoverUnheard.DiscoveryPreference <= discoverFamiliar.DiscoveryPreference {
+		t.Fatalf("discover preferences = unheard:%v familiar:%v", discoverUnheard.DiscoveryPreference, discoverFamiliar.DiscoveryPreference)
+	}
+	if familiarKnown.DiscoveryPreference <= familiarUnheard.DiscoveryPreference {
+		t.Fatalf("familiar preferences = known:%v unheard:%v", familiarKnown.DiscoveryPreference, familiarUnheard.DiscoveryPreference)
+	}
+}
+
+func personalRadioTimePtr(value time.Time) *time.Time {
+	return &value
+}
+
 func TestRecommendationPoolsRankProviderCandidatesAndPreserveFiltering(t *testing.T) {
 	mediaRepo := tests.CreateMockMediaFileRepo()
 	mediaRepo.SetData(model.MediaFiles{
@@ -407,6 +493,102 @@ func TestRecommendationPoolsRankProviderCandidatesAndPreserveFiltering(t *testin
 	}
 	if len(pools.discovery) != 2 || pools.discovery[0].MBID != "external-high-mbid" || pools.discovery[1].MBID != "external-low-mbid" {
 		t.Fatalf("discovery pool = %#v, want [external-high-mbid external-low-mbid]", pools.discovery)
+	}
+}
+
+func TestRecommendationPoolsRankLocalFallbacksByRelevance(t *testing.T) {
+	now := time.Now().UTC()
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", ArtistID: "seed-artist", Artist: "Seed Artist", Genre: "Pop", Year: 2020, MbzRecordingID: "seed-mbid"},
+		{ID: "close", ArtistID: "seed-artist", Artist: "Seed Artist", Genre: "Pop", Year: 2020, MbzRecordingID: "close-mbid"},
+		{ID: "popular", ArtistID: "popular-artist", Artist: "Popular Artist", Genre: "Pop", Year: 2020, MbzRecordingID: "popular-mbid", Annotations: model.Annotations{
+			PlayCount: 100,
+			PlayDate:  personalRadioTimePtr(now.Add(-time.Hour)),
+		}},
+		{ID: "unrelated", ArtistID: "metal-artist", Artist: "Metal Artist", Genre: "Metal", Year: 1980, MbzRecordingID: "unrelated-mbid"},
+	})
+	repo := &fakePersonalRadioRepository{}
+	svc := &service{ds: &tests.MockDataStore{MockedMediaFile: mediaRepo}, repo: repo}
+
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user", Mode: model.RadioModeBalanced},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true},
+		nil,
+		3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pools.local) != 3 {
+		t.Fatalf("local fallback pool = %#v, want three playable candidates", pools.local)
+	}
+	for _, candidate := range pools.ranked {
+		if candidate.source == "tasteFallback" || candidate.source == "exhaustiveFallback" {
+			if candidate.candidate.LocalFallback == nil {
+				t.Fatalf("fallback candidate %q has no local feature vector", candidate.candidate.Key)
+			}
+		}
+	}
+
+	selected := composeRadioCandidates(pools.ranked, radioCompositionOptions{Mode: string(model.RadioModeBalanced), Slots: 3})
+	if len(selected) != 3 {
+		t.Fatalf("selected fallback candidates = %#v, want three", selected)
+	}
+	if selected[0].candidate.MediaFile.ID != "close" || selected[1].candidate.MediaFile.ID != "popular" || selected[2].candidate.MediaFile.ID != "unrelated" {
+		t.Fatalf("selected fallback order = [%s %s %s], want [close popular unrelated]", selected[0].candidate.MediaFile.ID, selected[1].candidate.MediaFile.ID, selected[2].candidate.MediaFile.ID)
+	}
+}
+
+func TestRecommendationPoolsApplyLocalFallbackFeedbackAndTransitions(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", Artist: "Seed Artist", Genre: "Pop", Year: 2020, MbzRecordingID: "seed-mbid"},
+		{ID: "fatigued", Artist: "Related Artist", Genre: "Pop", Year: 2020, MbzRecordingID: "fatigued-mbid"},
+		{ID: "fresh", Artist: "Fresh Artist", Genre: "Pop", Year: 2020, MbzRecordingID: "fresh-mbid"},
+	})
+	repo := &fakePersonalRadioRepository{
+		feedback: map[string]model.RadioTrackFeedback{
+			"fatigued-mbid": {EarlySkipCount: 5},
+		},
+		transitions: map[string]model.RadioTransitionFeedback{
+			"mbid:seed-mbid\x00mbid:fresh-mbid": {
+				SourceKey: "mbid:seed-mbid", TargetKey: "mbid:fresh-mbid", AttemptCount: 4, AcceptedCount: 4,
+			},
+		},
+	}
+	svc := &service{ds: &tests.MockDataStore{MockedMediaFile: mediaRepo}, repo: repo}
+
+	pools, err := svc.recommendationPools(
+		context.Background(),
+		model.PersonalRadioSession{ID: "session", UserID: "user"},
+		mediaRepo.Data["seed"],
+		map[string]bool{"seed": true},
+		nil,
+		2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]rankedRadioCandidate, len(pools.ranked))
+	for _, candidate := range pools.ranked {
+		byID[candidate.candidate.MediaFile.ID] = candidate
+	}
+	fatigued := byID["fatigued"]
+	fresh := byID["fresh"]
+	if fatigued.candidate.LocalFallback == nil || fresh.candidate.LocalFallback == nil {
+		t.Fatalf("fallback features missing: fatigued=%#v fresh=%#v", fatigued.candidate.LocalFallback, fresh.candidate.LocalFallback)
+	}
+	if fatigued.candidate.LocalFallback.FatiguePenalty <= fresh.candidate.LocalFallback.FatiguePenalty {
+		t.Fatalf("fatigue penalties = fatigued:%v fresh:%v", fatigued.candidate.LocalFallback.FatiguePenalty, fresh.candidate.LocalFallback.FatiguePenalty)
+	}
+	if fresh.candidate.TransitionAffinity <= 0 || fresh.candidate.LocalFallback.TransitionRelevance <= 0 {
+		t.Fatalf("fresh transition affinity/features = %v/%v, want positive", fresh.candidate.TransitionAffinity, fresh.candidate.LocalFallback.TransitionRelevance)
+	}
+	if fresh.ranked.Breakdown.LocalFallbackTransitionRelevance <= 0 {
+		t.Fatalf("fresh transition score contribution = %v, want positive", fresh.ranked.Breakdown.LocalFallbackTransitionRelevance)
 	}
 }
 
@@ -573,7 +755,7 @@ func TestExhaustiveLocalFallbackSearchesPastFirstPage(t *testing.T) {
 
 	candidates, stats, err := svc.localCandidateFilesForFallback(
 		context.Background(),
-		files[0],
+		&files[0],
 		map[string]bool{"seed": true},
 		nil,
 		false,
