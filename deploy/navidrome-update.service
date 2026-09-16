@@ -1,0 +1,16 @@
+[Unit]
+Description=Update Navidrome from GitHub Container Registry
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/storage/wowzerbowser/files/navidrome
+
+[Service]
+Type=oneshot
+User=evanh
+Group=evanh
+Environment=NAVIDROME_COMPOSE_FILE=/srv/storage/wowzerbowser/files/navidrome/docker-compose.yml
+Environment=NAVIDROME_ENV_FILE=/etc/navidrome/navidrome.env
+ExecStart=/usr/local/bin/update-navidrome.sh
+SyslogIdentifier=navidrome-update
+TimeoutStartSec=15min

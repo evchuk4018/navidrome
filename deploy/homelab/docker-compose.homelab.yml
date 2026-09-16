@@ -1,15 +1,8 @@
 # Standalone Navidrome deployment. This file is intentionally independent of
-# the retired MusicPlayer application and builds from this repository.
+# the retired MusicPlayer application and pulls the published fork image.
 services:
   navidrome:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-      target: final
-      args:
-        GIT_SHA: ${GIT_SHA:-}
-        GIT_TAG: ${GIT_TAG:-}
-    image: home-music-navidrome:local
+    image: "${NAVIDROME_IMAGE:-ghcr.io/evchuk4018/navidrome:latest}"
     restart: unless-stopped
     environment:
       ND_BASEURL: /navidrome

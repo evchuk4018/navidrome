@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for updated Navidrome image
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=navidrome-update.service
+
+[Install]
+WantedBy=timers.target
