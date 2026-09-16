@@ -14,7 +14,7 @@ The live deployment layout is:
 | Source checkout | `/srv/storage/wowzerbowser/files/home music` |
 | Compose file | `/srv/storage/wowzerbowser/files/home music/deploy/homelab/docker-compose.homelab.yml` |
 | Compose project/service | `navidrome` / `navidrome` |
-| Container/image | `navidrome-1` / `home-music-navidrome:local` |
+| Container/image | `navidrome-navidrome-1` / `home-music-navidrome:local` |
 | Music library | `/srv/storage/media/music` mounted read-write at `/music` |
 | Navidrome data | `musicplayer_navidrome_data` mounted at `/data` |
 | Local listener | `127.0.0.1:4533` |

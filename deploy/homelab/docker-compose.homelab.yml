@@ -31,4 +31,5 @@ services:
 volumes:
   navidrome_data:
     # Preserve the existing Navidrome database and application state.
+    external: true
     name: musicplayer_navidrome_data
