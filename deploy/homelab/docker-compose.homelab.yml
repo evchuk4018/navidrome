@@ -27,6 +27,12 @@ services:
       - type: volume
         source: navidrome_data
         target: /data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4533/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   navidrome_data:
