@@ -41,8 +41,19 @@ type SongRecentPlayMetric struct {
 	RecentPlays int64
 }
 
+// QuickPickExposureMetric is the aggregate display history for one Quick Pick
+// item. ItemKey is intentionally opaque to persistence so tracks can share
+// their history across normal and Smart Pick tiles.
+type QuickPickExposureMetric struct {
+	ItemKey     string
+	ShowCount   int64
+	LastShownAt time.Time
+}
+
 type QuickPickMetricsRepository interface {
 	SongRecentPlays(userID string, since time.Time) (map[string]int64, error)
 	PlaylistMetrics(userID string, since time.Time) (map[string]PlaylistPlayMetric, error)
 	RecordPlaylistPlay(userID, playlistID string, playedAt time.Time) error
+	ExposureMetrics(userID string, itemKeys []string) (map[string]QuickPickExposureMetric, error)
+	RecordExposures(userID string, itemKeys []string, shownAt time.Time) error
 }

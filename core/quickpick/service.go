@@ -2,13 +2,13 @@ package quickpick
 
 import (
 	"context"
-	"math"
 	"sort"
 	"time"
 
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/core/matcher"
 	"github.com/navidrome/navidrome/core/recommendations"
+	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 )
 
@@ -38,16 +38,6 @@ const (
 	recommendationLimit     = 4
 )
 
-type songCandidate struct {
-	song  model.MediaFile
-	score float64
-}
-
-type playlistCandidate struct {
-	playlist model.Playlist
-	score    float64
-}
-
 func (s *service) Get(ctx context.Context, userID string) (*model.QuickPickResponse, error) {
 	now := time.Now().UTC()
 	recent, err := s.metrics.SongRecentPlays(userID, now.AddDate(0, 0, -30))
@@ -55,144 +45,81 @@ func (s *service) Get(ctx context.Context, userID string) (*model.QuickPickRespo
 		return nil, err
 	}
 
-	byID := map[string]model.MediaFile{}
-	for _, options := range []model.QueryOptions{
-		{Sort: "play_count", Order: "desc", Max: 150},
-		{Sort: "play_date", Order: "desc", Max: 150},
-		{Sort: "starred_at", Order: "desc", Max: 100},
-	} {
-		files, err := s.ds.MediaFile(ctx).GetAll(options)
-		if err != nil {
-			return nil, err
-		}
-		for _, file := range files {
-			byID[file.ID] = file
-		}
-	}
-
-	songs := make([]songCandidate, 0, len(byID))
-	songScores := make(map[string]float64, len(byID))
-	rankingInputs := make([]recommendations.Candidate, 0, len(byID))
-	for _, song := range byID {
-		candidate := recommendations.Candidate{
-			Key:       "quickpick:" + song.ID,
-			MediaFile: song,
-		}
-		rankingInputs = append(rankingInputs, candidate)
-	}
-	if taste, ok := s.metrics.(recommendations.TasteAffinityRepository); ok {
-		identities := make([]recommendations.TasteCandidateIdentity, 0, len(rankingInputs))
-		for _, candidate := range rankingInputs {
-			identities = append(identities, recommendations.TasteIdentityForMediaFile(candidate.Key, candidate.MediaFile))
-		}
-		if affinity, affinityErr := taste.AffinityForCandidates(userID, identities); affinityErr == nil {
-			for i := range rankingInputs {
-				value := affinity[rankingInputs[i].Key]
-				rankingInputs[i].TasteAffinity = value.Score
-				rankingInputs[i].TasteDetails = value
-			}
-		}
-	}
-	for _, rankedSong := range recommendations.Rank(rankingInputs, recommendations.Options{
-		Now:         now,
-		RecentPlays: recent,
-	}) {
-		songs = append(songs, songCandidate{song: rankedSong.MediaFile, score: rankedSong.Score})
-		songScores[rankedSong.ID] = rankedSong.Score
-	}
-
-	playlistMetrics, err := s.metrics.PlaylistMetrics(userID, now.AddDate(0, 0, -30))
+	songs, songScores, err := s.rankSongs(ctx, userID, now, recent)
 	if err != nil {
 		return nil, err
 	}
-	playlists, err := s.ds.Playlist(ctx).GetAll(model.QueryOptions{Sort: "name", Order: "asc", Max: 100})
+	playlists, err := s.rankPlaylists(ctx, userID, now, songScores)
 	if err != nil {
 		return nil, err
 	}
-	pls := make([]playlistCandidate, 0, len(playlists))
-	for _, playlist := range playlists {
-		metric := playlistMetrics[playlist.ID]
-		score := 3*math.Log1p(float64(metric.TotalStarts)) + 5*math.Log1p(float64(metric.RecentStarts))
-		if metric.LastPlayed != nil {
-			days := math.Max(0, now.Sub(metric.LastPlayed.UTC()).Hours()/24)
-			score += 4 * math.Exp(-days/14)
-		}
-		withTracks, getErr := s.ds.Playlist(ctx).GetWithTracks(playlist.ID, false, false)
-		if getErr == nil {
-			var affinity float64
-			for _, track := range withTracks.Tracks {
-				affinity = math.Max(affinity, songScores[track.MediaFileID])
-			}
-			score += affinity * .35
-		}
-		if score > 0 {
-			pls = append(pls, playlistCandidate{playlist: playlist, score: score})
-		}
-	}
-	sort.SliceStable(pls, func(i, j int) bool { return pls[i].score > pls[j].score })
+	composed := composeQuickPick(songs, playlists, compositionOptions{Limit: 9})
 
-	playlistSlots := min(2, len(pls))
-	if len(pls) > 2 && (len(songs) < 7 || pls[2].score >= songs[min(6, len(songs)-1)].score) {
-		playlistSlots = 3
-	}
-	items := make([]model.QuickPickItem, 0, 13)
-	for i := 0; i < playlistSlots && len(items) < 9; i++ {
-		playlist := pls[i].playlist
-		items = append(items, model.QuickPickItem{Kind: model.QuickPickPlaylist, Playlist: &playlist, Score: pls[i].score})
-	}
-	for i := 0; i < len(songs) && len(items) < 9; i++ {
-		song := songs[i].song
-		items = append(items, model.QuickPickItem{Kind: model.QuickPickSong, Song: &song, Score: songs[i].score})
-	}
-
-	recommendations, err := s.recommendations(ctx, songs, now, recent)
+	recommendationItems, err := s.recommendations(ctx, userID, composed.SeedSongs, composed.SelectedTrackIDs, now, recent)
 	if err != nil {
 		return nil, err
 	}
-	items = append(items, recommendations...)
+	items := append(composed.Items, recommendationItems...)
+	s.recordExposures(ctx, userID, items, now)
 	return &model.QuickPickResponse{Items: items}, nil
 }
 
-// recommendations surfaces similar tracks (via the configured similarity
-// agents, e.g. Last.fm) for the user's top songs. A recommendation is only
-// returned when it also exists in the library, so it can act as a seed for a
-// quick play mix without downloading anything up front.
-func (s *service) recommendations(ctx context.Context, songs []songCandidate, now time.Time, recent map[string]int64) ([]model.QuickPickItem, error) {
-	if s.agents == nil || s.matcher == nil || len(songs) == 0 {
+// recommendations surfaces similar tracks through the configured similarity
+// agents. A recommendation is only returned when it also exists in the
+// library, so it can act as a seed for a quick play mix without downloading
+// anything up front.
+func (s *service) recommendations(
+	ctx context.Context,
+	userID string,
+	seedSongs []model.MediaFile,
+	excludedMediaFileIDs map[string]struct{},
+	now time.Time,
+	recent map[string]int64,
+) ([]model.QuickPickItem, error) {
+	if s.agents == nil || s.matcher == nil || len(seedSongs) == 0 {
 		return nil, nil
 	}
-	seen := map[string]bool{}
+	seenProviderCandidates := map[string]bool{}
 	var providerCandidates []agents.Song
-	for i := 0; i < len(songs) && i < recommendationSeedCount; i++ {
-		seed := songs[i].song
+	for i := 0; i < len(seedSongs) && i < recommendationSeedCount; i++ {
+		seed := seedSongs[i]
 		similar, err := s.agents.GetSimilarSongsByTrackAll(ctx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, recommendationPerSeed)
 		if err != nil {
 			continue
 		}
 		for _, song := range similar {
 			key := agents.CandidateID(song)
-			if seen[key] {
+			if seenProviderCandidates[key] {
 				continue
 			}
-			seen[key] = true
+			seenProviderCandidates[key] = true
 			providerCandidates = append(providerCandidates, song)
 		}
 	}
 	if len(providerCandidates) == 0 {
 		return nil, nil
 	}
+
 	matches, err := s.matcher.MatchSongsIndexed(ctx, providerCandidates)
 	if err != nil {
 		return nil, nil
 	}
 	rankedCandidates := make([]recommendations.Candidate, 0, len(providerCandidates))
 	sources := make(map[string]agents.Song, len(providerCandidates))
+	seenLocalMediaFiles := make(map[string]struct{}, len(providerCandidates))
 	for i, candidate := range providerCandidates {
 		local, ok := matches[i]
-		if !ok || local.Missing {
+		if !ok || local.Missing || local.ID == "" {
 			continue
 		}
-		key := "quickpick:" + local.ID
+		if _, excluded := excludedMediaFileIDs[local.ID]; excluded {
+			continue
+		}
+		if _, seen := seenLocalMediaFiles[local.ID]; seen {
+			continue
+		}
+		seenLocalMediaFiles[local.ID] = struct{}{}
+		key := quickPickCandidateKey(local.ID)
 		rankedCandidates = append(rankedCandidates, recommendations.Candidate{
 			Key:              key,
 			MediaFile:        local,
@@ -202,9 +129,16 @@ func (s *service) recommendations(ctx context.Context, songs []songCandidate, no
 			sources[key] = candidate
 		}
 	}
+	if len(rankedCandidates) == 0 {
+		return nil, nil
+	}
+
+	s.applyTasteAffinities(userID, rankedCandidates)
+	exposures := s.readExposureMetrics(userID, trackExposureKeysFromCandidates(rankedCandidates))
 	ranked := recommendations.Rank(rankedCandidates, recommendations.Options{
 		Now:         now,
 		RecentPlays: recent,
+		Fatigue:     fatigueForCandidates(rankedCandidates, exposures, now),
 		Limit:       recommendationLimit,
 	})
 	items := make([]model.QuickPickItem, 0, len(ranked))
@@ -227,6 +161,37 @@ func (s *service) recommendations(ctx context.Context, songs []songCandidate, no
 		})
 	}
 	return items, nil
+}
+
+func (s *service) recordExposures(ctx context.Context, userID string, items []model.QuickPickItem, shownAt time.Time) {
+	keys := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		var key string
+		switch item.Kind {
+		case model.QuickPickPlaylist:
+			if item.Playlist != nil {
+				key = playlistExposureKey(item.Playlist.ID)
+			}
+		case model.QuickPickSong, model.QuickPickRecommendationKind:
+			if item.Song != nil {
+				key = trackExposureKey(item.Song.ID)
+			}
+		}
+		if key != "" {
+			keys[key] = struct{}{}
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	uniqueKeys := make([]string, 0, len(keys))
+	for key := range keys {
+		uniqueKeys = append(uniqueKeys, key)
+	}
+	sort.Strings(uniqueKeys)
+	if err := s.metrics.RecordExposures(userID, uniqueKeys, shownAt); err != nil {
+		log.Warn(ctx, "Unable to record Quick Pick exposures", "userID", userID, err)
+	}
 }
 
 func firstSongArtist(song agents.Song) string {

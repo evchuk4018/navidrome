@@ -3,6 +3,7 @@ package persistence
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/navidrome/navidrome/core/recommendations"
@@ -12,6 +13,8 @@ import (
 type quickPickMetricsRepository struct {
 	db *sql.DB
 }
+
+const quickPickExposureBatchSize = 400
 
 // nullableSQLiteTime accepts both time.Time values and the timestamp strings
 // returned by SQLite for aggregate expressions such as max(played_at).
@@ -159,6 +162,90 @@ func (r *quickPickMetricsRepository) RecordPlaylistPlay(userID, playlistID strin
 		return err
 	}
 	return tx.Commit()
+}
+
+func (r *quickPickMetricsRepository) ExposureMetrics(userID string, itemKeys []string) (map[string]model.QuickPickExposureMetric, error) {
+	keys := uniqueQuickPickExposureKeys(itemKeys)
+	result := make(map[string]model.QuickPickExposureMetric, len(keys))
+	for start := 0; start < len(keys); start += quickPickExposureBatchSize {
+		end := min(start+quickPickExposureBatchSize, len(keys))
+		batch := keys[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, userID)
+		for _, key := range batch {
+			args = append(args, key)
+		}
+		rows, err := r.db.Query(`
+			select item_key, show_count, last_shown_at
+			from quick_pick_exposure
+			where user_id = ? and item_key in (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var metric model.QuickPickExposureMetric
+			var lastShown nullableSQLiteTime
+			if err := rows.Scan(&metric.ItemKey, &metric.ShowCount, &lastShown); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if lastShown.Valid {
+				metric.LastShownAt = lastShown.Time
+			}
+			result[metric.ItemKey] = metric
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (r *quickPickMetricsRepository) RecordExposures(userID string, itemKeys []string, shownAt time.Time) error {
+	keys := uniqueQuickPickExposureKeys(itemKeys)
+	if len(keys) == 0 {
+		return nil
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, key := range keys {
+		if _, err := tx.Exec(`
+			insert into quick_pick_exposure
+				(user_id, item_key, show_count, last_shown_at)
+			values (?, ?, 1, ?)
+			on conflict (user_id, item_key) do update set
+				show_count = quick_pick_exposure.show_count + 1,
+				last_shown_at = excluded.last_shown_at`,
+			userID, key, shownAt.UTC()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func uniqueQuickPickExposureKeys(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
 }
 
 var _ model.QuickPickMetricsRepository = (*quickPickMetricsRepository)(nil)
