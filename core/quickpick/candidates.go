@@ -12,11 +12,13 @@ import (
 )
 
 const (
-	playCountPoolSize = 200
-	recentPoolSize    = 200
-	likedPoolSize     = 250
-	fallbackPoolMin   = 40
-	fallbackRandomMax = 75
+	playCountPoolSize         = 200
+	recentPoolSize            = 200
+	likedPoolSize             = 250
+	fallbackPoolMin           = 40
+	fallbackRandomMax         = 75
+	playlistPoolSize          = 100
+	playlistAffinityShortlist = 24
 )
 
 const (
@@ -47,6 +49,13 @@ type playlistCandidate struct {
 	hasAdjustedScore bool
 }
 
+// playlistAffinityBatcher is implemented by the SQL metrics repository. Test
+// doubles and third-party data stores can omit it and use the bounded
+// GetWithTracks fallback below.
+type playlistAffinityBatcher interface {
+	PlaylistTrackAffinities(playlistIDs []string, songScores map[string]float64) (map[string]float64, error)
+}
+
 func (s *service) recallSongs(ctx context.Context) ([]recalledSong, error) {
 	type recallQuery struct {
 		options model.QueryOptions
@@ -65,7 +74,7 @@ func (s *service) recallSongs(ctx context.Context) ([]recalledSong, error) {
 			return nil, err
 		}
 		for _, file := range files {
-			if file.ID == "" {
+			if file.ID == "" || file.Missing {
 				continue
 			}
 			candidate, exists := byID[file.ID]
@@ -94,7 +103,7 @@ func (s *service) recallSongs(ctx context.Context) ([]recalledSong, error) {
 			return nil, err
 		}
 		for _, file := range files {
-			if file.ID == "" {
+			if file.ID == "" || file.Missing {
 				continue
 			}
 			candidate, exists := byID[file.ID]
@@ -170,16 +179,25 @@ func (s *service) rankSongs(ctx context.Context, userID string, now time.Time, r
 }
 
 func (s *service) rankPlaylists(ctx context.Context, userID string, now time.Time, songScores map[string]float64) ([]playlistCandidate, error) {
-	playlistMetrics, err := s.metrics.PlaylistMetrics(userID, now.AddDate(0, 0, -30))
-	if err != nil {
-		return nil, err
+	playlistMetrics := map[string]model.PlaylistPlayMetric{}
+	var err error
+	if s.metrics != nil {
+		playlistMetrics, err = s.metrics.PlaylistMetrics(userID, now.AddDate(0, 0, -30))
+		if err != nil {
+			return nil, err
+		}
 	}
-	playlists, err := s.ds.Playlist(ctx).GetAll(model.QueryOptions{Sort: "updated_at", Order: "desc", Max: 100})
+	playlists, err := s.ds.Playlist(ctx).GetAll(model.QueryOptions{Sort: "updated_at", Order: "desc", Max: playlistPoolSize})
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]playlistCandidate, 0, len(playlists))
+	// Score cheap playlist metadata first, then hydrate only a bounded
+	// shortlist for track-affinity. The previous implementation called
+	// GetWithTracks once for every row returned by the 100-row recall query.
+	// Keeping the shortlist bounded makes Quick Pick latency predictable while
+	// retaining explicit recent/starred/new exploration buckets.
+	cheap := make([]playlistCandidate, 0, len(playlists))
 	for _, playlist := range playlists {
 		metric := playlistMetrics[playlist.ID]
 		score := 3*math.Log1p(float64(metric.TotalStarts)) + 5*math.Log1p(float64(metric.RecentStarts))
@@ -190,16 +208,82 @@ func (s *service) rankPlaylists(ctx context.Context, userID string, now time.Tim
 		if playlist.Starred {
 			score += 1
 		}
-		withTracks, getErr := s.ds.Playlist(ctx).GetWithTracks(playlist.ID, false, false)
-		if getErr == nil {
-			var affinity float64
-			for _, track := range withTracks.Tracks {
-				affinity = math.Max(affinity, songScores[track.MediaFileID])
-			}
-			score += affinity * .35
+		if !playlist.CreatedAt.IsZero() {
+			days := math.Max(0, now.Sub(playlist.CreatedAt.UTC()).Hours()/24)
+			// New playlists remain eligible even before their first play.
+			score += 1.5 * math.Exp(-days/30)
 		}
+		cheap = append(cheap, playlistCandidate{playlist: playlist, baseScore: score})
+	}
+	if len(cheap) == 0 {
+		return nil, nil
+	}
+	sort.SliceStable(cheap, func(left, right int) bool {
+		if cheap[left].baseScore != cheap[right].baseScore {
+			return cheap[left].baseScore > cheap[right].baseScore
+		}
+		if !cheap[left].playlist.UpdatedAt.Equal(cheap[right].playlist.UpdatedAt) {
+			return cheap[left].playlist.UpdatedAt.After(cheap[right].playlist.UpdatedAt)
+		}
+		return cheap[left].playlist.ID < cheap[right].playlist.ID
+	})
+
+	shortlist := make([]playlistCandidate, 0, minQuickPick(playlistAffinityShortlist, len(cheap)))
+	shortlisted := make(map[string]struct{}, playlistAffinityShortlist)
+	addShortlist := func(candidate playlistCandidate) {
+		if len(shortlist) >= playlistAffinityShortlist {
+			return
+		}
+		if _, exists := shortlisted[candidate.playlist.ID]; exists {
+			return
+		}
+		shortlisted[candidate.playlist.ID] = struct{}{}
+		shortlist = append(shortlist, candidate)
+	}
+	for _, candidate := range cheap {
+		metric := playlistMetrics[candidate.playlist.ID]
+		newPlaylist := !candidate.playlist.CreatedAt.IsZero() && now.Sub(candidate.playlist.CreatedAt.UTC()) <= 30*24*time.Hour
+		recentPlaylist := metric.LastPlayed != nil && now.Sub(metric.LastPlayed.UTC()) <= 30*24*time.Hour
+		if candidate.playlist.Starred || recentPlaylist || newPlaylist {
+			addShortlist(candidate)
+		}
+	}
+	for _, candidate := range cheap {
+		addShortlist(candidate)
+	}
+
+	affinity := make(map[string]float64, len(shortlist))
+	playlistIDs := make([]string, 0, len(shortlist))
+	for _, candidate := range shortlist {
+		playlistIDs = append(playlistIDs, candidate.playlist.ID)
+	}
+	batchSucceeded := false
+	if batcher, ok := s.metrics.(playlistAffinityBatcher); ok {
+		if batched, batchErr := batcher.PlaylistTrackAffinities(playlistIDs, songScores); batchErr == nil {
+			affinity = batched
+			batchSucceeded = true
+		}
+	}
+	if !batchSucceeded && len(shortlist) > 0 {
+		// Compatibility fallback for lightweight or plugin repositories that do
+		// not expose a SQL batch query. The shortlist bounds this at 24 calls.
+		for _, candidate := range shortlist {
+			withTracks, getErr := s.ds.Playlist(ctx).GetWithTracks(candidate.playlist.ID, false, false)
+			if getErr != nil || withTracks == nil {
+				continue
+			}
+			for _, track := range withTracks.Tracks {
+				affinity[candidate.playlist.ID] = math.Max(affinity[candidate.playlist.ID], songScores[track.MediaFileID])
+			}
+		}
+	}
+
+	result := make([]playlistCandidate, 0, len(cheap))
+	for _, candidate := range cheap {
+		score := candidate.baseScore + affinity[candidate.playlist.ID]*.35
 		if score > 0 {
-			result = append(result, playlistCandidate{playlist: playlist, baseScore: score})
+			candidate.baseScore = score
+			result = append(result, candidate)
 		}
 	}
 

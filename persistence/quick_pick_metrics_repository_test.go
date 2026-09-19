@@ -60,7 +60,16 @@ func newQuickPickExposureTestRepository(t *testing.T) *quickPickMetricsRepositor
 			primary key (user_id, item_key)
 		);
 		create index quick_pick_exposure_user_last_shown
-			on quick_pick_exposure (user_id, last_shown_at desc);`)
+			on quick_pick_exposure (user_id, last_shown_at desc);
+		create table quick_pick_impression (
+			user_id text not null,
+			view_id text not null,
+			item_key text not null,
+			shown_at datetime not null,
+			primary key (user_id, view_id, item_key)
+		);
+		create index quick_pick_impression_user_view
+			on quick_pick_impression (user_id, view_id);`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,5 +118,37 @@ func TestQuickPickExposureMetricsEmptyKeysAreNoOps(t *testing.T) {
 	}
 	if len(metrics) != 0 {
 		t.Fatalf("metrics = %#v, want empty", metrics)
+	}
+}
+
+func TestQuickPickImpressionsAreIdempotentAndUpdateAggregates(t *testing.T) {
+	repository := newQuickPickExposureTestRepository(t)
+	first := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+	if err := repository.RecordImpressions("user", "view-1", []string{"track:a", "track:a", "playlist:p"}, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RecordImpressions("user", "view-1", []string{"track:a", "playlist:p"}, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RecordImpressions("user", "view-2", []string{"track:a"}, second); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := repository.ExposureMetrics("user", []string{"track:a", "playlist:p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics["track:a"].ShowCount != 2 || !metrics["track:a"].LastShownAt.Equal(second) {
+		t.Fatalf("track aggregate = %#v, want count 2 at second view", metrics["track:a"])
+	}
+	if metrics["playlist:p"].ShowCount != 1 || !metrics["playlist:p"].LastShownAt.Equal(first) {
+		t.Fatalf("playlist aggregate = %#v, want count 1 at first view", metrics["playlist:p"])
+	}
+	var details int
+	if err := repository.db.QueryRow(`select count(*) from quick_pick_impression`).Scan(&details); err != nil {
+		t.Fatal(err)
+	}
+	if details != 3 {
+		t.Fatalf("detail rows = %d, want 3", details)
 	}
 }

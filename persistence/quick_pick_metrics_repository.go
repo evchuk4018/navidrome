@@ -3,6 +3,7 @@ package persistence
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -216,6 +217,89 @@ func (r *quickPickMetricsRepository) RecordExposures(userID string, itemKeys []s
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := recordQuickPickExposureAggregates(tx, userID, keys, shownAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RecordImpressions records only the first impression for each item in a
+// response view. The detail table is the idempotency boundary; aggregate
+// exposure counters are updated in the same transaction so retries can never
+// increment one without the other.
+func (r *quickPickMetricsRepository) RecordImpressions(userID, viewID string, itemKeys []string, shownAt time.Time) error {
+	userID = strings.TrimSpace(userID)
+	viewID = strings.TrimSpace(viewID)
+	keys := uniqueQuickPickExposureKeys(itemKeys)
+	if userID == "" || viewID == "" || len(keys) == 0 {
+		return nil
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	newKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result, err := tx.Exec(`
+			insert into quick_pick_impression (user_id, view_id, item_key, shown_at)
+			values (?, ?, ?, ?)
+			on conflict (user_id, view_id, item_key) do nothing`,
+			userID, viewID, key, shownAt.UTC())
+		if err != nil {
+			return err
+		}
+		inserted, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if inserted > 0 {
+			newKeys = append(newKeys, key)
+		}
+	}
+	if err := recordQuickPickExposureAggregates(tx, userID, newKeys, shownAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PlaylistTrackAffinities returns the strongest song affinity for each
+// playlist in one bounded query. Quick Pick uses it after cheap playlist
+// shortlisting so a 100-row playlist recall does not turn into 100 track-load
+// queries.
+func (r *quickPickMetricsRepository) PlaylistTrackAffinities(playlistIDs []string, songScores map[string]float64) (map[string]float64, error) {
+	ids := uniqueQuickPickExposureKeys(playlistIDs)
+	result := make(map[string]float64, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := r.db.Query(`
+		select playlist_id, media_file_id
+		from playlist_tracks
+		where playlist_id in (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var playlistID, mediaFileID string
+		if err := rows.Scan(&playlistID, &mediaFileID); err != nil {
+			return nil, err
+		}
+		result[playlistID] = math.Max(result[playlistID], songScores[mediaFileID])
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func recordQuickPickExposureAggregates(tx *sql.Tx, userID string, keys []string, shownAt time.Time) error {
 	for _, key := range keys {
 		if _, err := tx.Exec(`
 			insert into quick_pick_exposure
@@ -228,7 +312,7 @@ func (r *quickPickMetricsRepository) RecordExposures(userID string, itemKeys []s
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func uniqueQuickPickExposureKeys(keys []string) []string {

@@ -5,6 +5,9 @@ import "time"
 const (
 	QuickPickSong     = "song"
 	QuickPickPlaylist = "playlist"
+
+	QuickPickSectionListenAgain = "listen_again"
+	QuickPickSectionStartRadio  = "start_radio"
 )
 
 // QuickPickRecommendationKind is the tile kind for Last.fm-driven smart picks.
@@ -22,11 +25,20 @@ type QuickPickItem struct {
 	Song           *MediaFile               `json:"song,omitempty"`
 	Playlist       *Playlist                `json:"playlist,omitempty"`
 	Recommendation *QuickPickRecommendation `json:"recommendation,omitempty"`
+	Section        string                   `json:"section"`
+	ViewID         string                   `json:"viewId"`
+	ItemKey        string                   `json:"itemKey"`
 	Score          float64                  `json:"-"`
 }
 
 type QuickPickResponse struct {
-	Items []QuickPickItem `json:"items"`
+	Items  []QuickPickItem `json:"items"`
+	ViewID string          `json:"viewId"`
+}
+
+type QuickPickImpressionRequest struct {
+	ViewID   string   `json:"viewId"`
+	ItemKeys []string `json:"itemKeys"`
 }
 
 type PlaylistPlayMetric struct {
@@ -56,4 +68,5 @@ type QuickPickMetricsRepository interface {
 	RecordPlaylistPlay(userID, playlistID string, playedAt time.Time) error
 	ExposureMetrics(userID string, itemKeys []string) (map[string]QuickPickExposureMetric, error)
 	RecordExposures(userID string, itemKeys []string, shownAt time.Time) error
+	RecordImpressions(userID, viewID string, itemKeys []string, shownAt time.Time) error
 }

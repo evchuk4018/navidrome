@@ -2,19 +2,21 @@ package quickpick
 
 import (
 	"context"
-	"sort"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/core/matcher"
 	"github.com/navidrome/navidrome/core/recommendations"
-	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
+	"github.com/navidrome/navidrome/model/id"
 )
 
 type Service interface {
 	Get(context.Context, string) (*model.QuickPickResponse, error)
 	RecordPlaylistPlay(context.Context, string, string) error
+	RecordImpressions(context.Context, string, string, []string) error
 }
 
 type SimilarityProvider interface {
@@ -40,9 +42,13 @@ const (
 
 func (s *service) Get(ctx context.Context, userID string) (*model.QuickPickResponse, error) {
 	now := time.Now().UTC()
-	recent, err := s.metrics.SongRecentPlays(userID, now.AddDate(0, 0, -30))
-	if err != nil {
-		return nil, err
+	recent := map[string]int64{}
+	if s.metrics != nil {
+		var err error
+		recent, err = s.metrics.SongRecentPlays(userID, now.AddDate(0, 0, -30))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	songs, songScores, err := s.rankSongs(ctx, userID, now, recent)
@@ -53,15 +59,45 @@ func (s *service) Get(ctx context.Context, userID string) (*model.QuickPickRespo
 	if err != nil {
 		return nil, err
 	}
-	composed := composeQuickPick(songs, playlists, compositionOptions{Limit: 9})
-
-	recommendationItems, err := s.recommendations(ctx, userID, composed.SeedSongs, composed.SelectedTrackIDs, now, recent)
-	if err != nil {
-		return nil, err
+	keys := make([]string, 0, len(songs)+len(playlists))
+	for _, candidate := range songs {
+		if key := trackExposureKey(candidate.song.ID); key != "" {
+			keys = append(keys, key)
+		}
 	}
-	items := append(composed.Items, recommendationItems...)
-	s.recordExposures(ctx, userID, items, now)
-	return &model.QuickPickResponse{Items: items}, nil
+	for _, candidate := range playlists {
+		if key := playlistExposureKey(candidate.playlist.ID); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	exposures := s.readExposureMetrics(userID, keys)
+	composed := composeQuickPick(songs, playlists, compositionOptions{Limit: quickPickLimit, Now: now, Exposures: exposures})
+	viewID := id.NewRandom()
+	for index := range composed.Items {
+		item := &composed.Items[index]
+		item.ViewID = viewID
+		item.ItemKey = quickPickItemKey(*item)
+	}
+	return &model.QuickPickResponse{Items: composed.Items, ViewID: viewID}, nil
+}
+
+const quickPickLimit = 12
+
+func quickPickItemKey(item model.QuickPickItem) string {
+	if item.ItemKey != "" {
+		return item.ItemKey
+	}
+	switch item.Kind {
+	case model.QuickPickPlaylist:
+		if item.Playlist != nil {
+			return playlistExposureKey(item.Playlist.ID)
+		}
+	case model.QuickPickSong, model.QuickPickRecommendationKind:
+		if item.Song != nil {
+			return trackExposureKey(item.Song.ID)
+		}
+	}
+	return ""
 }
 
 // recommendations surfaces similar tracks through the configured similarity
@@ -163,35 +199,15 @@ func (s *service) recommendations(
 	return items, nil
 }
 
-func (s *service) recordExposures(ctx context.Context, userID string, items []model.QuickPickItem, shownAt time.Time) {
-	keys := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		var key string
-		switch item.Kind {
-		case model.QuickPickPlaylist:
-			if item.Playlist != nil {
-				key = playlistExposureKey(item.Playlist.ID)
-			}
-		case model.QuickPickSong, model.QuickPickRecommendationKind:
-			if item.Song != nil {
-				key = trackExposureKey(item.Song.ID)
-			}
-		}
-		if key != "" {
-			keys[key] = struct{}{}
-		}
+func (s *service) RecordImpressions(ctx context.Context, userID, viewID string, itemKeys []string) error {
+	viewID = strings.TrimSpace(viewID)
+	if viewID == "" {
+		return errors.New("quick pick viewId is required")
 	}
-	if len(keys) == 0 {
-		return
+	if s.metrics == nil {
+		return errors.New("quick pick metrics are not configured")
 	}
-	uniqueKeys := make([]string, 0, len(keys))
-	for key := range keys {
-		uniqueKeys = append(uniqueKeys, key)
-	}
-	sort.Strings(uniqueKeys)
-	if err := s.metrics.RecordExposures(userID, uniqueKeys, shownAt); err != nil {
-		log.Warn(ctx, "Unable to record Quick Pick exposures", "userID", userID, err)
-	}
+	return s.metrics.RecordImpressions(userID, viewID, itemKeys, time.Now().UTC())
 }
 
 func firstSongArtist(song agents.Song) string {
@@ -204,6 +220,9 @@ func firstSongArtist(song agents.Song) string {
 func (s *service) RecordPlaylistPlay(ctx context.Context, userID, playlistID string) error {
 	if _, err := s.ds.Playlist(ctx).Get(playlistID); err != nil {
 		return err
+	}
+	if s.metrics == nil {
+		return errors.New("quick pick metrics are not configured")
 	}
 	return s.metrics.RecordPlaylistPlay(userID, playlistID, time.Now().UTC())
 }

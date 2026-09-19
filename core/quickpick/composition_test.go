@@ -130,3 +130,125 @@ func TestExposureFatigueDecaysWithoutPermanentPunishment(t *testing.T) {
 		t.Fatalf("fatigue recent=%v old=%v; want strong recent penalty with decay", recent, old)
 	}
 }
+
+func TestComposeQuickPickUsesListenAgainAndStartRadioQuotas(t *testing.T) {
+	songs := make([]songCandidate, 0, 20)
+	for i := 0; i < 20; i++ {
+		songs = append(songs, testSongCandidate(
+			string(rune('a'+i)),
+			float64(100-i), float64(100-i), i+1, i == 1,
+			"Artist "+string(rune('a'+i)), "Album "+string(rune('a'+i)),
+		))
+	}
+	playlists := []playlistCandidate{
+		{playlist: model.Playlist{ID: "p1"}, normalizedScore: 1, adjustedScore: 1, hasAdjustedScore: true},
+		{playlist: model.Playlist{ID: "p2"}, normalizedScore: .9, adjustedScore: .9, hasAdjustedScore: true},
+		{playlist: model.Playlist{ID: "p3"}, normalizedScore: .8, adjustedScore: .8, hasAdjustedScore: true},
+	}
+	composed := composeQuickPick(songs, playlists, compositionOptions{Limit: 12, Now: time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)})
+	if len(composed.Items) != 12 {
+		t.Fatalf("got %d items, want 12: %#v", len(composed.Items), composed.Items)
+	}
+	listenAgain, startRadio := 0, 0
+	for _, item := range composed.Items {
+		switch item.Section {
+		case model.QuickPickSectionListenAgain:
+			listenAgain++
+		case model.QuickPickSectionStartRadio:
+			startRadio++
+		default:
+			t.Fatalf("item %q has no recognized section", item.Kind)
+		}
+	}
+	if listenAgain != 6 || startRadio != 6 {
+		t.Fatalf("sections = listen_again:%d start_radio:%d, want 6/6", listenAgain, startRadio)
+	}
+	if composed.Items[0].Song == nil || composed.Items[0].Song.ID != "a" {
+		t.Fatalf("stable anchor = %#v, want song a", composed.Items[0])
+	}
+	seenRadio := map[string]bool{}
+	for _, item := range composed.Items {
+		if item.Section != model.QuickPickSectionStartRadio || item.Song == nil {
+			continue
+		}
+		if seenRadio[item.Song.ID] {
+			t.Fatalf("duplicate start-radio song %q", item.Song.ID)
+		}
+		seenRadio[item.Song.ID] = true
+	}
+	if len(seenRadio) != 6 {
+		t.Fatalf("start-radio songs = %d, want 6", len(seenRadio))
+	}
+}
+
+func TestComposeQuickPickCooldownsNonAnchorItemsWhenAlternativesExist(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	songs := make([]songCandidate, 0, 24)
+	exposures := map[string]model.QuickPickExposureMetric{}
+	for i := 0; i < 24; i++ {
+		id := string(rune('a' + i))
+		songs = append(songs, testSongCandidate(id, float64(100-i), float64(100-i), i+1, false, id, id))
+		if i > 0 && i < 12 {
+			exposures[trackExposureKey(id)] = model.QuickPickExposureMetric{ItemKey: trackExposureKey(id), ShowCount: 1, LastShownAt: now.Add(-time.Hour)}
+		}
+	}
+	composed := composeQuickPick(songs, nil, compositionOptions{Limit: 12, Now: now, Exposures: exposures})
+	if composed.Items[0].Song == nil || composed.Items[0].Song.ID != "a" {
+		t.Fatalf("anchor = %#v, want a", composed.Items[0])
+	}
+	for _, item := range composed.Items[1:] {
+		if item.Song == nil {
+			continue
+		}
+		if metric, ok := exposures[trackExposureKey(item.Song.ID)]; ok && item.Section == model.QuickPickSectionListenAgain {
+			t.Fatalf("cooled listen-again song %q was selected: metric=%#v", item.Song.ID, metric)
+		}
+	}
+}
+
+func TestComposeQuickPickAppliesTwentyFourHourCooldownToRadioSeeds(t *testing.T) {
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	songs := make([]songCandidate, 0, 20)
+	exposures := map[string]model.QuickPickExposureMetric{}
+	for i := 0; i < 20; i++ {
+		id := string(rune('a' + i))
+		songs = append(songs, testSongCandidate(id, float64(100-i), float64(100-i), i+1, false, id, id))
+		if i >= 1 && i <= 12 {
+			exposures[trackExposureKey(id)] = model.QuickPickExposureMetric{ItemKey: trackExposureKey(id), ShowCount: 1, LastShownAt: now.Add(-12 * time.Hour)}
+		}
+	}
+	composed := composeQuickPick(songs, nil, compositionOptions{Limit: 12, Now: now, Exposures: exposures})
+	for _, item := range composed.Items {
+		if item.Section != model.QuickPickSectionStartRadio || item.Song == nil {
+			continue
+		}
+		if _, exposed := exposures[trackExposureKey(item.Song.ID)]; exposed {
+			t.Fatalf("radio seed %q was selected within 24h cooldown", item.Song.ID)
+		}
+	}
+}
+
+func TestComposeQuickPickBackfillsSparseSections(t *testing.T) {
+	songs := []songCandidate{
+		testSongCandidate("a", 10, 10, 1, false, "a", "a"),
+		testSongCandidate("b", 9, 9, 2, false, "b", "b"),
+	}
+	playlists := make([]playlistCandidate, 0, 12)
+	for i := 0; i < 12; i++ {
+		id := "p" + string(rune('a'+i))
+		playlists = append(playlists, playlistCandidate{playlist: model.Playlist{ID: id}, normalizedScore: float64(12 - i), adjustedScore: float64(12 - i), hasAdjustedScore: true})
+	}
+	composed := composeQuickPick(songs, playlists, compositionOptions{Limit: 12})
+	if len(composed.Items) != 12 {
+		t.Fatalf("sparse composition length = %d, want 12", len(composed.Items))
+	}
+	playlistCount := 0
+	for _, item := range composed.Items {
+		if item.Kind == model.QuickPickPlaylist {
+			playlistCount++
+		}
+	}
+	if playlistCount != 10 {
+		t.Fatalf("sparse composition playlist count = %d, want 10 backfilled playlists", playlistCount)
+	}
+}

@@ -2,7 +2,6 @@ package quickpick
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -37,6 +36,9 @@ func (f fakeMetrics) RecordExposures(_ string, itemKeys []string, _ time.Time) e
 			f.recorded[key]++
 		}
 	}
+	return f.recordErr
+}
+func (f fakeMetrics) RecordImpressions(_ string, _ string, _ []string, _ time.Time) error {
 	return f.recordErr
 }
 
@@ -78,6 +80,10 @@ func (m *trackingMetrics) RecordExposures(_ string, itemKeys []string, shownAt t
 		m.exposures[key] = metric
 	}
 	return nil
+}
+
+func (m *trackingMetrics) RecordImpressions(_ string, _ string, itemKeys []string, shownAt time.Time) error {
+	return m.RecordExposures("", itemKeys, shownAt)
 }
 
 type fakeSimilarityProvider struct {
@@ -140,21 +146,19 @@ func TestQuickPickSurfacesLibraryMatchedRecommendations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rec *model.QuickPickItem
-	for i := range response.Items {
-		if response.Items[i].Kind == model.QuickPickRecommendationKind {
-			rec = &response.Items[i]
-			break
+	for _, item := range response.Items {
+		if item.Kind == model.QuickPickRecommendationKind {
+			t.Fatalf("GET should not call similarity providers: %#v", item)
 		}
 	}
-	if rec == nil {
-		t.Fatalf("expected a recommendation tile, got %#v", response.Items)
+	foundMatched := false
+	for _, item := range response.Items {
+		if item.Song != nil && item.Song.ID == "matched" {
+			foundMatched = true
+		}
 	}
-	if rec.Song == nil || rec.Song.ID != "matched" {
-		t.Fatalf("recommendation should carry its matched library song, got %#v", rec)
-	}
-	if rec.Recommendation == nil || rec.Recommendation.Title != "Similar One" {
-		t.Fatalf("recommendation metadata missing: %#v", rec)
+	if !foundMatched {
+		t.Fatalf("local radio pool should include matched library song: %#v", response.Items)
 	}
 }
 
@@ -184,17 +188,10 @@ func TestQuickPickOrdersMatchedRecommendationsBySimilarity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var recommendationIDs []string
 	for _, item := range response.Items {
 		if item.Kind == model.QuickPickRecommendationKind {
-			recommendationIDs = append(recommendationIDs, item.Song.ID)
+			t.Fatalf("GET should not call similarity providers: %#v", item)
 		}
-	}
-	if len(recommendationIDs) != 2 {
-		t.Fatalf("got %d recommendation tiles, want 2: %#v", len(recommendationIDs), response.Items)
-	}
-	if recommendationIDs[0] != "matched-high" || recommendationIDs[1] != "matched-low" {
-		t.Fatalf("recommendation order = %v, want [matched-high matched-low]", recommendationIDs)
 	}
 }
 
@@ -224,14 +221,10 @@ func TestQuickPickKeepsDistinctMBIDRecommendationsWithSharedMetadata(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]string{}
 	for _, item := range response.Items {
 		if item.Kind == model.QuickPickRecommendationKind {
-			got[item.Recommendation.RecordingMBID] = item.Song.ID
+			t.Fatalf("GET should not call similarity providers: %#v", item)
 		}
-	}
-	if len(got) != 2 || got["recording-a"] != "library-a" || got["recording-b"] != "library-b" {
-		t.Fatalf("distinct recommendations = %#v, want both recording-a/library-a and recording-b/library-b", got)
 	}
 }
 
@@ -269,17 +262,16 @@ func TestQuickPickRecordsExposureFailureWithoutFailing(t *testing.T) {
 	media.SetData(files)
 	recorded := map[string]int{}
 	metrics := fakeMetrics{
-		recent:    map[string]int64{"anchor": 20},
-		recorded:  recorded,
-		recordErr: errors.New("telemetry unavailable"),
+		recent:   map[string]int64{"anchor": 20},
+		recorded: recorded,
 	}
 	ds := &tests.MockDataStore{MockedMediaFile: media, MockedPlaylist: tests.CreateMockPlaylistRepo()}
 	svc := New(ds, metrics, nil, nil)
 	if _, err := svc.Get(context.Background(), "user"); err != nil {
 		t.Fatalf("Get() returned exposure write error: %v", err)
 	}
-	if recorded["track:anchor"] != 1 {
-		t.Fatalf("recorded exposures = %#v, want anchor track exposure", recorded)
+	if len(recorded) != 0 {
+		t.Fatalf("GET recorded exposures = %#v, want none", recorded)
 	}
 }
 
@@ -353,20 +345,19 @@ func TestQuickPickAppliesTasteAffinityToSmartPicks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstRecommendation := model.QuickPickItem{}
-	foundRecommendation := false
+	var matched *model.QuickPickItem
 	for _, item := range response.Items {
-		if item.Kind == model.QuickPickRecommendationKind {
-			firstRecommendation = item
-			foundRecommendation = true
+		if item.Song != nil && item.Song.ID == "matched" {
+			copy := item
+			matched = &copy
 			break
 		}
 	}
-	if !foundRecommendation {
-		t.Fatalf("expected Smart Pick items, got %#v", response.Items)
+	if matched == nil {
+		t.Fatalf("taste affinity did not surface matched local song: %#v", response.Items)
 	}
-	if firstRecommendation.Song == nil || firstRecommendation.Song.ID != "matched" {
-		t.Fatalf("taste affinity did not prioritize matched recommendation: %#v", response.Items)
+	if matched.Section != model.QuickPickSectionStartRadio {
+		t.Fatalf("matched local song should be a radio seed: %#v", matched)
 	}
 }
 
@@ -392,15 +383,8 @@ func TestQuickPickSeedsSmartPicksFromComposedSongs(t *testing.T) {
 	if _, err := svc.Get(context.Background(), "user"); err != nil {
 		t.Fatal(err)
 	}
-	foundComposedSeed := false
-	for _, id := range seedIDs {
-		if id == "deep" || id == "liked" {
-			foundComposedSeed = true
-			break
-		}
-	}
-	if !foundComposedSeed {
-		t.Fatalf("provider seeds = %v, want a composed liked/deep seed", seedIDs)
+	if len(seedIDs) != 0 {
+		t.Fatalf("provider seeds = %v, want no GET provider calls", seedIDs)
 	}
 }
 
@@ -416,6 +400,13 @@ func TestQuickPickRotatesNonAnchorSongsAfterExposure(t *testing.T) {
 	svc := New(ds, metrics, nil, nil)
 	first, err := svc.Get(context.Background(), "user")
 	if err != nil {
+		t.Fatal(err)
+	}
+	visibleKeys := make([]string, 0, len(first.Items))
+	for _, item := range first.Items {
+		visibleKeys = append(visibleKeys, item.ItemKey)
+	}
+	if err := svc.RecordImpressions(context.Background(), "user", first.ViewID, visibleKeys); err != nil {
 		t.Fatal(err)
 	}
 	second, err := svc.Get(context.Background(), "user")
@@ -439,5 +430,40 @@ func TestQuickPickRotatesNonAnchorSongsAfterExposure(t *testing.T) {
 	}
 	if !changed {
 		t.Fatalf("non-anchor songs did not rotate: first=%v second=%v", firstIDs, secondIDs)
+	}
+}
+
+func TestQuickPickDoesNotCallSimilarityProvidersOrRecordGETExposures(t *testing.T) {
+	media := tests.CreateMockMediaFileRepo()
+	files := model.MediaFiles{}
+	for i := 0; i < 20; i++ {
+		files = append(files, model.MediaFile{ID: string(rune('a' + i)), Title: "Song", Artist: string(rune('a' + i)), Annotations: model.Annotations{PlayCount: int64(100 - i)}})
+	}
+	media.SetData(files)
+	seedIDs := []string{}
+	recorded := map[string]int{}
+	metrics := fakeMetrics{recent: map[string]int64{}, recorded: recorded}
+	ds := &tests.MockDataStore{MockedMediaFile: media, MockedPlaylist: tests.CreateMockPlaylistRepo()}
+	svc := &service{ds: ds, metrics: metrics, agents: fakeSimilarityProvider{seedIDs: &seedIDs}, matcher: matcher.New(ds)}
+	response, err := svc.Get(context.Background(), "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 12 {
+		t.Fatalf("got %d items, want 12", len(response.Items))
+	}
+	if len(seedIDs) != 0 {
+		t.Fatalf("similarity provider seeds = %v, want no provider calls", seedIDs)
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("GET recorded exposures = %#v, want none", recorded)
+	}
+	if response.ViewID == "" {
+		t.Fatal("response viewId is empty")
+	}
+	for _, item := range response.Items {
+		if item.ViewID != response.ViewID || item.ItemKey == "" || item.Section == "" {
+			t.Fatalf("item telemetry metadata = %#v, want viewId/itemKey/section", item)
+		}
 	}
 }
