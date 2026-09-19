@@ -1,10 +1,11 @@
 import React from 'react'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { useMediaQuery } from '@material-ui/core'
-import { useGetOne, useTranslate } from 'react-admin'
-import { useDispatch } from 'react-redux'
+import { useGetOne, useNotify, useTranslate } from 'react-admin'
+import { useDispatch, useSelector } from 'react-redux'
 import { useToggleLove } from '../common'
 import { openAddToPlaylist, openSaveQueueDialog } from '../actions'
+import { endPersonalRadio, sendRadioFeedback } from '../quickpick/provider'
 import PlayerToolbar from './PlayerToolbar'
 
 // Mock dependencies
@@ -18,11 +19,13 @@ vi.mock('@material-ui/core', async () => {
 
 vi.mock('react-admin', () => ({
   useGetOne: vi.fn(),
+  useNotify: vi.fn(),
   useTranslate: vi.fn(),
 }))
 
 vi.mock('react-redux', () => ({
   useDispatch: vi.fn(),
+  useSelector: vi.fn(),
 }))
 
 vi.mock('../common', () => ({
@@ -37,6 +40,15 @@ vi.mock('../common', () => ({
 vi.mock('../actions', () => ({
   openSaveQueueDialog: vi.fn(),
   openAddToPlaylist: vi.fn(),
+  endRadioSession: vi.fn(),
+  removeRadioItem: vi.fn(),
+  setRadioAutoplay: vi.fn(),
+  setRadioMode: vi.fn(),
+}))
+
+vi.mock('../quickpick/provider', () => ({
+  endPersonalRadio: vi.fn(() => Promise.resolve()),
+  sendRadioFeedback: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('react-hotkeys', () => ({
@@ -53,6 +65,8 @@ describe('<PlayerToolbar />', () => {
     useGetOne.mockReturnValue({ data: mockSongData, loading: false })
     useToggleLove.mockReturnValue([mockToggleLove, false])
     useDispatch.mockReturnValue(mockDispatch)
+    useSelector.mockReturnValue(null)
+    useNotify.mockReturnValue(vi.fn())
     useTranslate.mockReturnValue((key) => key)
     openSaveQueueDialog.mockReturnValue({ type: 'OPEN_SAVE_QUEUE_DIALOG' })
     openAddToPlaylist.mockReturnValue({ type: 'OPEN_ADD_TO_PLAYLIST' })
@@ -89,7 +103,9 @@ describe('<PlayerToolbar />', () => {
       expect(openAddToPlaylist).toHaveBeenCalledWith({
         selectedIds: ['song-1'],
       })
-      expect(mockDispatch).toHaveBeenCalledWith({ type: 'OPEN_ADD_TO_PLAYLIST' })
+      expect(mockDispatch).toHaveBeenCalledWith({
+        type: 'OPEN_ADD_TO_PLAYLIST',
+      })
     })
 
     it('disables add to playlist button when isRadio is true', () => {
@@ -168,6 +184,51 @@ describe('<PlayerToolbar />', () => {
   })
 
   describe('Common behavior', () => {
+    it('ends the radio session and removes future playback when autoplay is disabled', () => {
+      useMediaQuery.mockReturnValue(true)
+      useSelector
+        .mockReturnValueOnce({
+          id: 'session-1',
+          mode: 'balanced',
+          autoplay: true,
+        })
+        .mockReturnValueOnce({
+          radioSessionId: 'session-1',
+          radioItemId: 'item-1',
+        })
+      render(<PlayerToolbar id="song-1" isRadio />)
+
+      fireEvent.click(screen.getByTestId('radio-autoplay'))
+
+      expect(endPersonalRadio).toHaveBeenCalledWith('session-1', {
+        disableAutoplay: true,
+      })
+      expect(mockDispatch).toHaveBeenCalled()
+    })
+
+    it('sends not interested feedback for the active radio item', () => {
+      useMediaQuery.mockReturnValue(true)
+      useSelector
+        .mockReturnValueOnce({
+          id: 'session-1',
+          mode: 'balanced',
+          autoplay: true,
+        })
+        .mockReturnValueOnce({
+          radioSessionId: 'session-1',
+          radioItemId: 'item-1',
+        })
+      render(<PlayerToolbar id="song-1" isRadio />)
+
+      fireEvent.click(screen.getByTestId('radio-not-interested'))
+
+      expect(sendRadioFeedback).toHaveBeenCalledWith('session-1', {
+        itemId: 'item-1',
+        event: 'dislike',
+        trackKey: undefined,
+      })
+    })
+
     it('renders global hotkeys in both layouts', () => {
       // Test desktop layout
       useMediaQuery.mockReturnValue(true)

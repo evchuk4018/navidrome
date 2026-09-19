@@ -10,9 +10,139 @@ import {
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
   PLAYER_RESOLVE_QUEUE_URLS,
+  PLAYER_SET_RADIO_MODE,
+  PLAYER_END_RADIO_SESSION,
+  syncRadioTracks,
+  removeRadioItem,
 } from '../actions'
 
 describe('playerReducer', () => {
+  it('reconciles only the active radio revision and removes obsolete radio rows', () => {
+    const current = {
+      uuid: 'current-radio',
+      trackId: 'current-track',
+      isRadio: true,
+      radioSessionId: 'session-1',
+      radioItemId: 'current-item',
+    }
+    const state = {
+      queue: [
+        { trackId: 'ordinary', uuid: 'ordinary' },
+        current,
+        {
+          trackId: 'obsolete',
+          uuid: 'obsolete',
+          isRadio: true,
+          radioSessionId: 'session-1',
+          radioItemId: 'obsolete-item',
+        },
+      ],
+      current,
+      radioSession: { id: 'session-1', revision: 1 },
+      clear: false,
+    }
+    const fresh = playerReducer(
+      state,
+      syncRadioTracks(
+        {
+          'radio-new-item': {
+            id: 'new-track',
+            title: 'New',
+            radioSessionId: 'session-1',
+            radioItemId: 'new-item',
+            isRadio: true,
+          },
+        },
+        ['radio-new-item'],
+        { sessionId: 'session-1', revision: 2, authoritative: true },
+      ),
+    )
+
+    expect(fresh.queue.map((item) => item.radioItemId)).toEqual([
+      undefined,
+      'current-item',
+      'new-item',
+    ])
+    expect(fresh.radioSession.revision).toBe(2)
+
+    const stale = playerReducer(
+      fresh,
+      syncRadioTracks(
+        {
+          'radio-stale': {
+            id: 'stale-track',
+            radioSessionId: 'session-1',
+            radioItemId: 'stale-item',
+            isRadio: true,
+          },
+        },
+        ['radio-stale'],
+        { sessionId: 'session-1', revision: 1, authoritative: true },
+      ),
+    )
+    expect(stale).toBe(fresh)
+  })
+
+  it('updates tuner mode and ends autoplay without removing the current track', () => {
+    const current = {
+      uuid: 'current-radio',
+      trackId: 'current-track',
+      isRadio: true,
+      radioSessionId: 'session-1',
+      radioItemId: 'current-item',
+    }
+    const state = {
+      queue: [
+        { trackId: 'ordinary', uuid: 'ordinary' },
+        current,
+        {
+          trackId: 'future',
+          uuid: 'future',
+          isRadio: true,
+          radioSessionId: 'session-1',
+          radioItemId: 'future-item',
+        },
+      ],
+      current,
+      radioSession: { id: 'session-1', mode: 'balanced', autoplay: true },
+    }
+    const tuned = playerReducer(state, {
+      type: PLAYER_SET_RADIO_MODE,
+      data: 'discover',
+    })
+    expect(tuned.radioSession.mode).toBe('discover')
+
+    const ended = playerReducer(tuned, {
+      type: PLAYER_END_RADIO_SESSION,
+    })
+    expect(ended.radioSession).toBeNull()
+    expect(ended.queue).toEqual([state.queue[0], current])
+  })
+
+  it('force-removes a failed current radio row when playback advances', () => {
+    const current = {
+      uuid: 'failed-uuid',
+      radioSessionId: 'session-1',
+      radioItemId: 'failed-item',
+      isRadio: true,
+    }
+    const result = playerReducer(
+      {
+        queue: [
+          current,
+          { uuid: 'next', radioItemId: 'next-item', isRadio: true },
+        ],
+        current,
+        radioSession: { id: 'session-1' },
+      },
+      removeRadioItem('failed-item', true),
+    )
+
+    expect(result.queue).toEqual([
+      { uuid: 'next', radioItemId: 'next-item', isRadio: true },
+    ])
+  })
+
   it('updates radio planning status without changing the queue', () => {
     const state = {
       queue: [{ trackId: 'seed' }],
@@ -136,6 +266,33 @@ describe('playerReducer', () => {
     expect(result).toBe(state)
   })
 
+  it('gives ready local radio rows a playable stream when the API omits streamUrl', () => {
+    const result = playerReducer(
+      {
+        queue: [],
+        current: {},
+        clear: false,
+        radioSession: { id: 'session-1' },
+      },
+      syncRadioTracks(
+        {
+          'radio-item-1': {
+            id: 'track-1',
+            title: 'Local track',
+            artist: 'Artist',
+            isRadio: true,
+            radioSessionId: 'session-1',
+            radioItemId: 'item-1',
+          },
+        },
+        ['radio-item-1'],
+        { sessionId: 'session-1', revision: 1 },
+      ),
+    )
+
+    expect(result.queue[0].musicSrc).toBeTruthy()
+  })
+
   it('associates a Quick Pick seed with the pending play index', () => {
     const state = {
       queue: [
@@ -192,6 +349,53 @@ describe('playerReducer', () => {
 
     expect(synced).toBe(withSession)
     expect(synced.queue).toHaveLength(1)
+  })
+
+  it('accepts ready successors from the create response at the session revision', () => {
+    const playing = playerReducer(
+      {
+        queue: [{ trackId: 'seed', uuid: 'seed-uuid' }],
+        current: {},
+        playIndex: 0,
+        savedPlayIndex: 0,
+        radioSession: null,
+      },
+      {
+        type: PLAYER_PLAY_TRACKS,
+        id: 'seed',
+        data: { seed: { id: 'seed', title: 'Seed' } },
+      },
+    )
+    const withSession = playerReducer(playing, {
+      type: PLAYER_SET_RADIO_SESSION,
+      data: { id: 'session-1', seedItemId: 'seed-item', revision: 1 },
+    })
+    const result = playerReducer(
+      withSession,
+      syncRadioTracks(
+        {
+          'radio-seed-item': {
+            id: 'seed',
+            isRadio: true,
+            radioSessionId: 'session-1',
+            radioItemId: 'seed-item',
+          },
+          'radio-next-item': {
+            id: 'next',
+            isRadio: true,
+            radioSessionId: 'session-1',
+            radioItemId: 'next-item',
+          },
+        },
+        ['radio-seed-item', 'radio-next-item'],
+        { sessionId: 'session-1', revision: 1, authoritative: true },
+      ),
+    )
+
+    expect(result.queue.map((item) => item.radioItemId)).toEqual([
+      'seed-item',
+      'next-item',
+    ])
   })
 
   it('shows the pending download with its recommendation metadata', () => {

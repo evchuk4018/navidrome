@@ -22,6 +22,7 @@ import {
   addTracks,
   currentPlaying,
   refreshQueue,
+  removeRadioItem,
   resolveQueueUrls,
   setPlayMode,
   setRadioPlanning,
@@ -47,6 +48,11 @@ import {
   sendRadioFeedback,
 } from '../quickpick/provider'
 import { isRadioPlanning } from '../quickpick/radioPlanning'
+import {
+  nextPlayableRadioIndex,
+  radioReadyAhead,
+  shouldRetryRadioStream,
+} from '../quickpick/radioPlayback'
 
 const MINI_MODE = 'mini'
 const FULL_MODE = 'full'
@@ -82,6 +88,8 @@ const Player = () => {
   const currentTrackIdRef = useRef(null)
   const stoppedRef = useRef(false)
   const radioPlaybackRef = useRef(null)
+  const radioErrorAttemptsRef = useRef(new Set())
+  const radioWaitingRef = useRef(false)
   const [audioInstance, setAudioInstance] = useState(null)
   const [displayMode, setDisplayMode] = useState(MINI_MODE)
   const [miniProgress, setMiniProgress] = useState({
@@ -106,23 +114,60 @@ const Player = () => {
   const appendRadioItems = useCallback(
     (response) => {
       const songs = radioSongs(response)
-      if (radioQueueChanged(playerStateRef.current.queue, songs.data)) {
-        dispatch(syncRadioTracks(songs.data, songs.ids))
+      const sessionId = songs.sessionId || response.session?.id
+      if (
+        sessionId &&
+        playerStateRef.current.radioSession?.id &&
+        playerStateRef.current.radioSession.id !== sessionId
+      ) {
+        return songs
       }
+      if (
+        radioQueueChanged(playerStateRef.current.queue, songs.data) ||
+        songs.authoritative ||
+        Number.isFinite(Number(songs.revision))
+      ) {
+        dispatch(
+          syncRadioTracks(songs.data, songs.ids, {
+            sessionId,
+            revision: songs.revision,
+            authoritative: songs.authoritative,
+          }),
+        )
+      }
+      return songs
     },
     [dispatch],
   )
 
   const updateRadioResponse = useCallback(
     (response) => {
-      appendRadioItems(response)
+      const songs = appendRadioItems(response)
       dispatch(
         setRadioPlanning(
           response.planningStatus || (response.pending ? 'selecting' : 'ready'),
         ),
       )
+      if (radioWaitingRef.current && songs.ids.length && audioInstance) {
+        radioWaitingRef.current = false
+        setTimeout(() => {
+          const state = playerStateRef.current
+          const currentIndex = Math.max(
+            0,
+            state.savedPlayIndex ?? state.playIndex ?? 0,
+          )
+          const nextIndex = state.queue.findIndex(
+            (item, index) =>
+              index > currentIndex &&
+              item.radioSessionId === state.radioSession?.id &&
+              item.radioItemId &&
+              !item.radioPending,
+          )
+          if (nextIndex >= 0) audioInstance.playByIndex(nextIndex)
+        }, 0)
+      }
     },
-    [appendRadioItems, dispatch],
+    [appendRadioItems, audioInstance, dispatch],
   )
 
   const reportRadioRefillError = useCallback((sessionId, error) => {
@@ -164,6 +209,7 @@ const Player = () => {
         ? { currentItemId: current.radioItemId }
         : {}),
       queuedItemIds,
+      mode: state.radioSession?.mode || 'balanced',
     }
   }, [])
 
@@ -173,6 +219,7 @@ const Player = () => {
   const requestRadioRefill = useCallback(
     (sessionId) => {
       if (!sessionId) return
+      if (playerStateRef.current.radioSession?.autoplay === false) return
       const request = radioRefillRef.current
       if (request.sessionId !== sessionId) {
         request.sessionId = sessionId
@@ -234,7 +281,8 @@ const Player = () => {
         .slice(index + 1)
         .find((item) => !item.radioPending)
       if (nextPlayable) {
-        audioInstance && audioInstance.playByIndex(audioLists.indexOf(nextPlayable))
+        audioInstance &&
+          audioInstance.playByIndex(audioLists.indexOf(nextPlayable))
       }
     },
     [audioInstance],
@@ -251,6 +299,29 @@ const Player = () => {
       clearInterval(timer)
     }
   }, [radioSessionId, radioPlanningStatus, requestRadioRefill])
+
+  // Keep a small ready-ahead buffer. Pending downloads are not queue rows, so
+  // they can never accidentally satisfy this watermark.
+  useEffect(() => {
+    const session = playerState.radioSession
+    if (!session?.id || session.autoplay === false) return
+    const currentIndex = Math.max(
+      0,
+      playerState.savedPlayIndex ?? playerState.playIndex ?? 0,
+    )
+    const readyAhead = radioReadyAhead(
+      playerState.queue,
+      currentIndex,
+      session.id,
+    )
+    if (readyAhead <= 3) requestRadioRefill(session.id)
+  }, [
+    playerState.queue,
+    playerState.savedPlayIndex,
+    playerState.playIndex,
+    playerState.radioSession,
+    requestRadioRefill,
+  ])
 
   useEffect(() => {
     if (playerState.queue.length === 0) {
@@ -621,6 +692,7 @@ const Player = () => {
           sessionId: info.radioSessionId,
           itemId: info.radioItemId,
           itemType: info.radioItemType,
+          trackKey: info.song?.radioTrackKey || info.radioTrackKey,
           listenedMs: 0,
           lastPositionMS: Number(info.currentTime || 0) * 1000,
           durationMs: Number(info.duration || info.song?.duration || 0) * 1000,
@@ -662,11 +734,7 @@ const Player = () => {
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
     },
-    [
-      currentTrackId,
-      reportRadioFeedback,
-      skipPendingRadioItem,
-    ],
+    [currentTrackId, reportRadioFeedback, skipPendingRadioItem],
   )
 
   const onAudioPause = useCallback(
@@ -703,6 +771,27 @@ const Player = () => {
         )
         reportRadioFeedback(playback, 'completed')
       }
+      if (info.radioSessionId && info.radioItemId) {
+        const currentIndex = audioLists.findIndex(
+          (item) =>
+            item.__PLAYER_KEY__ === currentPlayId ||
+            item.radioItemId === info.radioItemId,
+        )
+        const hasReadyAfter =
+          nextPlayableRadioIndex(
+            audioLists,
+            currentIndex,
+            info.radioSessionId,
+          ) >= 0
+        if (
+          !hasReadyAfter &&
+          playerStateRef.current.radioSession?.id === info.radioSessionId &&
+          playerStateRef.current.radioSession?.autoplay !== false
+        ) {
+          radioWaitingRef.current = true
+          requestRadioRefill(info.radioSessionId)
+        }
+      }
       dispatch(currentPlaying(info))
       setMiniProgress({
         currentTime: Number(info.currentTime) || 0,
@@ -713,7 +802,13 @@ const Player = () => {
         // eslint-disable-next-line no-console
         .catch((e) => console.log('Keepalive error:', e))
     },
-    [dispatch, dataProvider, currentTrackId, reportRadioFeedback],
+    [
+      dispatch,
+      dataProvider,
+      currentTrackId,
+      reportRadioFeedback,
+      requestRadioRefill,
+    ],
   )
 
   const onCoverClick = useCallback((mode, audioLists, audioInfo) => {
@@ -724,6 +819,42 @@ const Player = () => {
 
   const onAudioError = useCallback(
     (error, currentPlayId, audioLists, audioInfo) => {
+      if (audioInfo?.radioSessionId && audioInfo?.radioItemId) {
+        const radioKey = `${audioInfo.radioSessionId}:${audioInfo.radioItemId}`
+        const index = audioLists.findIndex(
+          (item) =>
+            item.__PLAYER_KEY__ === currentPlayId ||
+            item.radioItemId === audioInfo.radioItemId,
+        )
+        if (shouldRetryRadioStream(radioErrorAttemptsRef.current, radioKey)) {
+          if (index >= 0) {
+            setTimeout(() => audioInstance?.playByIndex(index), 0)
+          }
+          return
+        }
+
+        sendRadioFeedback(audioInfo.radioSessionId, {
+          itemId: audioInfo.radioItemId,
+          event: 'unplayable',
+          trackKey: audioInfo.song?.radioTrackKey || audioInfo.radioTrackKey,
+        }).catch(() => {})
+        const nextOffset = nextPlayableRadioIndex(
+          audioLists,
+          Math.max(index, -1),
+          audioInfo.radioSessionId,
+        )
+        dispatch(removeRadioItem(audioInfo.radioItemId, true))
+        const nextIndex = nextOffset >= 0 ? nextOffset : -1
+        if (nextIndex >= 0 && audioInstance) {
+          // The failed row is removed before advancing, so every row after it
+          // shifts left by one position in the player queue.
+          audioInstance.playByIndex(index >= 0 ? nextIndex - 1 : nextIndex)
+        } else if (playerStateRef.current.radioSession?.autoplay !== false) {
+          radioWaitingRef.current = true
+          requestRadioRefill(audioInfo.radioSessionId)
+        }
+        return
+      }
       // Invalidate all cached decisions — token may be stale
       decisionService.invalidateAll()
 
@@ -741,7 +872,7 @@ const Player = () => {
         }
       }
     },
-    [playerState.queue],
+    [audioInstance, dispatch, playerState.queue, requestRadioRefill],
   )
 
   const onBeforeDestroy = useCallback(() => {
@@ -791,7 +922,11 @@ const Player = () => {
   useEffect(() => {
     if (!audioInstance || isRadio) return
 
-    return configureMediaSessionTrackNavigation(audioInstance, undefined, context)
+    return configureMediaSessionTrackNavigation(
+      audioInstance,
+      undefined,
+      context,
+    )
   }, [audioInstance, isRadio, playerState.queue, context])
 
   // Report every seek (including programmatic ones the library does not surface

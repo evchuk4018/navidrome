@@ -13,6 +13,10 @@ export const PLAYER_SET_RADIO_SESSION = 'PLAYER_SET_RADIO_SESSION'
 export const PLAYER_SET_RADIO_PLANNING = 'PLAYER_SET_RADIO_PLANNING'
 export const PLAYER_SYNC_RADIO_TRACKS = 'PLAYER_SYNC_RADIO_TRACKS'
 export const PLAYER_RESOLVE_QUEUE_URLS = 'PLAYER_RESOLVE_QUEUE_URLS'
+export const PLAYER_SET_RADIO_MODE = 'PLAYER_SET_RADIO_MODE'
+export const PLAYER_SET_RADIO_AUTOPLAY = 'PLAYER_SET_RADIO_AUTOPLAY'
+export const PLAYER_END_RADIO_SESSION = 'PLAYER_END_RADIO_SESSION'
+export const PLAYER_REMOVE_RADIO_ITEM = 'PLAYER_REMOVE_RADIO_ITEM'
 
 export const setTrack = (data) => ({
   type: PLAYER_SET_TRACK,
@@ -129,13 +133,34 @@ export const setRadioPlanning = (planningStatus) => ({
   data: planningStatus,
 })
 
-export const syncRadioTracks = (data, ids) => {
+export const syncRadioTracks = (data, ids, meta = {}) => {
   const songs = filterSongs(data, ids)
   return {
     type: PLAYER_SYNC_RADIO_TRACKS,
     data: songs,
+    ids,
+    meta,
   }
 }
+
+export const setRadioMode = (mode) => ({
+  type: PLAYER_SET_RADIO_MODE,
+  data: mode,
+})
+
+export const setRadioAutoplay = (autoplay) => ({
+  type: PLAYER_SET_RADIO_AUTOPLAY,
+  data: autoplay,
+})
+
+export const endRadioSession = () => ({
+  type: PLAYER_END_RADIO_SESSION,
+})
+
+export const removeRadioItem = (itemId, force = false) => ({
+  type: PLAYER_REMOVE_RADIO_ITEM,
+  data: { itemId, force },
+})
 
 export const resolveQueueUrls = (resolvedUrls) => ({
   type: PLAYER_RESOLVE_QUEUE_URLS,

@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react'
-import { useDispatch } from 'react-redux'
-import { useGetOne, useTranslate } from 'react-admin'
+import { useDispatch, useSelector } from 'react-redux'
+import { useGetOne, useNotify, useTranslate } from 'react-admin'
 import { GlobalHotKeys } from 'react-hotkeys'
 import IconButton from '@material-ui/core/IconButton'
 import { useMediaQuery } from '@material-ui/core'
@@ -8,8 +8,15 @@ import { RiSaveLine } from 'react-icons/ri'
 import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
 import { LoveButton, useToggleLove } from '../common'
 import { openAddToPlaylist, openSaveQueueDialog } from '../actions'
+import {
+  endRadioSession,
+  removeRadioItem,
+  setRadioAutoplay,
+  setRadioMode,
+} from '../actions'
 import { keyMap } from '../hotkeys'
 import { makeStyles } from '@material-ui/core/styles'
+import { endPersonalRadio, sendRadioFeedback } from '../quickpick/provider'
 
 const useStyles = makeStyles((theme) => ({
   toolbar: {
@@ -54,12 +61,37 @@ const useStyles = makeStyles((theme) => ({
     display: 'flex',
     alignItems: 'center',
   },
+  radioControls: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(0.5),
+    color: 'inherit',
+    fontSize: '0.75rem',
+  },
+  radioSelect: {
+    maxWidth: 120,
+    color: 'inherit',
+    background: 'transparent',
+    border: `1px solid ${theme.palette.divider}`,
+    borderRadius: theme.shape.borderRadius,
+  },
+  radioButton: {
+    padding: theme.spacing(0.5, 0.75),
+    color: 'inherit',
+    background: 'transparent',
+    border: `1px solid ${theme.palette.divider}`,
+    borderRadius: theme.shape.borderRadius,
+    cursor: 'pointer',
+  },
 }))
 
 const PlayerToolbar = ({ id, isRadio }) => {
   const dispatch = useDispatch()
   const translate = useTranslate()
-  const { data, loading } = useGetOne('song', id, { enabled: !!id && !isRadio })
+  const notify = useNotify()
+  const radioSession = useSelector((state) => state.player?.radioSession)
+  const current = useSelector((state) => state.player?.current)
+  const { data, loading } = useGetOne('song', id, { enabled: !!id })
   const [toggleLove, toggling] = useToggleLove('song', data)
   const isDesktop = useMediaQuery('(min-width:810px)')
   const classes = useStyles()
@@ -87,6 +119,55 @@ const PlayerToolbar = ({ id, isRadio }) => {
 
   const buttonClass = isDesktop ? classes.button : classes.mobileButton
   const listItemClass = isDesktop ? classes.toolbar : classes.mobileListItem
+  const activeRadio =
+    isRadio &&
+    radioSession?.id &&
+    (!current?.radioSessionId || current.radioSessionId === radioSession.id)
+
+  const handleModeChange = useCallback(
+    (event) => dispatch(setRadioMode(event.target.value)),
+    [dispatch],
+  )
+
+  const handleAutoplayChange = useCallback(
+    (event) => {
+      const autoplay = event.target.checked
+      dispatch(setRadioAutoplay(autoplay))
+      if (!autoplay && radioSession?.id) {
+        dispatch(endRadioSession())
+        endPersonalRadio(radioSession.id, { disableAutoplay: true }).catch(
+          () => {},
+        )
+      }
+    },
+    [dispatch, radioSession?.id],
+  )
+
+  const handleNotInterested = useCallback(() => {
+    if (!radioSession?.id || !current?.radioItemId) return
+    sendRadioFeedback(radioSession.id, {
+      itemId: current.radioItemId,
+      event: 'dislike',
+      trackKey: current.song?.radioTrackKey || current.radioTrackKey,
+    }).catch(() => notify('Unable to update radio feedback', 'warning'))
+    dispatch(removeRadioItem(current.radioItemId))
+  }, [current, dispatch, notify, radioSession?.id])
+
+  const handleLove = useCallback(
+    (event) => {
+      event.preventDefault()
+      toggleLove()
+      event.stopPropagation()
+      if (activeRadio && radioSession?.id && current?.radioItemId) {
+        sendRadioFeedback(radioSession.id, {
+          itemId: current.radioItemId,
+          event: 'keep',
+          trackKey: current.song?.radioTrackKey || current.radioTrackKey,
+        }).catch(() => {})
+      }
+    },
+    [activeRadio, current, radioSession?.id, toggleLove],
+  )
 
   const saveQueueButton = (
     <IconButton
@@ -110,7 +191,9 @@ const PlayerToolbar = ({ id, isRadio }) => {
       title={translate('resources.song.actions.addToPlaylist')}
       aria-label={translate('resources.song.actions.addToPlaylist')}
     >
-      <PlaylistAddIcon className={!isDesktop ? classes.mobileIcon : undefined} />
+      <PlaylistAddIcon
+        className={!isDesktop ? classes.mobileIcon : undefined}
+      />
     </IconButton>
   )
 
@@ -119,10 +202,47 @@ const PlayerToolbar = ({ id, isRadio }) => {
       record={data}
       resource={'song'}
       size={isDesktop ? undefined : 'inherit'}
-      disabled={loading || toggling || !id || isRadio}
+      disabled={loading || toggling || !id}
       className={buttonClass}
+      onClick={handleLove}
     />
   )
+
+  const radioControls = activeRadio ? (
+    <div className={classes.radioControls} data-testid="radio-controls">
+      <label>
+        <span className="sr-only">Radio mode</span>
+        <select
+          className={classes.radioSelect}
+          aria-label="Radio mode"
+          data-testid="radio-tuner"
+          value={radioSession.mode || 'balanced'}
+          onChange={handleModeChange}
+        >
+          <option value="familiar">Familiar</option>
+          <option value="balanced">Balanced</option>
+          <option value="discover">Discover</option>
+        </select>
+      </label>
+      <label className={classes.radioButton}>
+        <input
+          type="checkbox"
+          checked={radioSession.autoplay !== false}
+          onChange={handleAutoplayChange}
+          data-testid="radio-autoplay"
+        />{' '}
+        Autoplay
+      </label>
+      <button
+        type="button"
+        className={classes.radioButton}
+        data-testid="radio-not-interested"
+        onClick={handleNotInterested}
+      >
+        Not interested
+      </button>
+    </div>
+  ) : null
 
   return (
     <>
@@ -132,12 +252,16 @@ const PlayerToolbar = ({ id, isRadio }) => {
           {saveQueueButton}
           {addToPlaylistButton}
           {loveButton}
+          {radioControls}
         </li>
       ) : (
         <>
           <li className={`${listItemClass} item`}>{saveQueueButton}</li>
           <li className={`${listItemClass} item`}>{addToPlaylistButton}</li>
           <li className={`${listItemClass} item`}>{loveButton}</li>
+          {activeRadio && (
+            <li className={`${listItemClass} item`}>{radioControls}</li>
+          )}
         </>
       )}
     </>

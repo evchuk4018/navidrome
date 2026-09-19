@@ -16,6 +16,10 @@ import {
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
   PLAYER_RESOLVE_QUEUE_URLS,
+  PLAYER_SET_RADIO_MODE,
+  PLAYER_SET_RADIO_AUTOPLAY,
+  PLAYER_END_RADIO_SESSION,
+  PLAYER_REMOVE_RADIO_ITEM,
 } from '../actions'
 import config from '../config'
 
@@ -73,7 +77,9 @@ const mapToAudioLists = (item) => {
       uuid: uuidv4(),
       name: item.name || item.title,
       song: item,
-      musicSrc: item.radioPending ? pendingRadioMusicSrc(item) : item.streamUrl,
+      musicSrc: item.radioPending
+        ? pendingRadioMusicSrc(item)
+        : item.streamUrl || (trackId ? makeMusicSrc(trackId) : null),
       singer: item.artist || '',
       cover: item.cover,
       isRadio: true,
@@ -81,6 +87,7 @@ const mapToAudioLists = (item) => {
       radioSessionId: item.radioSessionId,
       radioItemId: item.radioItemId,
       radioItemType: item.radioItemType,
+      radioTrackKey: item.radioTrackKey,
     }
   }
 
@@ -164,19 +171,36 @@ const reduceAddTracks = (state, { data }) => {
   return { ...state, queue: [...state.queue, ...appended], clear: false }
 }
 
-// Replaces or appends radio items by radioItemId so pending placeholders
-// become playable in place when their download resolves. The placeholder's
-// uuid is preserved so the player treats the resolved track as the same item.
-const reduceSyncRadioTracks = (state, { data }) => {
+// Replaces or appends radio items by radioItemId. Authoritative responses also
+// remove failed/obsolete future rows for this session, while preserving the
+// current row and all ordinary playback rows.
+const reduceSyncRadioTracks = (state, { data, meta = {} }) => {
   const ids = Object.keys(data)
-  if (!ids.length) return state
+  const sessionId = meta.sessionId
+  const currentSessionId = state.radioSession?.id
+  if (sessionId && currentSessionId && sessionId !== currentSessionId) {
+    return state
+  }
+  const revision = Number(meta.revision)
+  const currentRevision = Number(state.radioSession?.revision)
+  if (
+    Number.isFinite(revision) &&
+    Number.isFinite(currentRevision) &&
+    revision < currentRevision
+  ) {
+    return state
+  }
+  if (!ids.length && !meta.authoritative) return state
   const queue = [...state.queue]
   let requiresReplacement = false
+  const incomingRadioIds = new Set()
   const byRadioItemId = new Map(
     queue.map((item) => [item.radioItemId, item]).filter(([id]) => id),
   )
   ids.forEach((id) => {
     const next = mapToAudioLists(data[id])
+    if (!next.radioItemId) return
+    incomingRadioIds.add(next.radioItemId)
     const existing = byRadioItemId.get(next.radioItemId)
     if (existing) {
       const index = queue.findIndex(
@@ -196,11 +220,84 @@ const reduceSyncRadioTracks = (state, { data }) => {
     }
     queue.push(next)
   })
+  if (meta.authoritative && sessionId) {
+    const currentUuid = state.current?.uuid
+    const filtered = queue.filter((item) => {
+      if (item.radioSessionId !== sessionId || !item.radioItemId) return true
+      if (item.uuid === currentUuid) return true
+      return incomingRadioIds.has(item.radioItemId)
+    })
+    if (filtered.length !== queue.length) requiresReplacement = true
+    queue.splice(0, queue.length, ...filtered)
+  }
   // Radio updates use the player's quiet replacement path. This keeps the
   // currently playing seed alive while replacing a pending placeholder in the
   // music player's internal list instead of appending a second copy.
-  if (queue.every((item, index) => item === state.queue[index])) return state
-  return { ...state, queue, clear: requiresReplacement }
+  const unchanged =
+    queue.length === state.queue.length &&
+    queue.every((item, index) => item === state.queue[index])
+  if (unchanged && !Number.isFinite(revision)) return state
+  return {
+    ...state,
+    queue,
+    clear: requiresReplacement,
+    radioSession: state.radioSession
+      ? {
+          ...state.radioSession,
+          ...(Number.isFinite(revision) ? { revision } : {}),
+        }
+      : state.radioSession,
+  }
+}
+
+const reduceSetRadioMode = (state, { data }) =>
+  state.radioSession
+    ? {
+        ...state,
+        radioSession: {
+          ...state.radioSession,
+          mode: data,
+        },
+      }
+    : state
+
+const reduceSetRadioAutoplay = (state, { data }) =>
+  state.radioSession
+    ? {
+        ...state,
+        radioSession: {
+          ...state.radioSession,
+          autoplay: data !== false,
+        },
+      }
+    : state
+
+const reduceEndRadioSession = (state) => {
+  const sessionId = state.radioSession?.id
+  if (!sessionId) return state
+  const currentUuid = state.current?.uuid
+  return {
+    ...state,
+    radioSession: null,
+    queue: state.queue.filter(
+      (item) => item.radioSessionId !== sessionId || item.uuid === currentUuid,
+    ),
+    clear: true,
+  }
+}
+
+const reduceRemoveRadioItem = (state, { data }) => {
+  const itemId = typeof data === 'string' ? data : data?.itemId
+  const force = typeof data === 'object' && data?.force
+  if (!itemId) return state
+  const currentUuid = state.current?.uuid
+  const queue = state.queue.filter(
+    (item) =>
+      item.radioItemId !== itemId || (!force && item.uuid === currentUuid),
+  )
+  return queue.length === state.queue.length
+    ? state
+    : { ...state, queue, clear: true }
 }
 
 const reducePlayNext = (state, { data }) => {
@@ -291,6 +388,14 @@ export const playerReducer = (previousState = initialState, payload) => {
       return reduceAddTracks(previousState, payload)
     case PLAYER_SYNC_RADIO_TRACKS:
       return reduceSyncRadioTracks(previousState, payload)
+    case PLAYER_SET_RADIO_MODE:
+      return reduceSetRadioMode(previousState, payload)
+    case PLAYER_SET_RADIO_AUTOPLAY:
+      return reduceSetRadioAutoplay(previousState, payload)
+    case PLAYER_END_RADIO_SESSION:
+      return reduceEndRadioSession(previousState)
+    case PLAYER_REMOVE_RADIO_ITEM:
+      return reduceRemoveRadioItem(previousState, payload)
     case PLAYER_PLAY_NEXT:
       return reducePlayNext(previousState, payload)
     case PLAYER_SET_VOLUME:
@@ -319,6 +424,7 @@ export const playerReducer = (previousState = initialState, payload) => {
     }
     case PLAYER_SET_RADIO_SESSION: {
       const session = payload.data
+      if (!session?.id) return previousState
       // A new Quick Pick selection is not confirmed by CURRENT yet, so use
       // its pending index before falling back to the last confirmed index.
       const seedIndex =
@@ -328,22 +434,24 @@ export const playerReducer = (previousState = initialState, payload) => {
       return {
         ...previousState,
         radioSession: session,
-        queue: previousState.queue.map((item, index) =>
-          index === seedIndex
-            ? {
-                ...item,
-                radioSessionId: session.id,
-                radioItemId: session.seedItemId,
-                radioItemType: 'seed',
-                song: {
-                  ...item.song,
-                  radioSessionId: session.id,
-                  radioItemId: session.seedItemId,
-                  radioItemType: 'seed',
-                },
-              }
-            : item,
-        ),
+        queue: session.seedItemId
+          ? previousState.queue.map((item, index) =>
+              index === seedIndex
+                ? {
+                    ...item,
+                    radioSessionId: session.id,
+                    radioItemId: session.seedItemId,
+                    radioItemType: 'seed',
+                    song: {
+                      ...item.song,
+                      radioSessionId: session.id,
+                      radioItemId: session.seedItemId,
+                      radioItemType: 'seed',
+                    },
+                  }
+                : item,
+            )
+          : previousState.queue,
       }
     }
     case PLAYER_SET_RADIO_PLANNING:
