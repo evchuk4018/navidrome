@@ -134,4 +134,67 @@ var _ = Describe("PersonalRadioRepository contextual feedback", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(string(updated.Mode)).To(Equal(string(model.RadioModeDiscover)))
 	})
+
+	It("persists source/request identity and advances the session revision", func() {
+		id := "radio-continuity-session"
+		DeferCleanup(func() {
+			_, _ = GetDBXBuilder().NewQuery("delete from personal_radio_session where id = {:id}").
+				Bind(map[string]any{"id": id}).Execute()
+		})
+		_, _ = GetDBXBuilder().NewQuery("delete from personal_radio_session where id = {:id}").
+			Bind(map[string]any{"id": id}).Execute()
+		now := time.Now().UTC()
+		session := model.PersonalRadioSession{
+			ID: id, UserID: adminUser.ID, SeedMediaFileID: songDayInALife.ID,
+			SourceType: model.RadioSourcePlaylist, SourceID: "playlist-source",
+			SourcePlaylistID: "playlist-source", ClientRequestID: "request-1",
+			SeedMediaFileIDs:     []string{songDayInALife.ID, songComeTogether.ID},
+			SeedMediaFileWeights: []float64{1, 0.5},
+			Mode:                 model.RadioModeBalanced, Status: model.PersonalRadioActive,
+			Revision: 1, Autoplay: true, CreatedAt: now, UpdatedAt: now,
+		}
+		item := model.PersonalRadioItem{ID: id + "-item", SessionID: id, Position: 0,
+			ItemType: model.RadioItemSeed, Status: model.RadioItemReady,
+			MediaFileID: songDayInALife.ID, CreatedAt: now, UpdatedAt: now}
+		Expect(repo.CreateSession(&session, []model.PersonalRadioItem{item})).To(Succeed())
+		lookup, ok := repo.(model.PersonalRadioSessionLookup)
+		Expect(ok).To(BeTrue())
+		got, err := lookup.GetSessionByClientRequest(adminUser.ID, "request-1")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got).To(SatisfyAll(
+			HaveField("SourceType", Equal(model.RadioSourcePlaylist)),
+			HaveField("SourceID", Equal("playlist-source")),
+			HaveField("ClientRequestID", Equal("request-1")),
+			HaveField("Revision", Equal(int64(1))),
+			HaveField("SeedMediaFileIDs", ConsistOf(songDayInALife.ID, songComeTogether.ID)),
+			HaveField("SeedMediaFileWeights", Equal([]float64{1, 0.5})),
+		))
+
+		Expect(repo.AppendItems(id, []model.PersonalRadioItem{{
+			ID: id + "-next", SessionID: id, Position: 1, ItemType: model.RadioItemLibrary,
+			Status: model.RadioItemReady, MediaFileID: songComeTogether.ID, CreatedAt: now, UpdatedAt: now,
+		}})).To(Succeed())
+		got, err = repo.GetSessionForUser(id, adminUser.ID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got.Revision).To(Equal(int64(2)))
+
+		Expect(lookup.EndSession(id, adminUser.ID, true)).To(Succeed())
+		got, err = repo.GetSessionForUser(id, adminUser.ID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(got.Status).To(Equal(model.PersonalRadioEnded))
+		Expect(got.Autoplay).To(BeFalse())
+		Expect(got.Revision).To(Equal(int64(3)))
+	})
+
+	It("uses a canonical media key for feedback when a track has no MBID", func() {
+		trackKey := model.RadioTrackKey("", songComeTogether.ID)
+		Expect(repo.RecordFeedback(adminUser.ID, trackKey, model.RadioFeedbackDislike, time.Now().UTC())).To(Succeed())
+		feedback, err := repo.GetFeedback(adminUser.ID, []string{trackKey})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(feedback[trackKey]).To(SatisfyAll(
+			HaveField("TrackKey", Equal(trackKey)),
+			HaveField("DislikeCount", Equal(1)),
+			HaveField("SuppressedUntil", Not(BeNil())),
+		))
+	})
 })

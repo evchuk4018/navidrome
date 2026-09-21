@@ -148,7 +148,15 @@ const Player = () => {
           response.planningStatus || (response.pending ? 'selecting' : 'ready'),
         ),
       )
-      if (radioWaitingRef.current && songs.ids.length && audioInstance) {
+      const queuedRadioIds = new Set(
+        playerStateRef.current.queue
+          .filter((item) => item.radioSessionId && item.radioItemId)
+          .map((item) => item.radioItemId),
+      )
+      const hasNewReadySuccessor = songs.ids.some(
+        (id) => !queuedRadioIds.has(songs.data[id].radioItemId),
+      )
+      if (radioWaitingRef.current && hasNewReadySuccessor && audioInstance) {
         radioWaitingRef.current = false
         setTimeout(() => {
           const state = playerStateRef.current

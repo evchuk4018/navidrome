@@ -3,6 +3,8 @@ package agents
 import (
 	"context"
 	"errors"
+	"testing"
+	"time"
 
 	"github.com/navidrome/navidrome/conf/configtest"
 	"github.com/navidrome/navidrome/consts"
@@ -13,6 +15,83 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+func TestSimilarityProvidersFanOutAndFailOpen(t *testing.T) {
+	oldAgents := conf.Server.Agents
+	defer func() { conf.Server.Agents = oldAgents }()
+	first := &timedSimilarityAgent{name: "fanout-first", delay: 150 * time.Millisecond, songs: []Song{{MBID: "first"}}}
+	second := &timedSimilarityAgent{name: "fanout-second", delay: 150 * time.Millisecond, songs: []Song{{MBID: "second"}}}
+	Register(first.name, func(model.DataStore) Interface { return first })
+	Register(second.name, func(model.DataStore) Interface { return second })
+	defer func() {
+		delete(Map, first.name)
+		delete(Map, second.name)
+	}()
+	conf.Server.Agents = first.name + "," + second.name
+	ag := createAgents(nil, nil)
+	start := time.Now()
+	got, err := ag.GetSimilarSongsByTrackAll(context.Background(), "id", "name", "artist", "mbid", 4)
+	if err != nil {
+		t.Fatalf("fanout returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 275*time.Millisecond {
+		t.Fatalf("providers did not overlap; elapsed %v", elapsed)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d candidates, want two successful provider results", len(got))
+	}
+
+	failing := &timedSimilarityAgent{name: "fanout-failing", err: errors.New("provider unavailable")}
+	Register(failing.name, func(model.DataStore) Interface { return failing })
+	defer delete(Map, failing.name)
+	conf.Server.Agents = failing.name + "," + first.name
+	got, err = ag.GetSimilarSongsByTrackAll(context.Background(), "id", "name", "artist", "mbid", 4)
+	if err != nil || len(got) != 1 || got[0].MBID != "first" {
+		t.Fatalf("successful provider was not preserved after failure: got=%#v err=%v", got, err)
+	}
+}
+
+func TestSimilarityProvidersRespectSharedDeadline(t *testing.T) {
+	oldAgents := conf.Server.Agents
+	defer func() { conf.Server.Agents = oldAgents }()
+	slow := &timedSimilarityAgent{name: "fanout-slow", delay: time.Second, songs: []Song{{MBID: "slow"}}}
+	fast := &timedSimilarityAgent{name: "fanout-fast", delay: 5 * time.Millisecond, songs: []Song{{MBID: "fast"}}}
+	Register(slow.name, func(model.DataStore) Interface { return slow })
+	Register(fast.name, func(model.DataStore) Interface { return fast })
+	defer func() { delete(Map, slow.name); delete(Map, fast.name) }()
+	conf.Server.Agents = slow.name + "," + fast.name
+	ag := createAgents(nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	got, err := ag.GetSimilarSongsByTrackAll(ctx, "id", "name", "artist", "mbid", 4)
+	if elapsed := time.Since(start); elapsed >= 300*time.Millisecond {
+		t.Fatalf("shared deadline was ignored; elapsed %v", elapsed)
+	}
+	if err != nil || len(got) != 1 || got[0].MBID != "fast" {
+		t.Fatalf("fast provider result missing at deadline: got=%#v err=%v", got, err)
+	}
+}
+
+type timedSimilarityAgent struct {
+	name  string
+	delay time.Duration
+	songs []Song
+	err   error
+}
+
+func (a *timedSimilarityAgent) AgentName() string { return a.name }
+
+func (a *timedSimilarityAgent) GetSimilarSongsByTrack(ctx context.Context, _, _, _, _ string, _ int) ([]Song, error) {
+	timer := time.NewTimer(a.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return a.songs, a.err
+	}
+}
 
 var _ = Describe("Agents", func() {
 	var ctx context.Context

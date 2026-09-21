@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -41,10 +42,49 @@ func (r *personalRadioRepository) CreateSession(session *model.PersonalRadioSess
 	}
 	defer func() { _ = tx.Rollback() }()
 	session.Mode = model.NormalizeRadioMode(string(session.Mode))
+	if session.SourceType == "" {
+		session.SourceType = model.RadioSourceSong
+	}
+	if session.SourceID == "" {
+		if session.SourcePlaylistID != "" {
+			session.SourceType = model.RadioSourcePlaylist
+			session.SourceID = session.SourcePlaylistID
+		} else {
+			session.SourceID = session.SeedMediaFileID
+		}
+	}
+	if session.SourceType == model.RadioSourcePlaylist && session.SourcePlaylistID == "" {
+		session.SourcePlaylistID = session.SourceID
+	}
+	if len(session.SeedMediaFileIDs) == 0 && session.SeedMediaFileID != "" {
+		session.SeedMediaFileIDs = []string{session.SeedMediaFileID}
+	}
+	if session.Revision <= 0 {
+		session.Revision = 1
+	}
+	seedIDs, err := json.Marshal(uniqueStrings(session.SeedMediaFileIDs))
+	if err != nil {
+		return err
+	}
+	weights := append([]float64(nil), session.SeedMediaFileWeights...)
+	if len(weights) != len(session.SeedMediaFileIDs) {
+		weights = make([]float64, len(session.SeedMediaFileIDs))
+		for i := range weights {
+			weights[i] = 1
+		}
+	}
+	seedWeights, err := json.Marshal(weights)
+	if err != nil {
+		return err
+	}
 	_, err = tx.Exec(`insert into personal_radio_session
-		(id, user_id, seed_media_file_id, mode, status, created_at, updated_at)
-		values (?, ?, ?, ?, ?, ?, ?)`, session.ID, session.UserID, session.SeedMediaFileID,
-		session.Mode, session.Status, session.CreatedAt, session.UpdatedAt)
+		(id, user_id, seed_media_file_id, mode, status, source_type, source_id,
+		source_playlist_id, client_request_id, seed_media_file_ids, seed_media_file_weights,
+		revision, autoplay, created_at, updated_at)
+		values (?, ?, ?, ?, ?, ?, ?, ?, nullif(?, ''), ?, ?, ?, ?, ?, ?)`, session.ID,
+		session.UserID, session.SeedMediaFileID, session.Mode, session.Status,
+		session.SourceType, session.SourceID, session.SourcePlaylistID, session.ClientRequestID,
+		string(seedIDs), string(seedWeights), session.Revision, boolToInt(session.Autoplay), session.CreatedAt, session.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -62,29 +102,92 @@ func (r *personalRadioRepository) UpdateSession(session *model.PersonalRadioSess
 	}
 	session.Mode = model.NormalizeRadioMode(string(session.Mode))
 	session.UpdatedAt = time.Now().UTC()
-	_, err := r.db.Exec(`update personal_radio_session set mode = ?, status = ?, updated_at = ? where id = ? and user_id = ?`,
-		session.Mode, session.Status, session.UpdatedAt, session.ID, session.UserID)
+	_, err := r.db.Exec(`update personal_radio_session set mode = ?, status = ?, autoplay = ?, revision = revision + 1,
+		updated_at = ? where id = ? and user_id = ?`, session.Mode, session.Status,
+		boolToInt(session.Autoplay), session.UpdatedAt, session.ID, session.UserID)
+	if err == nil {
+		session.Revision++
+	}
 	return err
 }
 
 func (r *personalRadioRepository) EndActiveSessions(userID, exceptID string) error {
-	_, err := r.db.Exec(`update personal_radio_session set status = ?, updated_at = ?
-		where user_id = ? and status = ? and id <> ?`, model.PersonalRadioEnded, time.Now().UTC(),
-		userID, model.PersonalRadioActive, exceptID)
+	// Only end sessions created before the new session. This makes concurrent
+	// creates monotonic: a late response from an older request cannot terminate
+	// the session that was created more recently.
+	_, err := r.db.Exec(`update personal_radio_session set status = ?, revision = revision + 1, updated_at = ?
+		where user_id = ? and status = ? and id <> ? and created_at <
+		(select created_at from personal_radio_session where id = ? and user_id = ?)`,
+		model.PersonalRadioEnded, time.Now().UTC(), userID, model.PersonalRadioActive,
+		exceptID, exceptID, userID)
 	return err
 }
 
 func (r *personalRadioRepository) GetSessionForUser(sessionID, userID string) (*model.PersonalRadioSession, error) {
 	s := &model.PersonalRadioSession{}
 	var mode string
-	err := r.db.QueryRow(`select id, user_id, seed_media_file_id, mode, status, created_at, updated_at
+	var seedIDs, seedWeights string
+	var autoplay int
+	err := r.db.QueryRow(`select id, user_id, seed_media_file_id, mode, status,
+		coalesce(source_type, 'song'), coalesce(source_id, ''), coalesce(source_playlist_id, ''),
+		coalesce(client_request_id, ''), coalesce(seed_media_file_ids, ''), coalesce(seed_media_file_weights, ''),
+		coalesce(revision, 1), coalesce(autoplay, 1),
+		created_at, updated_at
 		from personal_radio_session where id = ? and user_id = ?`, sessionID, userID).
-		Scan(&s.ID, &s.UserID, &s.SeedMediaFileID, &mode, &s.Status, &s.CreatedAt, &s.UpdatedAt)
+		Scan(&s.ID, &s.UserID, &s.SeedMediaFileID, &mode, &s.Status, &s.SourceType,
+			&s.SourceID, &s.SourcePlaylistID, &s.ClientRequestID, &seedIDs, &seedWeights, &s.Revision,
+			&autoplay, &s.CreatedAt, &s.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, model.ErrNotFound
 	}
 	s.Mode = model.RadioMode(mode)
+	s.Autoplay = autoplay != 0
+	if seedIDs != "" {
+		_ = json.Unmarshal([]byte(seedIDs), &s.SeedMediaFileIDs)
+	}
+	if seedWeights != "" {
+		_ = json.Unmarshal([]byte(seedWeights), &s.SeedMediaFileWeights)
+	}
+	if len(s.SeedMediaFileIDs) == 0 && s.SeedMediaFileID != "" {
+		s.SeedMediaFileIDs = []string{s.SeedMediaFileID}
+	}
+	if len(s.SeedMediaFileWeights) != len(s.SeedMediaFileIDs) {
+		s.SeedMediaFileWeights = make([]float64, len(s.SeedMediaFileIDs))
+		for i := range s.SeedMediaFileWeights {
+			s.SeedMediaFileWeights[i] = 1
+		}
+	}
 	return s, err
+}
+
+func (r *personalRadioRepository) GetSessionByClientRequest(userID, clientRequestID string) (*model.PersonalRadioSession, error) {
+	clientRequestID = strings.TrimSpace(clientRequestID)
+	if clientRequestID == "" {
+		return nil, model.ErrNotFound
+	}
+	var sessionID string
+	err := r.db.QueryRow(`select id from personal_radio_session where user_id = ? and client_request_id = ?`,
+		userID, clientRequestID).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r.GetSessionForUser(sessionID, userID)
+}
+
+func (r *personalRadioRepository) EndSession(sessionID, userID string, disableAutoplay bool) error {
+	result, err := r.db.Exec(`update personal_radio_session set status = ?, autoplay = ?, revision = revision + 1,
+		updated_at = ? where id = ? and user_id = ? and status <> ?`, model.PersonalRadioEnded,
+		boolToInt(!disableAutoplay), time.Now().UTC(), sessionID, userID, model.PersonalRadioEnded)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return model.ErrNotFound
+	}
+	return nil
 }
 
 func (r *personalRadioRepository) GetItems(sessionID string) ([]model.PersonalRadioItem, error) {
@@ -126,7 +229,7 @@ func (r *personalRadioRepository) AppendItems(sessionID string, items []model.Pe
 			return err
 		}
 	}
-	_, err = tx.Exec(`update personal_radio_session set updated_at = ? where id = ?`, time.Now().UTC(), sessionID)
+	_, err = tx.Exec(`update personal_radio_session set revision = revision + 1, updated_at = ? where id = ?`, time.Now().UTC(), sessionID)
 	if err != nil {
 		return err
 	}
@@ -155,6 +258,10 @@ func (r *personalRadioRepository) UpdateItem(item *model.PersonalRadioItem) erro
 		item.RecordingMBID, item.DownloadJobID, item.PlaybackOutcome, item.ListenedMS,
 		item.DurationMS, item.TransitionSourceItemID, item.TransitionSourceKey,
 		item.LastFeedbackAt, item.UpdatedAt, item.ID)
+	if err == nil {
+		_, err = r.db.Exec(`update personal_radio_session set revision = revision + 1, updated_at = ?
+			where id = (select session_id from personal_radio_item where id = ?)`, time.Now().UTC(), item.ID)
+	}
 	return err
 }
 
@@ -240,6 +347,15 @@ func (r *personalRadioRepository) RecordPlaybackFeedback(userID, sessionID strin
 			if anchorErr != nil && !errors.Is(anchorErr, model.ErrNotFound) {
 				return nil, anchorErr
 			}
+			if anchor == nil {
+				// The first accepted transition has no predecessor yet. Anchor it
+				// to the deterministic session seed so the next refill can learn
+				// from the first real choice.
+				anchor, anchorErr = seedItemTx(tx, sessionID)
+				if anchorErr != nil && !errors.Is(anchorErr, model.ErrNotFound) {
+					return nil, anchorErr
+				}
+			}
 			if anchor != nil {
 				sourceKey := model.RadioTrackKey(anchor.RecordingMBID, anchor.MediaFileID)
 				if sourceKey != "" {
@@ -267,6 +383,16 @@ func (r *personalRadioRepository) RecordPlaybackFeedback(userID, sessionID strin
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	// Item outcome changes are visible to all clients through the session
+	// revision. Do not advance the revision for a duplicate/idempotent event.
+	// The item update and transition write are committed together; this small
+	// follow-up keeps the mutation visible to clients without widening the
+	// existing transaction contract.
+	if applied {
+		if _, err := r.db.Exec(`update personal_radio_session set revision = revision + 1, updated_at = ? where id = ?`, now, sessionID); err != nil {
+			return nil, err
+		}
 	}
 	return &model.RadioPlaybackFeedbackResult{Item: *item, Applied: applied}, nil
 }
@@ -393,8 +519,16 @@ func (r *personalRadioRepository) UpdateDiscovery(track *model.DiscoveryTrack) e
 }
 
 func (r *personalRadioRepository) RecordFeedback(userID, recordingMBID, event string, now time.Time) error {
-	positive, completed, neutral, early := 0, 0, 0, 0
-	var earlyAt any
+	trackKey := canonicalRadioTrackKey(recordingMBID)
+	if trackKey == "" {
+		return nil
+	}
+	recordingMBID = strings.TrimPrefix(trackKey, "mbid:")
+	if strings.HasPrefix(trackKey, "media:") {
+		recordingMBID = ""
+	}
+	positive, completed, neutral, early, dislike, unplayable := 0, 0, 0, 0, 0, 0
+	var earlyAt, suppressedUntil any
 	switch event {
 	case model.RadioFeedbackThresholdReached, model.RadioFeedbackKeep:
 		positive = 1
@@ -402,21 +536,29 @@ func (r *personalRadioRepository) RecordFeedback(userID, recordingMBID, event st
 		positive, completed = 1, 1
 	case model.RadioFeedbackManualSkip:
 		early, earlyAt = 1, now.UTC()
+	case model.RadioFeedbackDislike:
+		dislike, suppressedUntil = 1, now.UTC().Add(90*24*time.Hour)
+	case model.RadioFeedbackUnplayable:
+		unplayable = 1
 	default:
 		neutral = 1
 	}
 	_, err := r.db.Exec(`insert into radio_track_feedback
 		(user_id, recording_mbid, positive_count, completed_count, neutral_skip_count,
-		 early_skip_count, last_early_skip_at, updated_at)
-		values (?, ?, ?, ?, ?, ?, ?, ?)
-		on conflict (user_id, recording_mbid) do update set
+		 early_skip_count, last_early_skip_at, track_key, dislike_count, unplayable_count,
+		 suppressed_until, updated_at)
+		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		on conflict (user_id, track_key) do update set
 			positive_count = positive_count + excluded.positive_count,
 			completed_count = completed_count + excluded.completed_count,
 			neutral_skip_count = neutral_skip_count + excluded.neutral_skip_count,
 			early_skip_count = early_skip_count + excluded.early_skip_count,
 			last_early_skip_at = coalesce(excluded.last_early_skip_at, last_early_skip_at),
+			dislike_count = dislike_count + excluded.dislike_count,
+			unplayable_count = unplayable_count + excluded.unplayable_count,
+			suppressed_until = coalesce(excluded.suppressed_until, suppressed_until),
 			updated_at = excluded.updated_at`, userID, recordingMBID, positive, completed, neutral,
-		early, earlyAt, now.UTC())
+		early, earlyAt, trackKey, dislike, unplayable, suppressedUntil, now.UTC())
 	return err
 }
 
@@ -425,30 +567,47 @@ func (r *personalRadioRepository) GetFeedback(userID string, recordingMBIDs []st
 	if len(recordingMBIDs) == 0 {
 		return result, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(recordingMBIDs)), ",")
-	args := make([]any, 0, len(recordingMBIDs)+1)
+	keys := make([]string, 0, len(recordingMBIDs))
+	for _, value := range recordingMBIDs {
+		if key := canonicalRadioTrackKey(value); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return result, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	args := make([]any, 0, len(keys)+1)
 	args = append(args, userID)
-	for _, id := range recordingMBIDs {
-		args = append(args, id)
+	for _, key := range keys {
+		args = append(args, key)
 	}
 	rows, err := r.db.Query(fmt.Sprintf(`select user_id, recording_mbid, positive_count, completed_count,
-		neutral_skip_count, early_skip_count, last_early_skip_at, updated_at
-		from radio_track_feedback where user_id = ? and recording_mbid in (%s)`, placeholders), args...)
+		neutral_skip_count, early_skip_count, track_key, dislike_count, unplayable_count,
+		suppressed_until, last_early_skip_at, updated_at
+		from radio_track_feedback where user_id = ? and track_key in (%s)`, placeholders), args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var f model.RadioTrackFeedback
-		var earlyAt sql.NullTime
+		var earlyAt, suppressedUntil sql.NullTime
 		if err := rows.Scan(&f.UserID, &f.RecordingMBID, &f.PositiveCount, &f.CompletedCount,
-			&f.NeutralSkipCount, &f.EarlySkipCount, &earlyAt, &f.UpdatedAt); err != nil {
+			&f.NeutralSkipCount, &f.EarlySkipCount, &f.TrackKey, &f.DislikeCount,
+			&f.UnplayableCount, &suppressedUntil, &earlyAt, &f.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if f.TrackKey == "" {
+			f.TrackKey = canonicalRadioTrackKey(f.RecordingMBID)
+		}
+		if suppressedUntil.Valid {
+			f.SuppressedUntil = &suppressedUntil.Time
 		}
 		if earlyAt.Valid {
 			f.LastEarlySkipAt = &earlyAt.Time
 		}
-		result[f.RecordingMBID] = f
+		result[f.TrackKey] = f
 	}
 	return result, rows.Err()
 }
@@ -667,6 +826,36 @@ func uniqueStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func seedItemTx(tx *sql.Tx, sessionID string) (*model.PersonalRadioItem, error) {
+	item, err := scanRadioItem(tx.QueryRow(radioItemSelect+` where session_id = ? and item_type = ?
+		order by position asc limit 1`, sessionID, model.RadioItemSeed))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, model.ErrNotFound
+	}
+	return item, err
+}
+
+func canonicalRadioTrackKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(value), "mbid:") {
+		return model.RadioTrackKey(strings.TrimPrefix(value, "mbid:"), "")
+	}
+	if strings.HasPrefix(strings.ToLower(value), "media:") {
+		return model.RadioTrackKey("", strings.TrimPrefix(value, "media:"))
+	}
+	return model.RadioTrackKey(value, "")
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func maxInt64(left, right int64) int64 {

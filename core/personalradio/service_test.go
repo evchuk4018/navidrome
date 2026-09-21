@@ -35,6 +35,22 @@ type fakePersonalRadioRepository struct {
 	feedbackEvents []string
 }
 
+func (f *fakePersonalRadioRepository) CreateSession(session *model.PersonalRadioSession, items []model.PersonalRadioItem) error {
+	copy := *session
+	f.session = &copy
+	f.items = append([]model.PersonalRadioItem(nil), items...)
+	return nil
+}
+
+func (f *fakePersonalRadioRepository) EndActiveSessions(userID, exceptID string) error {
+	for _, session := range []*model.PersonalRadioSession{f.session} {
+		if session != nil && session.UserID == userID && session.ID != exceptID && session.Status == model.PersonalRadioActive {
+			session.Status = model.PersonalRadioEnded
+		}
+	}
+	return nil
+}
+
 func (f *fakePersonalRadioRepository) GetSessionForUser(string, string) (*model.PersonalRadioSession, error) {
 	if f.session == nil {
 		return &model.PersonalRadioSession{ID: "session", Status: model.PersonalRadioEnded}, nil
@@ -54,6 +70,16 @@ func (f *fakePersonalRadioRepository) UpdateSession(session *model.PersonalRadio
 
 func (f *fakePersonalRadioRepository) GetItems(string) ([]model.PersonalRadioItem, error) {
 	return append([]model.PersonalRadioItem(nil), f.items...), nil
+}
+
+func (f *fakePersonalRadioRepository) GetItemForUser(itemID, _ string) (*model.PersonalRadioItem, error) {
+	for _, item := range f.items {
+		if item.ID == itemID {
+			copy := item
+			return &copy, nil
+		}
+	}
+	return nil, model.ErrNotFound
 }
 
 func (f *fakePersonalRadioRepository) AppendItems(_ string, items []model.PersonalRadioItem) error {
@@ -1073,5 +1099,81 @@ func TestRefillExposesPendingDownloadMetadata(t *testing.T) {
 	}
 	if song.ID != "" {
 		t.Fatalf("expected stub song to have no media file id, got %q", song.ID)
+	}
+}
+
+func TestSessionResponsePartitionsReadyAndPendingItems(t *testing.T) {
+	now := time.Now().UTC()
+	session := model.PersonalRadioSession{ID: "session", Revision: 4}
+	items := []model.PersonalRadioItem{
+		{ID: "seed", ItemType: model.RadioItemSeed, Status: model.RadioItemReady, Position: 0, CreatedAt: now},
+		{ID: "ready", ItemType: model.RadioItemLibrary, Status: model.RadioItemReady, Position: 1, MediaFileID: "ready", CreatedAt: now},
+		{ID: "held", ItemType: model.RadioItemDiscovery, Status: model.RadioItemHeld, Position: 2, CreatedAt: now},
+		{ID: "downloading", ItemType: model.RadioItemDiscovery, Status: model.RadioItemDownloading, Position: 3, CreatedAt: now},
+		{ID: "failed", ItemType: model.RadioItemDiscovery, Status: model.RadioItemFailed, Position: 4, CreatedAt: now},
+	}
+	response := newPersonalRadioResponse(session, items, false, model.RadioPlanningDownloading)
+	if response.Revision != 4 || response.Session.Revision != 4 {
+		t.Fatalf("revision was not propagated: %#v", response)
+	}
+	if len(response.UpNext) != 1 || response.UpNext[0].ID != "ready" {
+		t.Fatalf("up next = %#v, want ready only", response.UpNext)
+	}
+	if len(response.PendingItems) != 2 || response.PendingItems[0].ID != "held" || response.PendingItems[1].ID != "downloading" {
+		t.Fatalf("pending items = %#v", response.PendingItems)
+	}
+}
+
+func TestRadioQueueTargetsDoNotCountDownloadingAsReady(t *testing.T) {
+	items := []model.PersonalRadioItem{
+		{ItemType: model.RadioItemSeed, Status: model.RadioItemReady},
+		{ItemType: model.RadioItemLibrary, Status: model.RadioItemReady},
+		{ItemType: model.RadioItemDiscovery, Status: model.RadioItemDownloading},
+		{ItemType: model.RadioItemDiscovery, Status: model.RadioItemHeld},
+		{ItemType: model.RadioItemLibrary, Status: model.RadioItemPlayed},
+	}
+	if got := readyPlayableRadioItems(items); got != 1 {
+		t.Fatalf("ready playable count = %d, want 1", got)
+	}
+	if got := pendingRadioItems(items); got != 2 {
+		t.Fatalf("pending count = %d, want 2", got)
+	}
+}
+
+func TestPlayedItemsDoNotSatisfyReadyWatermark(t *testing.T) {
+	items := []model.PersonalRadioItem{
+		{ID: "seed", ItemType: model.RadioItemSeed, Status: model.RadioItemReady, MediaFileID: "seed"},
+		{ID: "played-1", ItemType: model.RadioItemLibrary, Status: model.RadioItemPlayed, MediaFileID: "one"},
+		{ID: "played-2", ItemType: model.RadioItemLibrary, Status: model.RadioItemPlayed, MediaFileID: "two"},
+		{ID: "played-3", ItemType: model.RadioItemLibrary, Status: model.RadioItemPlayed, MediaFileID: "three"},
+	}
+	if got := readyPlayableRadioItems(items); got != 0 {
+		t.Fatalf("played history satisfied ready watermark: got %d", got)
+	}
+	if status := statusForReadyItems(items); status != model.RadioPlanningExhausted {
+		t.Fatalf("status for played-only queue = %q, want exhausted", status)
+	}
+}
+
+func TestCanonicalFeedbackKeyUsesMediaIDWhenMBIDIsMissing(t *testing.T) {
+	item := model.PersonalRadioItem{MediaFileID: "local-only", ItemType: model.RadioItemLibrary}
+	if got := radioItemTrackKey(item); got != "media:local-only" {
+		t.Fatalf("radioItemTrackKey() = %q", got)
+	}
+}
+
+func TestFeedbackLearnsForMediaOnlyTrack(t *testing.T) {
+	repo := &fakePersonalRadioRepository{
+		session: &model.PersonalRadioSession{ID: "session", UserID: "user", Status: model.PersonalRadioActive},
+		items:   []model.PersonalRadioItem{{ID: "local", SessionID: "session", ItemType: model.RadioItemLibrary, Status: model.RadioItemReady, MediaFileID: "local-only"}},
+	}
+	svc := &service{repo: repo}
+	if err := svc.Feedback(context.Background(), "user", "session", model.PersonalRadioFeedbackRequest{
+		ItemID: "local", Event: model.RadioFeedbackThresholdReached, ListenedMS: 30000, DurationMS: 100000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.feedbackEvents) != 1 || repo.feedbackEvents[0] != "media:local-only:threshold_reached" {
+		t.Fatalf("media-only feedback events = %v", repo.feedbackEvents)
 	}
 }

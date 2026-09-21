@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,11 +26,17 @@ import (
 const (
 	discoveryCandidateLimit  = 40
 	transitionCandidateLimit = 50
-	queueLowWatermark        = 10
-	discoveryTTL             = 7 * 24 * time.Hour
-	localFallbackPageSize    = 500
-	radioFeedbackBatchSize   = 500
-	providerPlanningTimeout  = 5 * time.Second
+	// readyLowWatermark controls uninterrupted local playback. totalQueueTarget
+	// controls how many ready/held/downloading items the planner keeps ahead.
+	readyLowWatermark          = 3
+	totalQueueTarget           = 10
+	queueLowWatermark          = totalQueueTarget // legacy name used by tests/callers
+	maxConcurrentDownloads     = 2
+	discoveryTTL               = 7 * 24 * time.Hour
+	localFallbackPageSize      = 500
+	radioFeedbackBatchSize     = 500
+	providerPlanningTimeout    = 4 * time.Second
+	initialLocalCandidateLimit = 96
 )
 
 type SimilarityProvider interface {
@@ -41,31 +48,38 @@ type Service interface {
 	Create(context.Context, string, model.CreatePersonalRadioRequest) (*model.PersonalRadioSessionResponse, error)
 	Refill(context.Context, string, string, model.RefillPersonalRadioRequest) (*model.PersonalRadioSessionResponse, error)
 	Feedback(context.Context, string, string, model.PersonalRadioFeedbackRequest) error
+	End(context.Context, string, string, model.EndPersonalRadioRequest) error
 }
 
 type service struct {
-	ds             model.DataStore
-	repo           model.PersonalRadioRepository
-	agents         SimilarityProvider
-	matcher        *matcher.Matcher
-	music          musicservice.Service
-	scanner        model.Scanner
-	startOnce      sync.Once
-	planningMu     sync.Mutex
-	planning       map[string]bool
-	planningStatus map[string]string
+	ds              model.DataStore
+	repo            model.PersonalRadioRepository
+	agents          SimilarityProvider
+	matcher         *matcher.Matcher
+	music           musicservice.Service
+	scanner         model.Scanner
+	startOnce       sync.Once
+	planningMu      sync.Mutex
+	planning        map[string]bool
+	planningStatus  map[string]string
+	requestMu       sync.Mutex
+	requestSessions map[string]string
+	fallbackMu      sync.Mutex
+	fallbackPool    model.MediaFiles
+	fallbackLoaded  time.Time
 }
 
 func New(ds model.DataStore, repo model.PersonalRadioRepository, ag *agents.Agents, songMatcher *matcher.Matcher, music musicservice.Service, scanner model.Scanner) Service {
 	return &service{
-		ds:             ds,
-		repo:           repo,
-		agents:         ag,
-		matcher:        songMatcher,
-		music:          music,
-		scanner:        scanner,
-		planning:       map[string]bool{},
-		planningStatus: map[string]string{},
+		ds:              ds,
+		repo:            repo,
+		agents:          ag,
+		matcher:         songMatcher,
+		music:           music,
+		scanner:         scanner,
+		planning:        map[string]bool{},
+		planningStatus:  map[string]string{},
+		requestSessions: map[string]string{},
 	}
 }
 
@@ -77,19 +91,62 @@ func (s *service) Start(ctx context.Context) {
 }
 
 func (s *service) Create(ctx context.Context, userID string, request model.CreatePersonalRadioRequest) (*model.PersonalRadioSessionResponse, error) {
-	seedID := strings.TrimSpace(request.SeedMediaFileID)
-	seed, err := s.ds.MediaFile(ctx).GetWithParticipants(seedID)
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	clientRequestID := strings.TrimSpace(request.ClientRequestID)
+	requestKey := userID + "\x00" + clientRequestID
+	if clientRequestID != "" {
+		if existing := s.lookupInFlightRequest(requestKey); existing != "" {
+			if response, err := s.responseForSession(ctx, userID, existing); err == nil {
+				return response, nil
+			}
+		}
+		if lookup, ok := s.repo.(model.PersonalRadioSessionLookup); ok {
+			if existing, err := lookup.GetSessionByClientRequest(userID, clientRequestID); err == nil && existing != nil {
+				s.rememberRequest(requestKey, existing.ID)
+				return s.responseForSession(ctx, userID, existing.ID)
+			}
+		}
+	}
+	seed, seedIDs, seedWeights, sourceType, sourceID, err := s.resolveCreateSource(ctx, request)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	session := model.PersonalRadioSession{ID: id.NewRandom(), UserID: userID, SeedMediaFileID: seedID, Mode: model.NormalizeRadioMode(string(request.Mode)), Status: model.PersonalRadioActive, CreatedAt: now, UpdatedAt: now}
+	session := model.PersonalRadioSession{
+		ID: id.NewRandom(), UserID: userID, SeedMediaFileID: seed.ID,
+		SourceType: sourceType, SourceID: sourceID, ClientRequestID: clientRequestID,
+		SourcePlaylistID: strings.TrimSpace(request.SourcePlaylistID), SeedMediaFileIDs: seedIDs, SeedMediaFileWeights: seedWeights,
+		Mode: model.NormalizeRadioMode(string(request.Mode)), Status: model.PersonalRadioActive,
+		Revision: 1, Autoplay: true, CreatedAt: now, UpdatedAt: now,
+	}
 	items := []model.PersonalRadioItem{{ID: id.NewRandom(), SessionID: session.ID, Position: 0, ItemType: model.RadioItemSeed, Status: model.RadioItemReady, MediaFileID: seed.ID, RecordingMBID: seed.MbzRecordingID, Song: seed, CreatedAt: now, UpdatedAt: now}}
 	if err := s.repo.CreateSession(&session, items); err != nil {
+		// A concurrent request with the same idempotency key may win the unique
+		// insert. Return that authoritative session instead of creating another
+		// active queue.
+		if clientRequestID != "" {
+			if lookup, ok := s.repo.(model.PersonalRadioSessionLookup); ok {
+				if existing, lookupErr := lookup.GetSessionByClientRequest(userID, clientRequestID); lookupErr == nil && existing != nil {
+					s.rememberRequest(requestKey, existing.ID)
+					return s.responseForSession(ctx, userID, existing.ID)
+				}
+			}
+		}
 		return nil, err
+	}
+	if clientRequestID != "" {
+		s.rememberRequest(requestKey, session.ID)
 	}
 	if err := s.repo.EndActiveSessions(userID, session.ID); err != nil {
 		return nil, err
+	}
+	// Keep the first response useful even when providers or download services
+	// are slow: local successors are selected synchronously and external work
+	// starts only after this durable two-track buffer exists.
+	if err := s.planInitialReady(ctx, &session, seed, items); err != nil {
+		log.Debug(ctx, "Personal radio initial local buffer unavailable", "sessionID", session.ID, "error", err)
 	}
 	s.setPlanningStatus(session.ID, model.RadioPlanningSelecting)
 	log.Info(ctx, "Personal radio session created",
@@ -99,13 +156,227 @@ func (s *service) Create(ctx context.Context, userID string, request model.Creat
 		"seedTitle", seed.Title,
 		"seedArtist", seed.Artist,
 		"seedRecordingMBID", seed.MbzRecordingID)
+	if refreshed, refreshErr := s.repo.GetItems(session.ID); refreshErr == nil {
+		items = refreshed
+	}
+	if refreshed, refreshErr := s.repo.GetSessionForUser(session.ID, userID); refreshErr == nil {
+		session = *refreshed
+	}
 	s.schedulePlan(context.WithoutCancel(ctx), session, seed)
+	return newPersonalRadioResponse(session, items, true, model.RadioPlanningSelecting), nil
+}
+
+func (s *service) lookupInFlightRequest(key string) string {
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	return s.requestSessions[key]
+}
+
+func (s *service) rememberRequest(key, sessionID string) {
+	if key == "" || sessionID == "" {
+		return
+	}
+	s.requestMu.Lock()
+	if s.requestSessions == nil {
+		s.requestSessions = map[string]string{}
+	}
+	s.requestSessions[key] = sessionID
+	s.requestMu.Unlock()
+}
+
+func (s *service) responseForSession(ctx context.Context, userID, sessionID string) (*model.PersonalRadioSessionResponse, error) {
+	session, err := s.repo.GetSessionForUser(sessionID, userID)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.repo.GetItems(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.promoteHeldDiscoveries(ctx, session, items); err != nil {
+		log.Debug(ctx, "Personal radio could not promote held discoveries", "sessionID", sessionID, "error", err)
+	}
+	if refreshed, refreshErr := s.repo.GetItems(sessionID); refreshErr == nil {
+		items = refreshed
+	}
+	status := s.getPlanningStatus(sessionID)
+	if status == "" {
+		status = statusForReadyItems(items)
+	}
+	return newPersonalRadioResponse(*session, items, status != model.RadioPlanningReady, status), nil
+}
+
+func (s *service) resolveCreateSource(ctx context.Context, request model.CreatePersonalRadioRequest) (*model.MediaFile, []string, []float64, string, string, error) {
+	if strings.TrimSpace(request.SeedMediaFileID) != "" {
+		seed, err := s.ds.MediaFile(ctx).GetWithParticipants(strings.TrimSpace(request.SeedMediaFileID))
+		if err != nil {
+			return nil, nil, nil, "", "", err
+		}
+		return seed, []string{seed.ID}, []float64{1}, model.RadioSourceSong, seed.ID, nil
+	}
+	playlistID := strings.TrimSpace(request.SourcePlaylistID)
+	playlist, err := s.ds.Playlist(ctx).GetWithTracks(playlistID, false, false)
+	if err != nil {
+		return nil, nil, nil, "", "", err
+	}
+	if playlist == nil || len(playlist.Tracks) == 0 {
+		return nil, nil, nil, "", "", model.ErrNotFound
+	}
+	// Select at most five weighted/diverse seeds. The representative first
+	// track is stable; subsequent tracks prefer new artists/albums, then fill
+	// remaining slots in playlist order. Persisting this bounded set prevents a
+	// long playlist from turning every refill into an N+1 scan.
+	var tracks []model.MediaFile
+	for _, track := range playlist.Tracks {
+		if strings.TrimSpace(track.MediaFileID) == "" {
+			continue
+		}
+		file := track.MediaFile
+		if file.ID == "" {
+			filePtr, getErr := s.ds.MediaFile(ctx).GetWithParticipants(track.MediaFileID)
+			if getErr != nil || filePtr == nil {
+				continue
+			}
+			file = *filePtr
+		}
+		if file.Missing || file.ID == "" {
+			continue
+		}
+		tracks = append(tracks, file)
+	}
+	if len(tracks) == 0 {
+		return nil, nil, nil, "", "", model.ErrNotFound
+	}
+	selected := make([]model.MediaFile, 0, min(5, len(tracks)))
+	artists, albums := map[string]bool{}, map[string]bool{}
+	for _, file := range tracks {
+		artist := strings.ToLower(strings.TrimSpace(file.ArtistID + "\x00" + file.Artist))
+		album := strings.ToLower(strings.TrimSpace(file.AlbumID + "\x00" + file.Album))
+		if len(selected) > 0 && (artists[artist] || albums[album]) {
+			continue
+		}
+		selected = append(selected, file)
+		artists[artist], albums[album] = true, true
+		if len(selected) == 5 {
+			break
+		}
+	}
+	for _, file := range tracks {
+		if len(selected) == 5 {
+			break
+		}
+		seen := false
+		for _, current := range selected {
+			if current.ID == file.ID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			selected = append(selected, file)
+		}
+	}
+	seed := selected[0]
+	seedIDs := make([]string, 0, len(selected))
+	seedWeights := make([]float64, 0, len(selected))
+	for _, file := range selected {
+		seedIDs = append(seedIDs, file.ID)
+		seedWeights = append(seedWeights, 1/float64(len(seedWeights)+1))
+	}
+	return &seed, seedIDs, seedWeights, model.RadioSourcePlaylist, playlistID, nil
+}
+
+func (s *service) planInitialReady(ctx context.Context, session *model.PersonalRadioSession, seed *model.MediaFile, existing []model.PersonalRadioItem) error {
+	if s.ds == nil || s.repo == nil || seed == nil {
+		return nil
+	}
+	ready := readyPlayableRadioItems(existing)
+	if ready >= 2 {
+		return nil
+	}
+	files, err := s.ds.MediaFile(ctx).GetAll(model.QueryOptions{Sort: "id", Order: "asc", Max: initialLocalCandidateLimit})
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	seenRecordings := map[string]bool{}
+	position := 1
+	for _, item := range existing {
+		seen[item.MediaFileID] = true
+		if key := normalizeRecordingMBID(item.RecordingMBID); key != "" {
+			seenRecordings[key] = true
+		}
+		if item.Position >= position {
+			position = item.Position + 1
+		}
+	}
+	candidates := make([]model.MediaFile, 0, len(files))
+	for _, file := range files {
+		if seen[file.ID] || file.ID == "" || file.Missing {
+			continue
+		}
+		if mbid := normalizeRecordingMBID(file.MbzRecordingID); mbid != "" && seenRecordings[mbid] {
+			continue
+		}
+		candidates = append(candidates, file)
+	}
+	// Rank only the bounded shortlist; filesystem checks run only on tracks we
+	// are about to append, keeping startup independent of library size.
+	sort.SliceStable(candidates, func(left, right int) bool {
+		leftScore := localSeedAffinity(seed, candidates[left])
+		rightScore := localSeedAffinity(seed, candidates[right])
+		if leftScore != rightScore {
+			return leftScore > rightScore
+		}
+		return candidates[left].ID < candidates[right].ID
+	})
+	newItems := make([]model.PersonalRadioItem, 0, 2-ready)
+	for _, file := range candidates {
+		if len(newItems)+ready >= 2 {
+			break
+		}
+		if !isPlayableLocalFile(file) {
+			continue
+		}
+		copy := file
+		newItems = append(newItems, model.PersonalRadioItem{
+			ID: id.NewRandom(), SessionID: session.ID, Position: position,
+			ItemType: model.RadioItemLibrary, Status: model.RadioItemReady,
+			MediaFileID: file.ID, RecordingMBID: file.MbzRecordingID, Song: &copy,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		})
+		position++
+	}
+	if len(newItems) == 0 {
+		return nil
+	}
+	if err := s.repo.AppendItems(session.ID, newItems); err != nil {
+		return err
+	}
+	session.Revision += 1
+	return nil
+}
+
+func newPersonalRadioResponse(session model.PersonalRadioSession, items []model.PersonalRadioItem, pending bool, status string) *model.PersonalRadioSessionResponse {
+	upNext := make([]model.PersonalRadioItem, 0, len(items))
+	pendingItems := make([]model.PersonalRadioItem, 0)
+	for _, item := range items {
+		if item.Status == model.RadioItemHeld || item.Status == model.RadioItemDownloading {
+			pendingItems = append(pendingItems, item)
+			continue
+		}
+		if item.ItemType != model.RadioItemSeed && item.Status == model.RadioItemReady && item.MediaFileID != "" {
+			upNext = append(upNext, item)
+		}
+	}
+	if session.Revision <= 0 {
+		session.Revision = 1
+	}
 	return &model.PersonalRadioSessionResponse{
-		Session:        session,
-		Items:          items,
-		Pending:        true,
-		PlanningStatus: model.RadioPlanningSelecting,
-	}, nil
+		Session: session, Items: items, Revision: session.Revision,
+		UpNext: upNext, PendingItems: pendingItems, Pending: pending || len(pendingItems) > 0,
+		PlanningStatus: status,
+	}
 }
 
 func (s *service) Refill(ctx context.Context, userID, sessionID string, request model.RefillPersonalRadioRequest) (*model.PersonalRadioSessionResponse, error) {
@@ -329,7 +600,7 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string, request 
 				"sessionID", session.ID,
 				"userID", userID,
 				"error", contextErr)
-		} else if radioOutstandingItems(items, radioContext) < queueLowWatermark {
+		} else if radioOutstandingItems(items, radioContext) < totalQueueTarget || readyPlayableRadioItemsForContext(items, radioContext) < readyLowWatermark {
 			s.schedulePlanForContext(context.WithoutCancel(ctx), *session, radioContext)
 			pending = true
 		}
@@ -363,43 +634,85 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string, request 
 		"itemCount", len(items),
 		"itemStatuses", radioItemStatusCounts(items),
 		"elapsed", time.Since(start))
-	return &model.PersonalRadioSessionResponse{
-		Session:        *session,
-		Items:          items,
-		Pending:        pending || isPendingPlanningStatus(status),
-		PlanningStatus: status,
-	}, nil
+	if refreshed, refreshErr := s.repo.GetSessionForUser(sessionID, userID); refreshErr == nil {
+		session = refreshed
+	}
+	return newPersonalRadioResponse(*session, items, pending || isPendingPlanningStatus(status), status), nil
+}
+
+func (s *service) End(ctx context.Context, userID, sessionID string, request model.EndPersonalRadioRequest) error {
+	disableAutoplay := request.DisableAutoplay
+	if request.Autoplay != nil {
+		disableAutoplay = !*request.Autoplay
+	}
+	if lookup, ok := s.repo.(model.PersonalRadioSessionLookup); ok {
+		if err := lookup.EndSession(sessionID, userID, disableAutoplay); err != nil {
+			return err
+		}
+	} else {
+		session, err := s.repo.GetSessionForUser(sessionID, userID)
+		if err != nil {
+			return err
+		}
+		session.Status = model.PersonalRadioEnded
+		session.Autoplay = !disableAutoplay
+		if err := s.repo.UpdateSession(session); err != nil {
+			return err
+		}
+	}
+	s.setPlanningStatus(sessionID, model.RadioPlanningReady)
+	return nil
 }
 
 func (s *service) Feedback(ctx context.Context, userID, sessionID string, req model.PersonalRadioFeedbackRequest) error {
 	if _, err := s.repo.GetSessionForUser(sessionID, userID); err != nil {
 		return err
 	}
+	itemForSignal, itemErr := s.repo.GetItemForUser(req.ItemID, userID)
+	if itemErr != nil {
+		return itemErr
+	}
+	trackIdentity := feedbackIdentity(*itemForSignal)
+	if req.Event == model.RadioFeedbackUnplayable {
+		if trackIdentity != "" {
+			if err := s.repo.RecordFeedback(userID, trackIdentity, model.RadioFeedbackUnplayable, time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+		itemForSignal.Status = model.RadioItemFailed
+		itemForSignal.PlaybackOutcome = ""
+		return s.repo.UpdateItem(itemForSignal)
+	}
+	if req.Event == model.RadioFeedbackDislike && trackIdentity != "" {
+		if err := s.repo.RecordFeedback(userID, trackIdentity, model.RadioFeedbackDislike, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	feedback, err := s.repo.RecordPlaybackFeedback(userID, sessionID, req, time.Now().UTC())
 	if err != nil {
 		return err
 	}
 	item := &feedback.Item
-	if item.RecordingMBID != "" && feedback.Applied {
+	if trackIdentity != "" && feedback.Applied {
 		switch item.PlaybackOutcome {
 		case model.RadioPlaybackAccepted:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackThresholdReached, time.Now().UTC()); err != nil {
+			if err := s.repo.RecordFeedback(userID, trackIdentity, model.RadioFeedbackThresholdReached, time.Now().UTC()); err != nil {
 				return err
 			}
 		case model.RadioPlaybackCompleted:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackCompleted, time.Now().UTC()); err != nil {
+			if err := s.repo.RecordFeedback(userID, trackIdentity, model.RadioFeedbackCompleted, time.Now().UTC()); err != nil {
 				return err
 			}
 		case model.RadioPlaybackEarlySkip:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackManualSkip, time.Now().UTC()); err != nil {
+			if err := s.repo.RecordFeedback(userID, trackIdentity, model.RadioFeedbackManualSkip, time.Now().UTC()); err != nil {
 				return err
 			}
 		case model.RadioPlaybackLateSkip:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), "neutral", time.Now().UTC()); err != nil {
+			if err := s.repo.RecordFeedback(userID, trackIdentity, "neutral", time.Now().UTC()); err != nil {
 				return err
 			}
 		case model.RadioPlaybackKeep:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackKeep, time.Now().UTC()); err != nil {
+			if err := s.repo.RecordFeedback(userID, trackIdentity, model.RadioFeedbackKeep, time.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -447,8 +760,17 @@ func (s *service) Feedback(ctx context.Context, userID, sessionID string, req mo
 			return nil
 		}
 		discovery.State, discovery.ExpiresAt = model.DiscoveryKept, nil
+	case model.RadioFeedbackDislike:
+		discovery.State = model.DiscoveryDeletePending
 	}
 	return s.repo.UpdateDiscovery(discovery)
+}
+
+func feedbackIdentity(item model.PersonalRadioItem) string {
+	if mbid := model.NormalizeRecordingMBID(item.RecordingMBID); mbid != "" {
+		return mbid
+	}
+	return model.RadioTrackKey("", item.MediaFileID)
 }
 
 func (s *service) planningSeed(ctx context.Context, session model.PersonalRadioSession) (*model.MediaFile, error) {
@@ -474,7 +796,29 @@ func earlySkipThresholdMS(durationMS int64) int64 {
 }
 
 func (s *service) schedulePlan(ctx context.Context, session model.PersonalRadioSession, seed *model.MediaFile) {
-	s.schedulePlanForContext(ctx, session, radioContextFromSeed(seed))
+	radioContext := radioContextFromSeed(seed)
+	if len(session.SeedMediaFileIDs) > 1 && s.ds != nil {
+		inputs := make([]radioSeedInput, 0, len(session.SeedMediaFileIDs))
+		inputs = append(inputs, radioSeedInput{file: seed, weight: 0.55, role: "original"})
+		for index, seedID := range session.SeedMediaFileIDs {
+			if strings.TrimSpace(seedID) == "" || seedID == seed.ID {
+				continue
+			}
+			file, err := s.ds.MediaFile(ctx).GetWithParticipants(seedID)
+			if err != nil || file == nil {
+				continue
+			}
+			weight := 0.25 / float64(index+1)
+			if index < len(session.SeedMediaFileWeights) && session.SeedMediaFileWeights[index] > 0 {
+				weight = session.SeedMediaFileWeights[index]
+			}
+			inputs = append(inputs, radioSeedInput{file: file, weight: weight, role: "playlist_seed"})
+		}
+		if seeds := weightedRadioSeeds(inputs); len(seeds) > 0 {
+			radioContext.Seeds = seeds
+		}
+	}
+	s.schedulePlanForContext(ctx, session, radioContext)
 }
 
 func (s *service) schedulePlanForContext(ctx context.Context, session model.PersonalRadioSession, radioContext *radioContext) {
@@ -564,7 +908,8 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		}
 	}
 	outstanding := radioOutstandingItems(items, radioContext)
-	if outstanding >= queueLowWatermark {
+	readyCount := readyPlayableRadioItemsForContext(items, radioContext)
+	if outstanding >= totalQueueTarget && readyCount >= readyLowWatermark {
 		log.Debug(ctx, "Personal radio planning skipped because queue is full",
 			"sessionID", session.ID,
 			"userID", session.UserID,
@@ -587,7 +932,17 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		position = max(position, item.Position+1)
 	}
 
-	slotsToAdd := queueLowWatermark - outstanding
+	slotsToAdd := totalQueueTarget - outstanding
+	// The total target is a hard cap for planned rows. A queue can be below
+	// the ready watermark while held/downloading rows occupy all ten slots;
+	// wait for those rows to resolve rather than appending an unbounded second
+	// batch that would make the client reconcile duplicate future items.
+	if slotsToAdd < 0 {
+		slotsToAdd = 0
+	}
+	if slotsToAdd == 0 {
+		return nil
+	}
 	log.Debug(ctx, "Personal radio planning started",
 		"sessionID", session.ID,
 		"userID", session.UserID,
@@ -676,14 +1031,20 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		position++
 		return true
 	}
+	downloadsInFlight := countDownloadingRadioItems(items)
 	for _, candidate := range selected {
 		selectedKeysSet[candidate.candidate.Key] = true
 		if candidate.isDiscovery {
-			item, ok := s.queueDiscovery(ctx, session, candidate.discovery, position, now)
-			if !ok {
-				continue
+			if downloadsInFlight >= maxConcurrentDownloads {
+				newItems = append(newItems, heldDiscoveryItem(session, candidate.discovery, position, now))
+			} else {
+				item, ok := s.queueDiscovery(ctx, session, candidate.discovery, position, now)
+				if !ok {
+					continue
+				}
+				newItems = append(newItems, item)
+				downloadsInFlight++
 			}
-			newItems = append(newItems, item)
 			position++
 			continue
 		}
@@ -731,7 +1092,7 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		"libraryItems", localItems,
 		"discoveryItems", discoveryItems,
 		"itemPositions", plannedPositions(newItems))
-	if hasDiscoveryItems(newItems) {
+	if hasDownloadingItems(newItems) || hasHeldDiscoveryItems(newItems) {
 		s.setPlanningStatus(session.ID, model.RadioPlanningDownloading)
 	} else {
 		s.setPlanningStatus(session.ID, model.RadioPlanningReady)
@@ -827,7 +1188,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 					if local, ok := matches[i]; ok {
 						localKey := radioMediaFileCandidateKey(local)
 						localRecordingMBID := model.NormalizeRecordingMBID(local.MbzRecordingID)
-						if isPlayableLocalFile(local) && !seen[local.ID] &&
+						if !local.Missing && local.ID != "" && !seen[local.ID] &&
 							(localRecordingMBID == "" || !localAddedRecordings[localRecordingMBID]) &&
 							!localAdded[local.ID] && !localAddedKeys[localKey] {
 							localAdded[local.ID] = true
@@ -854,7 +1215,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 									"mediaFileID", local.ID,
 									"matchedTitle", local.Title,
 									"matchedArtist", local.Artist))
-						} else if local.Missing || !isPlayableLocalFile(local) {
+						} else if local.Missing {
 							stats["matchedMissing"]++
 							traceRadioCandidate(ctx, "Personal radio candidate rejected because matched library file is missing",
 								append(candidateFields, "decision", "matched_missing", "mediaFileID", local.ID))
@@ -944,7 +1305,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 			stats[stage]++
 		}
 	}
-	tasteFallback, tasteStats, err := s.localCandidateFilesForFallback(ctx, seed, metadataSeen, localAddedRecordings, true)
+	tasteFallback, tasteStats, err := s.boundedLocalCandidateFiles(ctx, seed, metadataSeen, localAddedRecordings, true)
 	if err != nil {
 		return candidatePools{}, fmt.Errorf("load local fallback candidates: %w", err)
 	}
@@ -953,9 +1314,9 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 	stats["tasteFallbackRejected"] += tasteStats.rejected
 	appendLocalFallback(tasteFallback, "tasteFallback")
 	if len(localAdded) < count {
-		broadFallback, broadStats, broadErr := s.localCandidateFilesForFallback(ctx, seed, metadataSeen, localAddedRecordings, false)
+		broadFallback, broadStats, broadErr := s.boundedLocalCandidateFiles(ctx, seed, metadataSeen, localAddedRecordings, false)
 		if broadErr != nil {
-			return candidatePools{}, fmt.Errorf("load exhaustive local fallback candidates: %w", broadErr)
+			return candidatePools{}, fmt.Errorf("load bounded local fallback candidates: %w", broadErr)
 		}
 		stats["exhaustiveFallbackPages"] += broadStats.pages
 		stats["exhaustiveFallbackScanned"] += broadStats.scanned
@@ -985,7 +1346,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 		}
 		if file, ok := s.resolveTransitionMediaFile(ctx, transition); ok {
 			recordingMBID := normalizeRecordingMBID(file.MbzRecordingID)
-			if !isPlayableLocalFile(file) || seen[file.ID] || (recordingMBID != "" && localAddedRecordings[recordingMBID]) {
+			if file.Missing || seen[file.ID] || (recordingMBID != "" && localAddedRecordings[recordingMBID]) {
 				continue
 			}
 			fileCopy := file
@@ -1066,7 +1427,20 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 	rankedCandidates = filteredCandidates
 	s.applyTasteAffinities(session.UserID, rankedCandidates)
 	if loadFeedback {
-		s.applyRadioFeedbackFatigue(ctx, session, rankedCandidates, fatigue)
+		suppressed := s.applyRadioFeedbackFatigue(ctx, session, rankedCandidates, fatigue)
+		if len(suppressed) > 0 {
+			filtered := rankedCandidates[:0]
+			for _, candidate := range rankedCandidates {
+				key := model.RadioTrackKey(candidate.candidate.MbzRecordingID, candidate.candidate.MediaFile.ID)
+				if key == "" {
+					key = candidate.candidate.Key
+				}
+				if !suppressed[key] && !suppressed[candidate.candidate.Key] {
+					filtered = append(filtered, candidate)
+				}
+			}
+			rankedCandidates = filtered
+		}
 	}
 	s.applyLocalFallbackFeatures(rankedCandidates, []radioSeed{{File: seed, Weight: 1}}, session, now, fatigue)
 	pools.candidates = append(pools.candidates, rankedCandidates...)
@@ -1142,31 +1516,41 @@ func (s *service) applyTasteAffinities(userID string, candidates []rankedRadioCa
 	}
 }
 
-func (s *service) applyRadioFeedbackFatigue(ctx context.Context, session model.PersonalRadioSession, candidates []rankedRadioCandidate, fatigue map[string]float64) {
+func (s *service) applyRadioFeedbackFatigue(ctx context.Context, session model.PersonalRadioSession, candidates []rankedRadioCandidate, fatigue map[string]float64) map[string]bool {
+	suppressed := map[string]bool{}
 	if s.repo == nil || len(candidates) == 0 {
-		return
+		return suppressed
 	}
-	mbidSet := make(map[string]bool, len(candidates))
+	identitySet := make(map[string]bool, len(candidates))
 	for _, candidate := range candidates {
-		if recordingMBID := normalizeRecordingMBID(candidate.candidate.MediaFile.MbzRecordingID); recordingMBID != "" {
-			mbidSet[recordingMBID] = true
+		if identity := model.RadioTrackKey(candidate.candidate.MediaFile.MbzRecordingID, candidate.candidate.MediaFile.ID); identity != "" {
+			identitySet[identity] = true
 		}
 	}
-	if len(mbidSet) == 0 {
-		return
+	if len(identitySet) == 0 {
+		return suppressed
 	}
-	mbids := make([]string, 0, len(mbidSet))
-	for recordingMBID := range mbidSet {
-		mbids = append(mbids, recordingMBID)
+	identities := make([]string, 0, len(identitySet))
+	for identity := range identitySet {
+		identities = append(identities, identity)
 	}
-	feedback, err := s.loadRadioTrackFeedback(session.UserID, mbids)
+	feedback, err := s.loadRadioTrackFeedback(session.UserID, identities)
 	if err != nil {
 		log.Warn(ctx, "Personal radio could not load local candidate feedback",
-			"sessionID", session.ID, "userID", session.UserID, "mbidCount", len(mbids), "error", err)
+			"sessionID", session.ID, "userID", session.UserID, "trackCount", len(identities), "error", err)
 	}
+	now := time.Now().UTC()
 	for _, candidate := range candidates {
-		recordingMBID := normalizeRecordingMBID(candidate.candidate.MediaFile.MbzRecordingID)
-		value := radioFeedbackFatigue(feedback[recordingMBID])
+		identity := model.RadioTrackKey(candidate.candidate.MediaFile.MbzRecordingID, candidate.candidate.MediaFile.ID)
+		value := radioFeedbackFatigue(feedback[identity])
+		if value == 0 && candidate.candidate.MediaFile.MbzRecordingID != "" {
+			value = radioFeedbackFatigue(feedback[normalizeRecordingMBID(candidate.candidate.MediaFile.MbzRecordingID)])
+		}
+		if f := feedback[identity]; f.SuppressedUntil != nil && f.SuppressedUntil.After(now) {
+			suppressed[identity] = true
+			suppressed[candidate.candidate.Key] = true
+			continue
+		}
 		if value <= 0 {
 			continue
 		}
@@ -1179,6 +1563,7 @@ func (s *service) applyRadioFeedbackFatigue(ctx context.Context, session model.P
 			}
 		}
 	}
+	return suppressed
 }
 
 func (s *service) loadRadioTrackFeedback(userID string, recordingMBIDs []string) (map[string]model.RadioTrackFeedback, error) {
@@ -1203,7 +1588,13 @@ func (s *service) loadRadioTrackFeedback(userID string, recordingMBIDs []string)
 			return result, err
 		}
 		for recordingMBID, value := range feedback {
-			result[normalizeRecordingMBID(recordingMBID)] = value
+			result[recordingMBID] = value
+			if value.TrackKey != "" {
+				result[value.TrackKey] = value
+			}
+			if canonical := model.RadioTrackKey(recordingMBID, ""); canonical != "" {
+				result[canonical] = value
+			}
 		}
 	}
 	return result, nil
@@ -1253,7 +1644,21 @@ func (s *service) recommendationPoolsForContext(ctx context.Context, session mod
 	}
 	result := candidatePools{candidates: all, fatigue: fatigue}
 	now := time.Now().UTC()
-	s.applyRadioFeedbackFatigue(ctx, session, all, fatigue)
+	suppressed := s.applyRadioFeedbackFatigue(ctx, session, all, fatigue)
+	if len(suppressed) > 0 {
+		filtered := all[:0]
+		for _, candidate := range all {
+			key := model.RadioTrackKey(candidate.candidate.MediaFile.MbzRecordingID, candidate.candidate.MediaFile.ID)
+			if key == "" {
+				key = candidate.candidate.Key
+			}
+			if !suppressed[key] && !suppressed[candidate.candidate.Key] {
+				filtered = append(filtered, candidate)
+			}
+		}
+		all = filtered
+		result.candidates = filtered
+	}
 	s.applyLocalFallbackFeatures(all, radioContext.Seeds, session, now, fatigue)
 	ranked := make([]recommendations.Candidate, 0, len(all))
 	sources := make(map[string]rankedRadioCandidate, len(all))
@@ -1452,6 +1857,73 @@ func (s *service) queueDiscovery(ctx context.Context, session model.PersonalRadi
 	return item, true
 }
 
+func heldDiscoveryItem(session model.PersonalRadioSession, discovery agents.Song, position int, now time.Time) model.PersonalRadioItem {
+	return model.PersonalRadioItem{
+		ID: id.NewRandom(), SessionID: session.ID, Position: position,
+		ItemType: model.RadioItemDiscovery, Status: model.RadioItemHeld,
+		RecordingMBID: discovery.MBID,
+		Song:          &model.MediaFile{Title: discovery.Name, Artist: firstSongArtist(discovery), Album: discovery.Album},
+		CreatedAt:     now, UpdatedAt: now,
+	}
+}
+
+func (s *service) promoteHeldDiscoveries(ctx context.Context, session *model.PersonalRadioSession, items []model.PersonalRadioItem) error {
+	if s.music == nil || session == nil {
+		return nil
+	}
+	inFlight := countDownloadingRadioItems(items)
+	for index := range items {
+		if inFlight >= maxConcurrentDownloads {
+			break
+		}
+		item := &items[index]
+		if item.ItemType != model.RadioItemDiscovery || item.Status != model.RadioItemHeld || item.RecordingMBID == "" {
+			continue
+		}
+		job, err := s.music.CreateDownload(ctx, session.UserID, model.ExternalDownloadRequest{
+			Kind: model.MusicDownloadSong, ID: item.RecordingMBID,
+			Origin: model.MusicDownloadOriginRadio, Priority: 100,
+			RadioItemID: item.ID, Title: mediaFileTitle(item.Song),
+			Artist: mediaFileArtist(item.Song), Album: mediaFileAlbum(item.Song),
+		})
+		if err != nil || job == nil || job.ID == "" {
+			item.Status = model.RadioItemFailed
+			if updateErr := s.updateRadioItem(ctx, item, "marking held discovery failed"); updateErr != nil {
+				return updateErr
+			}
+			continue
+		}
+		item.Status = model.RadioItemDownloading
+		item.DownloadJobID = job.ID
+		if err := s.updateRadioItem(ctx, item, "promoting held discovery"); err != nil {
+			return err
+		}
+		inFlight++
+	}
+	return nil
+}
+
+func mediaFileTitle(file *model.MediaFile) string {
+	if file == nil {
+		return ""
+	}
+	return file.Title
+}
+
+func mediaFileArtist(file *model.MediaFile) string {
+	if file == nil {
+		return ""
+	}
+	return file.Artist
+}
+
+func mediaFileAlbum(file *model.MediaFile) string {
+	if file == nil {
+		return ""
+	}
+	return file.Album
+}
+
 func (s *service) updateRadioItem(ctx context.Context, item *model.PersonalRadioItem, reason string) error {
 	if err := s.repo.UpdateItem(item); err != nil {
 		return fmt.Errorf("%s for session item %s: %w", reason, item.ID, err)
@@ -1526,6 +1998,55 @@ type localFallbackStats struct {
 	pages    int
 	scanned  int
 	rejected int
+}
+
+// boundedLocalCandidateFiles loads one reusable metadata pool per planning
+// batch. Contextual seeds can then filter/rank the same pool without walking
+// the library repeatedly. Filesystem validation is intentionally deferred to
+// appendLocalItem, where only the shortlist entering the queue is checked.
+func (s *service) boundedLocalCandidateFiles(ctx context.Context, seed *model.MediaFile, seen, seenRecordings map[string]bool, requireAffinity bool) (model.MediaFiles, localFallbackStats, error) {
+	if s.ds == nil {
+		return nil, localFallbackStats{}, fmt.Errorf("media datastore is unavailable")
+	}
+	s.fallbackMu.Lock()
+	pool := append(model.MediaFiles(nil), s.fallbackPool...)
+	loaded := !s.fallbackLoaded.IsZero()
+	s.fallbackMu.Unlock()
+	stats := localFallbackStats{pages: 1}
+	if !loaded {
+		files, err := s.ds.MediaFile(ctx).GetAll(model.QueryOptions{Sort: "id", Order: "asc", Max: localFallbackPageSize})
+		if err != nil {
+			return nil, stats, err
+		}
+		pool = append(model.MediaFiles(nil), files...)
+		s.fallbackMu.Lock()
+		if s.fallbackLoaded.IsZero() {
+			s.fallbackPool = append(model.MediaFiles(nil), files...)
+			s.fallbackLoaded = time.Now().UTC()
+		}
+		s.fallbackMu.Unlock()
+	}
+	stats.scanned = len(pool)
+	known := make(map[string]bool, len(pool))
+	candidates := make(model.MediaFiles, 0, len(pool))
+	for _, file := range pool {
+		if file.ID == "" || file.Missing || known[file.ID] || seen[file.ID] {
+			stats.rejected++
+			continue
+		}
+		known[file.ID] = true
+		recording := normalizeRecordingMBID(file.MbzRecordingID)
+		if recording != "" && seenRecordings[recording] {
+			stats.rejected++
+			continue
+		}
+		if requireAffinity && !localFallbackHasAffinity(seed, file) {
+			stats.rejected++
+			continue
+		}
+		candidates = append(candidates, file)
+	}
+	return candidates, stats, nil
 }
 
 // localCandidateFilesForFallback walks the library in stable pages. The
@@ -1722,6 +2243,66 @@ func hasDownloadingItems(items []model.PersonalRadioItem) bool {
 	return false
 }
 
+func countDownloadingRadioItems(items []model.PersonalRadioItem) int {
+	count := 0
+	for _, item := range items {
+		if item.ItemType == model.RadioItemDiscovery && item.Status == model.RadioItemDownloading {
+			count++
+		}
+	}
+	return count
+}
+
+func hasHeldDiscoveryItems(items []model.PersonalRadioItem) bool {
+	for _, item := range items {
+		if item.ItemType == model.RadioItemDiscovery && item.Status == model.RadioItemHeld {
+			return true
+		}
+	}
+	return false
+}
+
+func readyPlayableRadioItems(items []model.PersonalRadioItem) int {
+	count := 0
+	for _, item := range items {
+		if item.ItemType != model.RadioItemSeed && item.MediaFileID != "" &&
+			item.Status == model.RadioItemReady {
+			count++
+		}
+	}
+	return count
+}
+
+func readyPlayableRadioItemsForContext(items []model.PersonalRadioItem, radioContext *radioContext) int {
+	if radioContext == nil || !radioContext.ClientQueueProvided {
+		return readyPlayableRadioItems(items)
+	}
+	queued := radioContext.QueuedItemIDs
+	count := 0
+	for _, item := range items {
+		if item.ID == radioContext.CurrentItemID || !queued[item.ID] || item.ItemType == model.RadioItemSeed ||
+			item.Status != model.RadioItemReady || item.MediaFileID == "" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func pendingRadioItems(items []model.PersonalRadioItem) int {
+	count := 0
+	for _, item := range items {
+		if item.Status == model.RadioItemHeld || item.Status == model.RadioItemDownloading {
+			count++
+		}
+	}
+	return count
+}
+
+func radioItemTrackKey(item model.PersonalRadioItem) string {
+	return model.RadioTrackKey(item.RecordingMBID, item.MediaFileID)
+}
+
 func radioItemStatusCounts(items []model.PersonalRadioItem) map[string]int {
 	counts := make(map[string]int)
 	for _, item := range items {
@@ -1772,7 +2353,7 @@ func isPendingPlanningStatus(status string) bool {
 
 func statusForReadyItems(items []model.PersonalRadioItem) string {
 	for _, item := range items {
-		if (item.ItemType == model.RadioItemDiscovery || item.ItemType == model.RadioItemLibrary) && (item.Status == model.RadioItemReady || item.Status == model.RadioItemPlayed) {
+		if (item.ItemType == model.RadioItemDiscovery || item.ItemType == model.RadioItemLibrary) && item.Status == model.RadioItemReady {
 			return model.RadioPlanningReady
 		}
 	}

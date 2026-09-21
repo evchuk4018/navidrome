@@ -1,11 +1,45 @@
 package personalradio
 
 import (
+	"context"
 	"math"
 	"testing"
 
 	"github.com/navidrome/navidrome/model"
+	"github.com/navidrome/navidrome/tests"
 )
+
+func TestBuildRadioContextIncludesStartedCurrentAndPlaylistSeeds(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "original", Title: "Original", Artist: "A", MbzRecordingID: "orig-mbid"},
+		{ID: "playlist-2", Title: "Playlist Two", Artist: "B", MbzRecordingID: "two-mbid"},
+		{ID: "current", Title: "Current", Artist: "C", MbzRecordingID: "current-mbid"},
+	})
+	repo := &fakePersonalRadioRepository{items: []model.PersonalRadioItem{
+		{ID: "seed", ItemType: model.RadioItemSeed, Status: model.RadioItemReady, MediaFileID: "original"},
+		{ID: "current-item", ItemType: model.RadioItemLibrary, Status: model.RadioItemReady, MediaFileID: "current", PlaybackOutcome: model.RadioPlaybackStarted},
+	}}
+	svc := &service{ds: &tests.MockDataStore{MockedMediaFile: mediaRepo}, repo: repo}
+	radioContext, err := svc.buildRadioContext(context.Background(), model.PersonalRadioSession{
+		ID: "session", UserID: "user", SeedMediaFileID: "original", SeedMediaFileIDs: []string{"original", "playlist-2"},
+	}, repo.items, model.RefillPersonalRadioRequest{CurrentItemID: "current-item"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	weights := map[string]float64{}
+	roles := map[string]string{}
+	for _, seed := range radioContext.Seeds {
+		weights[seed.File.ID] = seed.Weight
+		roles[seed.File.ID] = seed.Role
+	}
+	if roles["current"] != "current_started" || weights["current"] <= 0 {
+		t.Fatalf("started current track was not included at low confidence: %#v", radioContext.Seeds)
+	}
+	if roles["playlist-2"] != "playlist_seed" || weights["playlist-2"] <= 0 {
+		t.Fatalf("playlist seed was not included: %#v", radioContext.Seeds)
+	}
+}
 
 func TestWeightedRadioSeedsNormalizeAndRetainOriginalContext(t *testing.T) {
 	original := &model.MediaFile{ID: "original", MbzRecordingID: "same-mbid"}

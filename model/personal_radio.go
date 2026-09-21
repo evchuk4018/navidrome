@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -37,6 +38,8 @@ const (
 	DiscoveryKept               = "kept"
 	DiscoveryDeletePending      = "delete_pending"
 	DiscoveryDeleted            = "deleted"
+	RadioSourceSong             = "song"
+	RadioSourcePlaylist         = "playlist"
 )
 
 // RadioMode is the small, persisted tuning domain for Personal Radio.
@@ -47,13 +50,25 @@ type RadioTuning struct {
 }
 
 type PersonalRadioSession struct {
-	ID              string    `json:"id"`
-	UserID          string    `json:"-"`
-	SeedMediaFileID string    `json:"seedMediaFileId"`
-	Mode            RadioMode `json:"mode"`
-	Status          string    `json:"status"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID              string `json:"id"`
+	UserID          string `json:"-"`
+	SeedMediaFileID string `json:"seedMediaFileId"`
+	// SourceType/SourceID identify what created the session. SeedMediaFileID is
+	// retained as the representative seed for legacy clients and persistence.
+	SourceType       string `json:"sourceType,omitempty"`
+	SourceID         string `json:"sourceId,omitempty"`
+	SourcePlaylistID string `json:"sourcePlaylistId,omitempty"`
+	ClientRequestID  string `json:"clientRequestId,omitempty"`
+	// SeedMediaFileIDs stores the bounded, weighted playlist seed set used by
+	// the planner. The first entry is always SeedMediaFileID.
+	SeedMediaFileIDs     []string  `json:"seedMediaFileIds,omitempty"`
+	SeedMediaFileWeights []float64 `json:"seedMediaFileWeights,omitempty"`
+	Mode                 RadioMode `json:"mode"`
+	Status               string    `json:"status"`
+	Revision             int64     `json:"revision"`
+	Autoplay             bool      `json:"autoplay"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
 }
 
 type PersonalRadioItem struct {
@@ -79,13 +94,37 @@ type PersonalRadioItem struct {
 type PersonalRadioSessionResponse struct {
 	Session        PersonalRadioSession `json:"session"`
 	Items          []PersonalRadioItem  `json:"items"`
+	Revision       int64                `json:"revision"`
+	UpNext         []PersonalRadioItem  `json:"upNext"`
+	PendingItems   []PersonalRadioItem  `json:"pendingItems"`
 	Pending        bool                 `json:"pending"`
 	PlanningStatus string               `json:"planningStatus"`
 }
 
 type CreatePersonalRadioRequest struct {
-	SeedMediaFileID string    `json:"seedMediaFileId"`
-	Mode            RadioMode `json:"mode,omitempty"`
+	SeedMediaFileID  string    `json:"seedMediaFileId"`
+	SourcePlaylistID string    `json:"sourcePlaylistId,omitempty"`
+	ClientRequestID  string    `json:"clientRequestId,omitempty"`
+	Mode             RadioMode `json:"mode,omitempty"`
+}
+
+// Validate ensures callers cannot accidentally create a session with two
+// competing sources (or with neither source). Keeping this validation in the
+// model gives HTTP and non-HTTP callers the same contract.
+func (r CreatePersonalRadioRequest) Validate() error {
+	seed := strings.TrimSpace(r.SeedMediaFileID) != ""
+	playlist := strings.TrimSpace(r.SourcePlaylistID) != ""
+	if seed == playlist {
+		return fmt.Errorf("exactly one of seedMediaFileId or sourcePlaylistId is required")
+	}
+	return nil
+}
+
+type EndPersonalRadioRequest struct {
+	DisableAutoplay bool `json:"disableAutoplay,omitempty"`
+	// Autoplay is accepted for clients that send the desired final state. A
+	// non-nil false value is equivalent to DisableAutoplay=true.
+	Autoplay *bool `json:"autoplay,omitempty"`
 }
 
 type RefillPersonalRadioRequest struct {
@@ -100,6 +139,8 @@ const (
 	RadioFeedbackCompleted        = "completed"
 	RadioFeedbackManualSkip       = "manual_skip"
 	RadioFeedbackKeep             = "keep"
+	RadioFeedbackDislike          = "dislike"
+	RadioFeedbackUnplayable       = "unplayable"
 )
 
 type PersonalRadioFeedbackRequest struct {
@@ -123,11 +164,15 @@ type DiscoveryTrack struct {
 
 type RadioTrackFeedback struct {
 	UserID           string
+	TrackKey         string
 	RecordingMBID    string
 	PositiveCount    int
 	CompletedCount   int
 	NeutralSkipCount int
 	EarlySkipCount   int
+	DislikeCount     int
+	UnplayableCount  int
+	SuppressedUntil  *time.Time
 	LastEarlySkipAt  *time.Time
 	UpdatedAt        time.Time
 }
@@ -221,4 +266,14 @@ type PersonalRadioRepository interface {
 	RecordFeedback(userID, recordingMBID, event string, now time.Time) error
 	GetFeedback(userID string, recordingMBIDs []string) (map[string]RadioTrackFeedback, error)
 	IsMediaFileProtected(mediaFileID string) (bool, error)
+}
+
+// PersonalRadioSessionLookup is implemented by repositories that support
+// idempotent create requests and richer session lifecycle operations. It is
+// intentionally separate from PersonalRadioRepository so existing plugins and
+// test doubles remain source compatible while the service can use the richer
+// contract when available.
+type PersonalRadioSessionLookup interface {
+	GetSessionByClientRequest(userID, clientRequestID string) (*PersonalRadioSession, error)
+	EndSession(sessionID, userID string, disableAutoplay bool) error
 }

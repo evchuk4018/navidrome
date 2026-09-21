@@ -2,6 +2,8 @@ package nativeapi
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +18,7 @@ func (api *Router) addPersonalRadioRoute(r chi.Router) {
 		r.Get("/sessions/{id}", api.refillPersonalRadio)
 		r.Post("/sessions/{id}/refill", api.refillPersonalRadio)
 		r.Post("/sessions/{id}/feedback", api.personalRadioFeedback)
+		r.Post("/sessions/{id}/end", api.endPersonalRadio)
 	})
 }
 
@@ -32,6 +35,10 @@ func (api *Router) createPersonalRadio(w http.ResponseWriter, r *http.Request) {
 	var payload model.CreatePersonalRadioRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := payload.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	response, err := api.personalRadio.Create(r.Context(), user.ID, payload)
@@ -98,6 +105,32 @@ func (api *Router) personalRadioFeedback(w http.ResponseWriter, r *http.Request)
 			"itemID", payload.ItemID,
 			"event", payload.Event,
 			"error", err)
+		writeMusicError(w, r, err, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (api *Router) endPersonalRadio(w http.ResponseWriter, r *http.Request) {
+	if api.personalRadio == nil {
+		http.Error(w, "personal radio is not configured", http.StatusNotImplemented)
+		return
+	}
+	user, ok := request.UserFrom(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	var payload model.EndPersonalRadioRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+	}
+	if err := api.personalRadio.End(r.Context(), user.ID, chi.URLParam(r, "id"), payload); err != nil {
+		log.Error(r.Context(), "Personal radio session end failed",
+			"userID", user.ID, "sessionID", chi.URLParam(r, "id"), "error", err)
 		writeMusicError(w, r, err, http.StatusInternalServerError)
 		return
 	}

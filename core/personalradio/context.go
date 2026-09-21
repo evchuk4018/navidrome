@@ -37,6 +37,11 @@ var radioSeedWeights = []struct {
 	{weight: 0.07, role: "accepted_recent_3"},
 }
 
+const (
+	currentStartedWeight = 0.08
+	playlistSeedWeight   = 0.12
+)
+
 type radioSeedInput struct {
 	file   *model.MediaFile
 	weight float64
@@ -90,11 +95,36 @@ func (s *service) buildRadioContext(ctx context.Context, session model.PersonalR
 		context.CurrentItemID = accepted[0].ID
 		serverCurrent = &accepted[0]
 	}
-	inputs := make([]radioSeedInput, 0, len(accepted)+1)
+	inputs := make([]radioSeedInput, 0, len(accepted)+len(session.SeedMediaFileIDs)+2)
 	inputs = append(inputs, radioSeedInput{file: original, weight: radioSeedWeights[0].weight, role: radioSeedWeights[0].role})
+	// Playlist sessions retain a small set of weighted/diverse source seeds so
+	// continuation stays anchored to the playlist rather than only its first
+	// track. Keep the first representative at the original weight and let the
+	// normalized merger handle duplicates.
+	for index, seedID := range session.SeedMediaFileIDs {
+		seedID = strings.TrimSpace(seedID)
+		if seedID == "" || seedID == session.SeedMediaFileID {
+			continue
+		}
+		file, getErr := s.ds.MediaFile(ctx).GetWithParticipants(seedID)
+		if getErr != nil || file == nil {
+			continue
+		}
+		weight := playlistSeedWeight / float64(index+1)
+		if index < len(session.SeedMediaFileWeights) && session.SeedMediaFileWeights[index] > 0 {
+			weight = session.SeedMediaFileWeights[index]
+		}
+		inputs = append(inputs, radioSeedInput{file: file, weight: weight, role: "playlist_seed"})
+	}
 	if current, ok := validItems[context.CurrentItemID]; ok && model.IsAcceptedRadioPlaybackOutcome(current.PlaybackOutcome) {
 		if file := s.radioItemMediaFile(ctx, current); file != nil {
 			inputs = append(inputs, radioSeedInput{file: file, weight: radioSeedWeights[1].weight, role: radioSeedWeights[1].role})
+		}
+	} else if current, ok := validItems[context.CurrentItemID]; ok {
+		// A just-started track is useful context immediately, but receives a
+		// lower weight until the acceptance threshold is reached.
+		if file := s.radioItemMediaFile(ctx, current); file != nil {
+			inputs = append(inputs, radioSeedInput{file: file, weight: currentStartedWeight, role: "current_started"})
 		}
 	} else if serverCurrent != nil {
 		if file := s.radioItemMediaFile(ctx, *serverCurrent); file != nil {

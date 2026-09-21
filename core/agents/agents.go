@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/navidrome/navidrome/conf"
@@ -338,37 +339,88 @@ func (a *Agents) GetSimilarSongsByTrackAll(ctx context.Context, id, name, artist
 	}
 
 	start := time.Now()
-	var byAgent [][]Song
-	for _, enabledAgent := range a.getEnabledAgentNames() {
+	// All similarity providers share one deadline. A slow external provider
+	// therefore cannot serialize the request or delay local fallback planning.
+	fanoutCtx := ctx
+	cancel := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		fanoutCtx, cancel = context.WithTimeout(ctx, 4*time.Second)
+	}
+	defer cancel()
+	type providerResult struct {
+		index int
+		name  string
+		songs []Song
+	}
+	providers := make([]struct {
+		index int
+		name  string
+		ag    Interface
+		r     SimilarSongsByTrackRetriever
+	}, 0)
+	for index, enabledAgent := range a.getEnabledAgentNames() {
 		ag := a.getAgent(enabledAgent)
 		if ag == nil {
 			continue
-		}
-		if utils.IsCtxDone(ctx) {
-			break
 		}
 		retriever, ok := ag.(SimilarSongsByTrackRetriever)
 		if !ok {
 			continue
 		}
-
-		results, err := retriever.GetSimilarSongsByTrack(ctx, id, name, artist, mbid, count)
-		if err != nil {
-			log.Trace(ctx, "Agent method call error", "method", "GetSimilarSongsByTrackAll", "agent", ag.AgentName(), "error", err)
-			continue
+		providers = append(providers, struct {
+			index int
+			name  string
+			ag    Interface
+			r     SimilarSongsByTrackRetriever
+		}{index: index, name: ag.AgentName(), ag: ag, r: retriever})
+	}
+	resultsCh := make(chan providerResult, len(providers))
+	var wg sync.WaitGroup
+	for _, provider := range providers {
+		provider := provider
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results, err := provider.r.GetSimilarSongsByTrack(fanoutCtx, id, name, artist, mbid, count)
+			if err != nil {
+				log.Trace(fanoutCtx, "Agent method call error", "method", "GetSimilarSongsByTrackAll", "agent", provider.name, "error", err)
+				resultsCh <- providerResult{index: provider.index, name: provider.name}
+				return
+			}
+			annotated := make([]Song, 0, len(results))
+			for _, candidate := range results {
+				candidate.CandidateID = CandidateID(candidate)
+				candidate.SimilarityScores = annotateSimilarityScores(candidate.SimilarityScores, provider.name)
+				annotated = append(annotated, candidate)
+			}
+			log.Debug(fanoutCtx, "Got similarity candidates", "method", "GetSimilarSongsByTrackAll", "agent", provider.name, "count", len(results))
+			resultsCh <- providerResult{index: provider.index, name: provider.name, songs: annotated}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+	byIndex := make(map[int]providerResult, len(providers))
+	remaining := len(providers)
+	for remaining > 0 {
+		select {
+		case result, ok := <-resultsCh:
+			if !ok {
+				remaining = 0
+				continue
+			}
+			byIndex[result.index] = result
+			remaining--
+		case <-fanoutCtx.Done():
+			remaining = 0
 		}
-		if len(results) == 0 {
-			continue
+	}
+	var byAgent [][]Song
+	for _, provider := range providers {
+		if result, ok := byIndex[provider.index]; ok && len(result.songs) > 0 {
+			byAgent = append(byAgent, result.songs)
 		}
-		provider := ag.AgentName()
-		annotated := make([]Song, 0, len(results))
-		for _, candidate := range results {
-			candidate.CandidateID = CandidateID(candidate)
-			candidate.SimilarityScores = annotateSimilarityScores(candidate.SimilarityScores, provider)
-			annotated = append(annotated, candidate)
-		}
-		byAgent = append(byAgent, annotated)
-		log.Debug(ctx, "Got similarity candidates", "method", "GetSimilarSongsByTrackAll", "agent", ag.AgentName(), "count", len(results))
 	}
 
 	if len(byAgent) == 0 {
