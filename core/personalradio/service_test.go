@@ -944,8 +944,8 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 			t.Fatalf("item %d has position %d, want %d", i, item.Position, i+1)
 		}
 	}
-	if len(music.requests) != 4 {
-		t.Fatalf("expected four discovery downloads, got %d", len(music.requests))
+	if len(music.requests) != 2 {
+		t.Fatalf("expected at most two concurrent discovery downloads, got %d", len(music.requests))
 	}
 	for _, request := range music.requests {
 		if !strings.HasPrefix(request.ID, "fresh-") || request.Origin != model.MusicDownloadOriginRadio {
@@ -970,7 +970,7 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 	if err := svc.plan(context.Background(), session, mediaRepo.Data["seed"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 11 || len(music.requests) != 4 {
+	if len(repo.items) != 11 || len(music.requests) != 2 {
 		t.Fatalf("in-flight work was duplicated: %d items, %d downloads", len(repo.items), len(music.requests))
 	}
 
@@ -991,10 +991,10 @@ func TestPlanQueuesOrderedDiscoveriesWithReadyLibraryBuffers(t *testing.T) {
 	if err := svc.plan(context.Background(), session, mediaRepo.Data["seed"]); err != nil {
 		t.Fatal(err)
 	}
-	if len(repo.items) != 12 || len(music.requests) != 5 {
+	if len(repo.items) != 12 || len(music.requests) != 3 {
 		t.Fatalf("expected one replacement item: %d items, %d downloads", len(repo.items), len(music.requests))
 	}
-	replacement := music.requests[4]
+	replacement := music.requests[2]
 	if replacement.ID == "" || replacement.ID == "fresh-1" {
 		t.Fatalf("expected failed discovery to advance to a new candidate, got %#v", replacement)
 	}
@@ -1127,7 +1127,7 @@ func TestSessionResponsePartitionsReadyAndPendingItems(t *testing.T) {
 func TestRadioQueueTargetsDoNotCountDownloadingAsReady(t *testing.T) {
 	items := []model.PersonalRadioItem{
 		{ItemType: model.RadioItemSeed, Status: model.RadioItemReady},
-		{ItemType: model.RadioItemLibrary, Status: model.RadioItemReady},
+		{ItemType: model.RadioItemLibrary, Status: model.RadioItemReady, MediaFileID: "ready"},
 		{ItemType: model.RadioItemDiscovery, Status: model.RadioItemDownloading},
 		{ItemType: model.RadioItemDiscovery, Status: model.RadioItemHeld},
 		{ItemType: model.RadioItemLibrary, Status: model.RadioItemPlayed},

@@ -1481,7 +1481,12 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 		if source.isDiscovery {
 			pools.discovery = append(pools.discovery, source.discovery)
 		} else if source.local != nil {
-			pools.local = append(pools.local, *source.local)
+			// Keep this diagnostic/local shortlist bounded. Filesystem
+			// validation is deferred until a candidate is actually shortlisted,
+			// rather than opening every row in the metadata pool.
+			if len(pools.local) < count && isPlayableLocalFile(*source.local) {
+				pools.local = append(pools.local, *source.local)
+			}
 		}
 	}
 	log.Debug(ctx, "Personal radio candidate filtering completed",
