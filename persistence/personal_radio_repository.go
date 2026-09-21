@@ -81,7 +81,7 @@ func (r *personalRadioRepository) CreateSession(session *model.PersonalRadioSess
 		(id, user_id, seed_media_file_id, mode, status, source_type, source_id,
 		source_playlist_id, client_request_id, seed_media_file_ids, seed_media_file_weights,
 		revision, autoplay, created_at, updated_at)
-		values (?, ?, ?, ?, ?, ?, ?, ?, nullif(?, ''), ?, ?, ?, ?, ?, ?)`, session.ID,
+		values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, session.ID,
 		session.UserID, session.SeedMediaFileID, session.Mode, session.Status,
 		session.SourceType, session.SourceID, session.SourcePlaylistID, session.ClientRequestID,
 		string(seedIDs), string(seedWeights), session.Revision, boolToInt(session.Autoplay), session.CreatedAt, session.UpdatedAt)
