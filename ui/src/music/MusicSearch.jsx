@@ -1,14 +1,12 @@
-import { Fragment, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useHistory } from 'react-router-dom'
 import {
-  Avatar,
   Box,
   ButtonBase,
   Card,
   CardContent,
   Chip,
   CircularProgress,
-  Grid,
   InputAdornment,
   TextField,
   Typography,
@@ -17,51 +15,50 @@ import SearchIcon from '@material-ui/icons/Search'
 import { makeStyles } from '@material-ui/core/styles'
 import * as musicProvider from './provider'
 import { DownloadButton, DownloadStatus } from './DownloadStatus'
-import { getSearchSectionOrder } from './searchOrder'
+import ExternalArtwork from './ExternalArtwork'
 import { useDownloadJobs } from './useDownloadJobs'
 
 const RECENT_SEARCHES_KEY = 'navidrome.externalMusic.recentSearches'
 
 const useStyles = makeStyles((theme) => ({
-  root: {
-    margin: '0 auto',
-    maxWidth: 1100,
-    padding: theme.spacing(3),
-  },
+  root: { margin: '0 auto', maxWidth: 900, padding: theme.spacing(3) },
   search: {
     background: theme.palette.background.paper,
     borderRadius: theme.shape.borderRadius * 2,
-    marginBottom: theme.spacing(3),
+    marginBottom: theme.spacing(2),
   },
-  resultButton: {
-    display: 'block',
-    textAlign: 'left',
-    width: '100%',
+  results: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: theme.spacing(1.5),
   },
-  card: {
-    height: '100%',
-  },
-  image: {
-    height: 150,
-    width: '100%',
-    borderRadius: theme.shape.borderRadius,
-    objectFit: 'cover',
-  },
-  placeholder: {
+  card: { width: '100%' },
+  row: {
     alignItems: 'center',
-    background: theme.palette.action.hover,
     display: 'flex',
-    height: 150,
-    justifyContent: 'center',
+    gap: theme.spacing(2),
     width: '100%',
   },
-  actions: {
+  resultButton: { display: 'block', flex: 1, textAlign: 'left' },
+  content: { minWidth: 0 },
+  artwork: {
+    alignItems: 'center',
+    aspectRatio: '1 / 1',
+    background: theme.palette.action.hover,
+    borderRadius: theme.shape.borderRadius,
     display: 'flex',
-    justifyContent: 'flex-end',
-    marginTop: theme.spacing(1),
+    flex: '0 0 64px',
+    height: 64,
+    justifyContent: 'center',
+    objectFit: 'cover',
+    width: 64,
   },
-  recent: {
-    marginBottom: theme.spacing(3),
+  recent: { marginBottom: theme.spacing(3) },
+  refreshing: {
+    alignItems: 'center',
+    display: 'flex',
+    gap: theme.spacing(1),
+    marginBottom: theme.spacing(1),
   },
 }))
 
@@ -73,7 +70,6 @@ const readRecentSearches = () => {
     return []
   }
 }
-
 const saveRecentSearch = (query) => {
   const next = [
     query,
@@ -82,176 +78,159 @@ const saveRecentSearch = (query) => {
   localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next))
   return next
 }
-
-const Artwork = ({ src, label, classes }) =>
-  src ? (
-    <img className={classes.image} src={src} alt={label} />
-  ) : (
-    <div className={classes.placeholder}>{label?.slice(0, 1) || '\u266a'}</div>
-  )
-
-const ResultSection = ({ title, children }) => {
-  if (!children || children.length === 0) return null
-  return (
-    <Box mb={4}>
-      <Typography variant="h5" gutterBottom>
-        {title}
-      </Typography>
-      <Grid container spacing={2}>
-        {children}
-      </Grid>
-    </Box>
-  )
-}
-
-const SearchResults = ({
-  classes,
-  history,
-  query,
-  refreshJobs,
-  results,
-  runSearch,
-}) => {
-  const sections = {
-    artists: (
-      <ResultSection title="Artists">
-        {results.artists?.map((artist) => (
-          <Grid item xs={12} sm={6} md={4} key={artist.id}>
-            <ButtonBase
-              className={classes.resultButton}
-              onClick={() => history.push(`/search/artist/${artist.id}`)}
-            >
-              <Card className={classes.card}>
-                <CardContent>
-                  <Typography variant="h6">{artist.name}</Typography>
-                  {artist.disambiguation && (
-                    <Typography color="textSecondary" variant="body2">
-                      {artist.disambiguation}
-                    </Typography>
-                  )}
-                </CardContent>
-              </Card>
-            </ButtonBase>
-          </Grid>
-        ))}
-      </ResultSection>
-    ),
-    albums: (
-      <ResultSection title="Albums">
-        {results.albums?.map((album) => (
-          <Grid item xs={12} sm={6} md={4} key={album.id}>
-            <Card className={classes.card}>
-              <ButtonBase
-                className={classes.resultButton}
-                onClick={() => history.push(`/search/album/${album.id}`)}
-              >
-                <CardContent>
-                  <Artwork
-                    src={album.imageUrl}
-                    label={album.title}
-                    classes={classes}
-                  />
-                  <Typography variant="h6">{album.title}</Typography>
-                  <Typography color="textSecondary" variant="body2">
-                    {album.artistName}{' '}
-                    {album.year ? `\u2022 ${album.year}` : ''}
-                  </Typography>
-                </CardContent>
-              </ButtonBase>
-              <Box className={classes.actions} px={2} pb={2}>
-                <DownloadButton
-                  kind="album"
-                  id={album.id}
-                  onCreated={refreshJobs}
-                />
-              </Box>
-            </Card>
-          </Grid>
-        ))}
-      </ResultSection>
-    ),
-    songs: (
-      <ResultSection title="Songs">
-        {results.songs?.map((song) => (
-          <Grid item xs={12} md={6} key={song.id}>
-            <Card>
-              <CardContent>
-                <Box display="flex" alignItems="center" gridGap={12}>
-                  <Avatar src={song.imageUrl}>{song.title?.slice(0, 1)}</Avatar>
-                  <Box flex={1}>
-                    <Typography variant="h6">{song.title}</Typography>
-                    <Typography color="textSecondary" variant="body2">
-                      {song.artistName}{' '}
-                      {song.albumTitle ? `\u2022 ${song.albumTitle}` : ''}
-                    </Typography>
-                  </Box>
-                  <DownloadButton
-                    kind="song"
-                    id={song.id}
-                    onCreated={refreshJobs}
-                  />
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-        ))}
-      </ResultSection>
-    ),
-    genres: (
-      <ResultSection title="Genres">
-        {results.genres?.map((genre) => (
-          <Grid item key={genre.name}>
-            <Chip label={genre.name} onClick={() => runSearch(genre.name)} />
-          </Grid>
-        ))}
-      </ResultSection>
-    ),
-  }
-
-  return (
-    <>
-      {getSearchSectionOrder(query, results).map((section) => (
-        <Fragment key={section}>{sections[section]}</Fragment>
-      ))}
-      {!results.artists?.length &&
-        !results.albums?.length &&
-        !results.songs?.length &&
-        !results.genres?.length && (
-          <Typography color="textSecondary">
-            No external results found.
-          </Typography>
-        )}
-    </>
-  )
-}
+const initialQuery = () =>
+  new URLSearchParams(window.location.search).get('q') || ''
+const compatibilityResults = (response) =>
+  Array.isArray(response?.results)
+    ? response.results
+    : [
+        ...(response?.artists || []).map((artist) => ({
+          kind: 'artist',
+          artist,
+        })),
+        ...(response?.albums || []).map((album) => ({ kind: 'album', album })),
+        ...(response?.songs || []).map((song) => ({ kind: 'song', song })),
+        ...(response?.genres || []).map((genre) => ({ kind: 'genre', genre })),
+      ]
 
 const MusicSearch = () => {
-  const classes = useStyles()
-  const history = useHistory()
-  const [query, setQuery] = useState('')
-  const [recent, setRecent] = useState(readRecentSearches)
-  const [results, setResults] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const classes = useStyles(),
+    history = useHistory()
+  const [query, setQuery] = useState(initialQuery),
+    [recent, setRecent] = useState(readRecentSearches)
+  const [response, setResponse] = useState(null),
+    [loading, setLoading] = useState(false),
+    [error, setError] = useState('')
+  const generation = useRef(0),
+    controller = useRef(null),
+    debounceTimer = useRef(null)
   const { jobs, refreshJobs } = useDownloadJobs()
 
-  const runSearch = (value = query) => {
-    const trimmed = value.trim()
-    if (!trimmed || loading) return
-    setQuery(trimmed)
-    setRecent(saveRecentSearch(trimmed))
-    setLoading(true)
-    setError('')
-    musicProvider
-      .search(trimmed)
-      .then(setResults)
-      .catch(() => setError('Search is unavailable right now.'))
-      .finally(() => setLoading(false))
-  }
+  const runSearch = useCallback(
+    (value) => {
+      const trimmed = value.trim()
+      if (trimmed.length < 2) return
+      const requestGeneration = ++generation.current
+      controller.current?.abort()
+      controller.current = new AbortController()
+      setQuery(trimmed)
+      setRecent(saveRecentSearch(trimmed))
+      setLoading(true)
+      setError('')
+      const params = new URLSearchParams(window.location.search)
+      params.set('q', trimmed)
+      if (history.replace)
+        history.replace(`${window.location.pathname}?${params.toString()}`)
+      musicProvider
+        .search(trimmed, { signal: controller.current.signal, limit: 30 })
+        .then((value) => {
+          if (requestGeneration === generation.current) setResponse(value)
+        })
+        .catch((requestError) => {
+          if (
+            requestGeneration === generation.current &&
+            requestError?.name !== 'AbortError'
+          )
+            setError('Search is unavailable right now.')
+        })
+        .finally(() => {
+          if (requestGeneration === generation.current) setLoading(false)
+        })
+    },
+    [history],
+  )
 
-  const handleSubmit = (event) => {
-    event.preventDefault()
-    runSearch()
+  useEffect(() => {
+    if (query.trim().length < 2) return undefined
+    debounceTimer.current = setTimeout(() => runSearch(query), 500)
+    return () => clearTimeout(debounceTimer.current)
+  }, [query, runSearch])
+  useEffect(() => {
+    const restore = () => setQuery(initialQuery())
+    window.addEventListener('popstate', restore)
+    return () => {
+      window.removeEventListener('popstate', restore)
+      controller.current?.abort()
+    }
+  }, [])
+
+  const hits = compatibilityResults(response)
+  const runImmediate = (value) => {
+    clearTimeout(debounceTimer.current)
+    runSearch(value)
+  }
+  const renderHit = (hit, index) => {
+    const entity = hit[hit.kind]
+    if (!entity) return null
+    if (hit.kind === 'genre')
+      return (
+        <Chip
+          key={`${hit.kind}-${entity.name}-${index}`}
+          label={entity.name}
+          onClick={() => runImmediate(entity.name)}
+        />
+      )
+    const title = hit.kind === 'artist' ? entity.name : entity.title
+    const subtitle =
+      hit.kind === 'song'
+        ? [entity.artistName, entity.albumTitle].filter(Boolean).join(' • ')
+        : hit.kind === 'album'
+          ? [entity.artistName, entity.year].filter(Boolean).join(' • ')
+          : entity.disambiguation
+    const destination =
+      hit.kind === 'artist'
+        ? `/search/artist/${entity.id}`
+        : hit.kind === 'album'
+          ? `/search/album/${entity.id}`
+          : null
+    const body = (
+      <CardContent className={classes.row}>
+        <ExternalArtwork
+          artworkUrls={entity.artworkUrls}
+          imageUrl={entity.imageUrl}
+          alt={title}
+          className={classes.artwork}
+        />
+        <Box className={classes.content} flex={1}>
+          <Typography variant="h6" noWrap>
+            {title}
+          </Typography>
+          {subtitle && (
+            <Typography color="textSecondary" variant="body2" noWrap>
+              {subtitle}
+            </Typography>
+          )}
+          <Typography color="textSecondary" variant="caption">
+            {hit.kind}
+          </Typography>
+        </Box>
+      </CardContent>
+    )
+    return (
+      <Card className={classes.card} key={`${hit.kind}-${entity.id}-${index}`}>
+        <Box className={classes.row}>
+          {destination ? (
+            <ButtonBase
+              className={classes.resultButton}
+              onClick={() => history.push(destination)}
+            >
+              {body}
+            </ButtonBase>
+          ) : (
+            body
+          )}
+          {(hit.kind === 'song' || hit.kind === 'album') && (
+            <Box pr={2}>
+              <DownloadButton
+                kind={hit.kind}
+                id={entity.id}
+                onCreated={refreshJobs}
+              />
+            </Box>
+          )}
+        </Box>
+      </Card>
+    )
   }
 
   return (
@@ -259,7 +238,12 @@ const MusicSearch = () => {
       <Typography variant="h4" gutterBottom>
         Search music
       </Typography>
-      <form onSubmit={handleSubmit}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          runImmediate(query)
+        }}
+      >
         <TextField
           className={classes.search}
           fullWidth
@@ -278,10 +262,8 @@ const MusicSearch = () => {
           }}
         />
       </form>
-
       <DownloadStatus jobs={jobs} />
-
-      {!results && recent.length > 0 && (
+      {!response && recent.length > 0 && (
         <Box className={classes.recent}>
           <Typography variant="h6" gutterBottom>
             Recent searches
@@ -290,28 +272,33 @@ const MusicSearch = () => {
             <Chip
               key={value}
               label={value}
-              onClick={() => runSearch(value)}
+              onClick={() => runImmediate(value)}
               style={{ margin: 4 }}
             />
           ))}
         </Box>
       )}
-
       {loading && (
-        <Box display="flex" justifyContent="center" p={4}>
-          <CircularProgress />
+        <Box className={classes.refreshing}>
+          <CircularProgress size={20} />
+          <Typography color="textSecondary">Refreshing results…</Typography>
         </Box>
       )}
+      {response?.partial && (
+        <Typography color="textSecondary" paragraph>
+          Some sources are temporarily unavailable. Showing partial results.
+        </Typography>
+      )}
       {error && <Typography color="error">{error}</Typography>}
-      {results && !loading && (
-        <SearchResults
-          classes={classes}
-          history={history}
-          query={query}
-          refreshJobs={refreshJobs}
-          results={results}
-          runSearch={runSearch}
-        />
+      {response && (
+        <Box className={classes.results}>
+          {hits.map(renderHit)}
+          {hits.length === 0 && (
+            <Typography color="textSecondary">
+              No external results found.
+            </Typography>
+          )}
+        </Box>
       )}
     </Box>
   )

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/navidrome/navidrome/conf"
+	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/model"
 )
 
@@ -15,10 +16,11 @@ type fakeCatalog struct {
 	track      model.ExternalTrack
 	trackErr   error
 	songSearch []model.ExternalTrack
+	search     model.ExternalMusicSearch
 }
 
 func (f fakeCatalog) Search(context.Context, string) (model.ExternalMusicSearch, error) {
-	return model.ExternalMusicSearch{}, nil
+	return f.search, nil
 }
 
 func (f fakeCatalog) Artist(context.Context, string) (model.ExternalArtistDetails, error) {
@@ -90,6 +92,39 @@ func (f *fakeJobs) Update(job *model.MusicDownloadJob) error {
 }
 
 func (f *fakeJobs) RequeueRunning() error { return nil }
+
+type lookupOnlyAffinity struct{ calls int }
+
+func (f *lookupOnlyAffinity) LookupAffinityForCandidates(_ string, candidates []recommendations.TasteCandidateIdentity) (map[string]recommendations.TasteAffinity, error) {
+	f.calls++
+	result := make(map[string]recommendations.TasteAffinity, len(candidates))
+	for _, candidate := range candidates {
+		result[candidate.Key] = recommendations.ComposeTasteAffinity(0, 1, 0, 0)
+	}
+	return result, nil
+}
+
+func TestSearchRanksMixedResultsAndUsesLookupOnlyAffinity(t *testing.T) {
+	affinity := &lookupOnlyAffinity{}
+	service := NewWithAffinity(fakeCatalog{search: model.ExternalMusicSearch{
+		Artists: []model.ExternalArtist{{ID: "artist", Name: "Adele"}},
+		Songs:   []model.ExternalTrack{{ID: "song", Title: "Hello", ArtistName: "Adele"}},
+	}}, nil, nil, &fakeJobs{}, nil, affinity)
+
+	result, err := service.Search(context.Background(), "user-1", "Adele Hello", 30)
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if affinity.calls != 1 {
+		t.Fatalf("affinity lookup calls = %d, want 1", affinity.calls)
+	}
+	if len(result.Results) != 2 || result.Results[0].Song == nil {
+		t.Fatalf("unexpected mixed order: %#v", result.Results)
+	}
+	if len(result.Songs) != 1 || len(result.Artists) != 1 {
+		t.Fatalf("compatibility arrays not derived: %#v", result)
+	}
+}
 
 func TestCreateDownloadValidatesAndQueues(t *testing.T) {
 	jobs := &fakeJobs{}

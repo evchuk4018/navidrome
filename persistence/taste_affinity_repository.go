@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/navidrome/navidrome/core/music"
 	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/model"
 )
@@ -25,6 +26,10 @@ type tasteAffinityRepository struct {
 }
 
 func newTasteAffinityRepository(db *sql.DB) recommendations.TasteAffinityRepository {
+	return &tasteAffinityRepository{db: db}
+}
+
+func NewSearchAffinityRepository(db *sql.DB) music.SearchAffinityRepository {
 	return &tasteAffinityRepository{db: db}
 }
 
@@ -95,15 +100,19 @@ func (r *tasteAffinityRepository) rebuild(userID string, now time.Time) error {
 }
 
 func (r *tasteAffinityRepository) AffinityForCandidates(userID string, candidates []recommendations.TasteCandidateIdentity) (map[string]recommendations.TasteAffinity, error) {
+	if err := r.EnsureFresh(userID, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	return r.LookupAffinityForCandidates(userID, candidates)
+}
+
+// LookupAffinityForCandidates only reads the last generated snapshot. Search
+// uses this method so a request never triggers a library-sized rebuild.
+func (r *tasteAffinityRepository) LookupAffinityForCandidates(userID string, candidates []recommendations.TasteCandidateIdentity) (map[string]recommendations.TasteAffinity, error) {
 	result := make(map[string]recommendations.TasteAffinity, len(candidates))
 	if len(candidates) == 0 {
 		return result, nil
 	}
-	now := time.Now().UTC()
-	if err := r.EnsureFresh(userID, now); err != nil {
-		return nil, err
-	}
-
 	keysByType := map[string]map[string]struct{}{
 		"track":  {},
 		"artist": {},

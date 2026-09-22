@@ -47,15 +47,21 @@ describe('<MusicSearch />', () => {
     localStorage.clear()
   })
 
-  it('renders a matching song before unrelated artist results', async () => {
+  it('preserves the mixed server result order', async () => {
     mocks.search.mockResolvedValue(
       searchResults({
-        artists: [{ id: 'unrelated', name: 'The Boy That Got Away' }],
-        songs: [
+        results: [
           {
-            id: 'the-one-that-got-away',
-            title: 'The One That Got Away',
-            artistName: 'Katy Perry',
+            kind: 'song',
+            song: {
+              id: 'the-one-that-got-away',
+              title: 'The One That Got Away',
+              artistName: 'Katy Perry',
+            },
+          },
+          {
+            kind: 'artist',
+            artist: { id: 'unrelated', name: 'The Boy That Got Away' },
           },
         ],
       }),
@@ -64,13 +70,15 @@ describe('<MusicSearch />', () => {
     render(<MusicSearch />)
     submitSearch('The one that got away')
 
-    const songsHeading = await screen.findByRole('heading', { name: 'Songs' })
-    const artistsHeading = await screen.findByRole('heading', {
-      name: 'Artists',
+    const songHeading = await screen.findByRole('heading', {
+      name: 'The One That Got Away',
+    })
+    const artistHeading = await screen.findByRole('heading', {
+      name: 'The Boy That Got Away',
     })
 
     expect(
-      songsHeading.compareDocumentPosition(artistsHeading) &
+      songHeading.compareDocumentPosition(artistHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(screen.getByText('Katy Perry')).toBeInTheDocument()
@@ -79,8 +87,13 @@ describe('<MusicSearch />', () => {
   it('keeps artists before songs for an exact artist search', async () => {
     mocks.search.mockResolvedValue(
       searchResults({
-        artists: [{ id: 'katy-perry', name: 'Katy Perry' }],
-        songs: [{ id: 'roar', title: 'Roar', artistName: 'Katy Perry' }],
+        results: [
+          { kind: 'artist', artist: { id: 'katy-perry', name: 'Katy Perry' } },
+          {
+            kind: 'song',
+            song: { id: 'roar', title: 'Roar', artistName: 'Katy Perry' },
+          },
+        ],
       }),
     )
 
@@ -88,12 +101,10 @@ describe('<MusicSearch />', () => {
     submitSearch('Katy Perry')
 
     await waitFor(() =>
-      expect(
-        screen.getByRole('heading', { name: 'Songs' }),
-      ).toBeInTheDocument(),
+      expect(screen.getByRole('heading', { name: 'Roar' })).toBeInTheDocument(),
     )
-    const artistsHeading = screen.getByRole('heading', { name: 'Artists' })
-    const songsHeading = screen.getByRole('heading', { name: 'Songs' })
+    const artistsHeading = screen.getByRole('heading', { name: 'Katy Perry' })
+    const songsHeading = screen.getByRole('heading', { name: 'Roar' })
 
     expect(
       artistsHeading.compareDocumentPosition(songsHeading) &

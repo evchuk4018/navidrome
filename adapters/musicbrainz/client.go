@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -16,9 +17,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/navidrome/navidrome/adapters/lastfm"
 	"github.com/navidrome/navidrome/adapters/listenbrainz"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -26,6 +29,7 @@ const (
 	cacheTTL             = 10 * time.Minute
 	maxResponse          = 8 << 20
 	recordingSearchLimit = 100
+	maxCacheEntries      = 512
 )
 
 type httpDoer interface {
@@ -36,25 +40,34 @@ type popularityProvider interface {
 	GetRecordingPopularity(context.Context, []string) (map[string]model.RecordingPopularity, error)
 }
 
+type candidateSeedProvider interface {
+	Search(context.Context, string) lastfm.CandidateSeeds
+}
+
 type Client struct {
 	baseURL    string
 	http       httpDoer
 	popularity popularityProvider
+	seeds      candidateSeedProvider
 
-	rateMu      sync.Mutex
+	rateSlot    chan struct{}
 	lastRequest time.Time
 
-	cacheMu sync.RWMutex
-	cache   map[string]cacheEntry
+	cacheMu  sync.RWMutex
+	cache    map[string]cacheEntry
+	requests singleflight.Group
 }
 
 type cacheEntry struct {
 	body      []byte
 	expiresAt time.Time
+	storedAt  time.Time
 }
 
 func New() *Client {
-	return newWithPopularity(defaultBaseURL, http.DefaultClient, listenbrainz.NewPopularityClient())
+	client := newWithPopularity(defaultBaseURL, http.DefaultClient, listenbrainz.NewPopularityClient())
+	client.seeds = lastfm.NewSearchClient()
+	return client
 }
 
 func NewWithClient(baseURL string, client httpDoer) *Client {
@@ -73,65 +86,120 @@ func newWithPopularity(baseURL string, client httpDoer, popularity popularityPro
 		http:       client,
 		popularity: popularity,
 		cache:      make(map[string]cacheEntry),
+		rateSlot:   make(chan struct{}, 1),
 	}
 }
 
 func (c *Client) Search(ctx context.Context, query string) (model.ExternalMusicSearch, error) {
+	startedAt := time.Now()
+	query = strings.TrimSpace(query)
+	seedResults := lastfm.CandidateSeeds{}
+	if c.seeds != nil {
+		seedResults = c.seeds.Search(ctx, query)
+	}
 	var artists mbArtistSearchResponse
-	if err := c.get(ctx, "/artist", queryValues(query), &artists); err != nil {
-		return model.ExternalMusicSearch{}, fmt.Errorf("search artists: %w", err)
-	}
-
 	var groups mbReleaseGroupSearchResponse
-	if err := c.get(ctx, "/release-group", queryValues(query), &groups); err != nil {
-		return model.ExternalMusicSearch{}, fmt.Errorf("search albums: %w", err)
+	var recordings mbRecordingSearchResponse
+	var genres mbTagSearchResponse
+	type laneResult struct {
+		name string
+		err  error
+	}
+	lanes := make(chan laneResult, 4)
+	go func() {
+		lanes <- laneResult{"musicbrainz:artists", c.get(ctx, "/artist", artistQueryValues(query, seedResults.Seeds), &artists)}
+	}()
+	go func() {
+		lanes <- laneResult{"musicbrainz:albums", c.get(ctx, "/release-group", albumQueryValues(query, seedResults.Seeds), &groups)}
+	}()
+	go func() {
+		err := c.get(ctx, "/recording", recordingQueryValuesWithSeeds(query, false, seedResults.Seeds), &recordings)
+		if err == nil && len(recordings.Recordings) < 5 {
+			var fuzzy mbRecordingSearchResponse
+			if fuzzyErr := c.get(ctx, "/recording", recordingQueryValues(query, true), &fuzzy); fuzzyErr == nil {
+				recordings.Recordings = appendUniqueRecordings(recordings.Recordings, fuzzy.Recordings...)
+			}
+		}
+		lanes <- laneResult{"musicbrainz:songs", err}
+	}()
+	go func() {
+		lanes <- laneResult{"musicbrainz:genres", c.get(ctx, "/tag", genreQueryValues(query), &genres)}
+	}()
+	degraded := append([]string(nil), seedResults.Degraded...)
+	succeeded := 0
+	var laneErrors []error
+	for range 4 {
+		lane := <-lanes
+		if lane.err != nil {
+			degraded = append(degraded, lane.name)
+			laneErrors = append(laneErrors, fmt.Errorf("%s: %w", lane.name, lane.err))
+		} else {
+			succeeded++
+		}
+	}
+	if succeeded == 0 {
+		return model.ExternalMusicSearch{}, fmt.Errorf("all MusicBrainz search lanes failed: %w", errors.Join(laneErrors...))
 	}
 
-	var recordings mbRecordingSearchResponse
-	if err := c.get(ctx, "/recording", recordingQueryValues(query), &recordings); err != nil {
-		return model.ExternalMusicSearch{}, fmt.Errorf("search songs: %w", err)
-	}
 	popularity := map[string]model.RecordingPopularity(nil)
+	popularityDegraded := false
 	if c.popularity != nil && len(recordings.Recordings) > 0 {
 		var err error
 		popularity, err = c.popularity.GetRecordingPopularity(ctx, recordingIDs(recordings.Recordings))
 		if err != nil {
 			log.Warn(ctx, "ListenBrainz popularity lookup failed; using MusicBrainz ordering", err)
 			popularity = nil
+			popularityDegraded = true
 		}
 	}
 	sortRecordingsByRelevance(recordings.Recordings, query, popularity)
-	var genres mbTagSearchResponse
-	if err := c.get(ctx, "/tag", queryValues(query), &genres); err != nil {
-		return model.ExternalMusicSearch{}, fmt.Errorf("search genres: %w", err)
-	}
-
 	result := model.ExternalMusicSearch{
-		Artists: make([]model.ExternalArtist, 0, len(artists.Artists)),
-		Albums:  make([]model.ExternalAlbum, 0, len(groups.ReleaseGroups)),
-		Songs:   make([]model.ExternalTrack, 0, len(recordings.Recordings)),
-		Genres:  make([]model.ExternalGenre, 0, len(genres.Tags)),
+		Partial:         len(degraded) > 0,
+		DegradedSources: degraded,
+		Artists:         make([]model.ExternalArtist, 0, len(artists.Artists)),
+		Albums:          make([]model.ExternalAlbum, 0, len(groups.ReleaseGroups)),
+		Songs:           make([]model.ExternalTrack, 0, len(recordings.Recordings)),
+		Genres:          make([]model.ExternalGenre, 0, len(genres.Tags)),
+	}
+	if popularityDegraded {
+		result.Partial = true
+		result.DegradedSources = append(result.DegradedSources, "listenbrainz:popularity")
 	}
 	tags := make(map[string]struct{})
 	for _, artist := range artists.Artists {
-		result.Artists = append(result.Artists, externalArtist(artist))
+		external := externalArtist(artist)
+		external.Popularity, _ = lastFMSeedMatch("artist", external.Name, "", seedResults.Seeds)
+		result.Artists = append(result.Artists, external)
 		collectTags(tags, artist.Tags, query)
 	}
 	for _, group := range groups.ReleaseGroups {
-		result.Albums = append(result.Albums, externalAlbum(group))
+		external := externalAlbum(group)
+		lastFMPopularity, artwork := lastFMSeedMatch("album", external.Title, external.ArtistName, seedResults.Seeds)
+		external.Popularity = lastFMPopularity
+		external.ArtworkURLs = httpsArtworkURLs(append(external.ArtworkURLs, artwork)...)
+		external.ImageURL = firstArtwork(external.ArtworkURLs)
+		result.Albums = append(result.Albums, external)
 		collectTags(tags, group.Tags, query)
 	}
 	for _, recording := range recordings.Recordings {
-		result.Songs = append(result.Songs, externalTrack(recording))
+		track := externalTrack(recording)
+		lastFMPopularity, artwork := lastFMSeedMatch("song", track.Title, track.ArtistName, seedResults.Seeds)
+		track.Popularity = max(recordingPopularityScore(popularity[recording.ID]), lastFMPopularity)
+		track.ArtworkURLs = httpsArtworkURLs(append(track.ArtworkURLs, artwork)...)
+		track.ImageURL = firstArtwork(track.ArtworkURLs)
+		result.Songs = append(result.Songs, track)
 		collectTags(tags, recording.Tags, query)
 	}
 	for _, genre := range genres.Tags {
 		collectTags(tags, []mbTag{genre}, query)
 	}
 	for tag := range tags {
-		result.Genres = append(result.Genres, model.ExternalGenre{Name: tag})
+		result.Genres = append(result.Genres, model.ExternalGenre{Name: tag, ProviderScore: tagScore(tag, genres.Tags)})
 	}
 	sort.Slice(result.Genres, func(i, j int) bool { return result.Genres[i].Name < result.Genres[j].Name })
+	log.Debug(ctx, "External catalog search completed",
+		"elapsed", time.Since(startedAt), "artists", len(result.Artists), "albums", len(result.Albums),
+		"songs", len(result.Songs), "genres", len(result.Genres), "partial", result.Partial)
 	return result, nil
 }
 
@@ -186,7 +254,7 @@ func (c *Client) Album(ctx context.Context, albumID string) (model.ExternalAlbum
 		}, nil
 	}
 
-	releaseID := group.Releases[0].ID
+	releaseID := selectedReleaseID(group.Releases)
 	var release mbRelease
 	if err := c.get(ctx, "/release/"+releaseID, values("inc", "recordings artist-credits"), &release); err != nil {
 		return model.ExternalAlbumDetails{}, fmt.Errorf("get album tracks: %w", err)
@@ -203,7 +271,8 @@ func (c *Client) Album(ctx context.Context, albumID string) (model.ExternalAlbum
 			external.AlbumID = group.ID
 			external.AlbumTitle = group.Title
 			external.ArtistName = firstNonEmpty(external.ArtistName, album.ArtistName)
-			external.ImageURL = coverArtURL(group.ID)
+			external.ArtworkURLs = httpsArtworkURLs(coverArtReleaseURL(release.ID), coverArtURL(group.ID))
+			external.ImageURL = firstArtwork(external.ArtworkURLs)
 			external.ReleaseDate = firstNonEmpty(group.FirstReleaseDate, release.Date)
 			external.Year = yearFromDate(external.ReleaseDate)
 			external.TrackNumber = track.Position
@@ -249,12 +318,45 @@ func (c *Client) SearchSongs(ctx context.Context, query string) ([]model.Externa
 	sortRecordingsByRelevance(recordings.Recordings, query, popularity)
 	songs := make([]model.ExternalTrack, 0, len(recordings.Recordings))
 	for _, recording := range recordings.Recordings {
-		songs = append(songs, externalTrack(recording))
+		track := externalTrack(recording)
+		track.Popularity = recordingPopularityScore(popularity[recording.ID])
+		songs = append(songs, track)
 	}
 	return songs, nil
 }
 
 func (c *Client) get(ctx context.Context, path string, params url.Values, target ...any) error {
+	canonical := cloneValues(params)
+	canonical.Set("fmt", "json")
+	if canonical.Get("limit") == "" {
+		canonical.Set("limit", "20")
+	}
+	parsed, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		return err
+	}
+	parsed.RawQuery = canonical.Encode()
+	key := parsed.String()
+	if body, ok := c.cached(key); ok {
+		return json.Unmarshal(body, targetValue(target))
+	}
+	value, err, _ := c.requests.Do(key, func() (any, error) {
+		if body, ok := c.cached(key); ok {
+			return body, nil
+		}
+		var raw json.RawMessage
+		if fetchErr := c.getUnshared(ctx, path, canonical, &raw); fetchErr != nil {
+			return nil, fetchErr
+		}
+		return []byte(raw), nil
+	})
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(value.([]byte), targetValue(target))
+}
+
+func (c *Client) getUnshared(ctx context.Context, path string, params url.Values, target ...any) error {
 	params = cloneValues(params)
 	params.Set("fmt", "json")
 	if params.Get("limit") == "" {
@@ -380,26 +482,24 @@ func sleep(ctx context.Context, duration time.Duration) error {
 }
 
 func (c *Client) waitForRateLimit(ctx context.Context) error {
-	c.rateMu.Lock()
-	now := time.Now()
-	nextRequest := now
-	if c.lastRequest.After(nextRequest) {
-		nextRequest = c.lastRequest
-	}
-	wait := nextRequest.Sub(now)
-	c.lastRequest = nextRequest.Add(time.Second)
-	c.rateMu.Unlock()
-	if wait == 0 {
-		return nil
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
 	select {
+	case c.rateSlot <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-timer.C:
-		return nil
 	}
+	defer func() { <-c.rateSlot }()
+	wait := time.Until(c.lastRequest.Add(time.Second))
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	c.lastRequest = time.Now()
+	return nil
 }
 
 func (c *Client) cached(key string) ([]byte, bool) {
@@ -414,7 +514,25 @@ func (c *Client) cached(key string) ([]byte, bool) {
 
 func (c *Client) store(key string, body []byte) {
 	c.cacheMu.Lock()
-	c.cache[key] = cacheEntry{body: bytes.Clone(body), expiresAt: time.Now().Add(cacheTTL)}
+	now := time.Now()
+	for cacheKey, entry := range c.cache {
+		if now.After(entry.expiresAt) {
+			delete(c.cache, cacheKey)
+		}
+	}
+	if len(c.cache) >= maxCacheEntries {
+		oldestKey := ""
+		var oldest time.Time
+		for cacheKey, entry := range c.cache {
+			if oldestKey == "" || entry.storedAt.Before(oldest) {
+				oldestKey, oldest = cacheKey, entry.storedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(c.cache, oldestKey)
+		}
+	}
+	c.cache[key] = cacheEntry{body: bytes.Clone(body), expiresAt: now.Add(cacheTTL), storedAt: now}
 	c.cacheMu.Unlock()
 }
 
@@ -433,10 +551,152 @@ func queryValues(query string) url.Values {
 	return params
 }
 
-func recordingQueryValues(query string) url.Values {
-	params := queryValues(query)
+func artistQueryValues(query string, seedOptions ...[]lastfm.SearchSeed) url.Values {
+	exact, prefix := lucenePhrase(query), lucenePrefix(query)
+	clauses := []string{fmt.Sprintf(`artist:"%s" OR alias:"%s" OR artist:%s`, exact, exact, prefix)}
+	for _, seed := range selectedSeeds("artist", seedOptions...) {
+		if validateID(seed.MBID) == nil {
+			clauses = append(clauses, "arid:"+seed.MBID)
+		}
+	}
+	params := queryValues(strings.Join(clauses, " OR "))
+	params.Set("inc", "tags aliases")
+	return params
+}
+
+func albumQueryValues(query string, seedOptions ...[]lastfm.SearchSeed) url.Values {
+	exact, prefix := lucenePhrase(query), lucenePrefix(query)
+	clauses := []string{fmt.Sprintf(`releasegroup:"%s" OR release:"%s" OR releasegroup:%s`, exact, exact, prefix)}
+	for _, seed := range selectedSeeds("album", seedOptions...) {
+		clauses = append(clauses, fmt.Sprintf(`(releasegroup:"%s" AND artist:"%s")`, lucenePhrase(seed.Name), lucenePhrase(seed.Artist)))
+	}
+	params := queryValues(strings.Join(clauses, " OR "))
+	params.Set("inc", "tags artist-credits releases")
+	return params
+}
+
+func genreQueryValues(query string) url.Values {
+	exact, prefix := lucenePhrase(query), lucenePrefix(query)
+	params := queryValues(fmt.Sprintf(`tag:"%s" OR tag:%s`, exact, prefix))
+	params.Del("inc")
+	return params
+}
+
+func recordingQueryValues(query string, fuzzyOption ...bool) url.Values {
+	fuzzy := len(fuzzyOption) > 0 && fuzzyOption[0]
+	return recordingQueryValuesWithSeeds(query, fuzzy, nil)
+}
+
+func recordingQueryValuesWithSeeds(query string, fuzzy bool, seeds []lastfm.SearchSeed) url.Values {
+	exact := lucenePhrase(query)
+	tokens := luceneTokens(query)
+	clauses := []string{fmt.Sprintf(`recording:"%s"`, exact)}
+	if tokens != "" {
+		clauses = append(clauses, "("+tokens+")", "("+lucenePrefix(query)+")")
+	}
+	if fuzzy {
+		clauses = []string{fmt.Sprintf(`recording:(%s~1)`, luceneEscape(strings.TrimSpace(query)))}
+	} else {
+		for _, seed := range selectedSeeds("song", seeds) {
+			if validateID(seed.MBID) == nil {
+				clauses = append(clauses, "rid:"+seed.MBID)
+			}
+			clauses = append(clauses, fmt.Sprintf(`(recording:"%s" AND artist:"%s")`, lucenePhrase(seed.Name), lucenePhrase(seed.Artist)))
+		}
+	}
+	params := queryValues(strings.Join(clauses, " OR "))
+	params.Set("inc", "tags artist-credits releases isrcs")
 	params.Set("limit", fmt.Sprintf("%d", recordingSearchLimit))
 	return params
+}
+
+func selectedSeeds(kind string, seedOptions ...[]lastfm.SearchSeed) []lastfm.SearchSeed {
+	if len(seedOptions) == 0 {
+		return nil
+	}
+	result := make([]lastfm.SearchSeed, 0, 5)
+	for _, seed := range seedOptions[0] {
+		if seed.Kind == kind {
+			result = append(result, seed)
+			if len(result) == 5 {
+				break
+			}
+		}
+	}
+	return result
+}
+
+func lastFMSeedMatch(kind, name, artist string, seeds []lastfm.SearchSeed) (float64, string) {
+	name = normalizeSearchText(name)
+	artist = normalizeSearchText(artist)
+	var popularity float64
+	artwork := ""
+	for _, seed := range seeds {
+		if seed.Kind != kind || normalizeSearchText(seed.Name) != name {
+			continue
+		}
+		if artist != "" && normalizeSearchText(seed.Artist) != artist {
+			continue
+		}
+		if seed.Popularity > popularity {
+			popularity = seed.Popularity
+		}
+		if artwork == "" && strings.HasPrefix(strings.ToLower(seed.ImageURL), "https://") {
+			artwork = seed.ImageURL
+		}
+	}
+	return popularity, artwork
+}
+
+func lucenePhrase(value string) string { return luceneEscape(strings.TrimSpace(value)) }
+
+func luceneEscape(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		if strings.ContainsRune(`+\-&|!(){}[]^"~*?:\\/`, r) {
+			builder.WriteRune('\\')
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
+}
+
+func luceneTokens(value string) string {
+	parts := strings.Fields(value)
+	clauses := make([]string, 0, len(parts))
+	for _, part := range parts {
+		escaped := luceneEscape(part)
+		if escaped != "" {
+			clauses = append(clauses, "(recording:"+escaped+" OR artist:"+escaped+" OR release:"+escaped+")")
+		}
+	}
+	return strings.Join(clauses, " AND ")
+}
+
+func lucenePrefix(value string) string {
+	parts := strings.Fields(value)
+	if len(parts) == 0 {
+		return `""`
+	}
+	for i := range parts {
+		parts[i] = luceneEscape(parts[i])
+	}
+	parts[len(parts)-1] += "*"
+	return strings.Join(parts, " AND ")
+}
+
+func appendUniqueRecordings(destination []mbRecording, values ...mbRecording) []mbRecording {
+	seen := make(map[string]struct{}, len(destination))
+	for _, value := range destination {
+		seen[value.ID] = struct{}{}
+	}
+	for _, value := range values {
+		if _, ok := seen[value.ID]; !ok {
+			destination = append(destination, value)
+			seen[value.ID] = struct{}{}
+		}
+	}
+	return destination
 }
 
 func recordingIDs(recordings []mbRecording) []string {
@@ -483,6 +743,12 @@ func validateID(value string) error {
 }
 
 func externalArtist(artist mbArtist) model.ExternalArtist {
+	aliases := make([]string, 0, len(artist.Aliases))
+	for _, alias := range artist.Aliases {
+		if alias.Name != "" {
+			aliases = append(aliases, alias.Name)
+		}
+	}
 	return model.ExternalArtist{
 		ID:             artist.ID,
 		Name:           firstNonEmpty(artist.Name, artist.SortName),
@@ -490,37 +756,63 @@ func externalArtist(artist mbArtist) model.ExternalArtist {
 		Country:        artist.Country,
 		Disambiguation: artist.Disambiguation,
 		Type:           artist.Type,
+		Aliases:        aliases,
+		ProviderScore:  float64(artist.Score) / 100,
 	}
 }
 
 func externalAlbum(group mbReleaseGroup) model.ExternalAlbum {
+	artwork := httpsArtworkURLs(coverArtReleaseURL(selectedReleaseID(group.Releases)), coverArtURL(group.ID))
 	return model.ExternalAlbum{
-		ID:          group.ID,
-		Title:       group.Title,
-		ArtistID:    artistCreditID(group.ArtistCredit),
-		ArtistName:  artistCreditName(group.ArtistCredit),
-		ReleaseDate: group.FirstReleaseDate,
-		Year:        yearFromDate(group.FirstReleaseDate),
-		Type:        group.PrimaryType,
-		TrackCount:  0,
-		ImageURL:    coverArtURL(group.ID),
+		ID:            group.ID,
+		Title:         group.Title,
+		ArtistID:      artistCreditID(group.ArtistCredit),
+		ArtistName:    artistCreditName(group.ArtistCredit),
+		ReleaseDate:   group.FirstReleaseDate,
+		Year:          yearFromDate(group.FirstReleaseDate),
+		Type:          group.PrimaryType,
+		TrackCount:    0,
+		ImageURL:      firstArtwork(artwork),
+		ArtworkURLs:   artwork,
+		ProviderScore: float64(group.Score) / 100,
 	}
+}
+
+func selectedReleaseID(releases []mbReleaseSummary) string {
+	if len(releases) == 0 {
+		return ""
+	}
+	ordered := append([]mbReleaseSummary(nil), releases...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftOfficial := strings.EqualFold(ordered[i].Status, "Official")
+		rightOfficial := strings.EqualFold(ordered[j].Status, "Official")
+		if leftOfficial != rightOfficial {
+			return leftOfficial
+		}
+		return earlierReleaseDate(ordered[i].Date, ordered[j].Date)
+	})
+	return ordered[0].ID
 }
 
 func externalRecording(recording mbRecording) model.ExternalTrack {
 	return model.ExternalTrack{
-		ID:         recording.ID,
-		Title:      recording.Title,
-		ArtistID:   artistCreditID(recording.ArtistCredit),
-		ArtistName: artistCreditName(recording.ArtistCredit),
-		Duration:   recording.Length / 1000,
-		Genre:      firstTag(recording.Tags),
+		ID:            recording.ID,
+		Title:         recording.Title,
+		ArtistID:      artistCreditID(recording.ArtistCredit),
+		ArtistName:    artistCreditName(recording.ArtistCredit),
+		Duration:      recording.Length / 1000,
+		Genre:         firstTag(recording.Tags),
+		ISRCs:         append([]string(nil), recording.ISRCs...),
+		Video:         recording.Video,
+		ProviderScore: float64(recording.Score) / 100,
 	}
 }
 
 func externalTrack(recording mbRecording) model.ExternalTrack {
 	track := externalRecording(recording)
-	for _, release := range recording.Releases {
+	releases := append([]mbRecordingRelease(nil), recording.Releases...)
+	sort.SliceStable(releases, func(i, j int) bool { return releaseBetter(releases[i], releases[j], track.ArtistID) })
+	for _, release := range releases {
 		if release.ReleaseGroup.ID == "" {
 			continue
 		}
@@ -528,10 +820,40 @@ func externalTrack(recording mbRecording) model.ExternalTrack {
 		track.AlbumTitle = firstNonEmpty(release.ReleaseGroup.Title, release.Title)
 		track.ReleaseDate = firstNonEmpty(release.ReleaseGroup.FirstReleaseDate, release.Date)
 		track.Year = yearFromDate(track.ReleaseDate)
-		track.ImageURL = coverArtURL(release.ReleaseGroup.ID)
+		track.ArtworkURLs = httpsArtworkURLs(coverArtReleaseURL(release.ID), coverArtURL(release.ReleaseGroup.ID))
+		track.ImageURL = firstArtwork(track.ArtworkURLs)
 		break
 	}
 	return track
+}
+
+func releaseBetter(left, right mbRecordingRelease, primaryArtistID string) bool {
+	score := func(release mbRecordingRelease) int {
+		value := 0
+		if strings.EqualFold(release.Status, "Official") {
+			value += 8
+		}
+		if artistCreditID(release.ArtistCredit) == primaryArtistID {
+			value += 4
+		}
+		for _, secondary := range release.ReleaseGroup.SecondaryTypes {
+			if strings.EqualFold(secondary, "Compilation") {
+				value -= 8
+			}
+		}
+		return value
+	}
+	leftScore, rightScore := score(left), score(right)
+	if leftScore != rightScore {
+		return leftScore > rightScore
+	}
+	return earlierReleaseDate(left.Date, right.Date)
+}
+
+func earlierReleaseDate(left, right string) bool { return left != "" && (right == "" || left < right) }
+
+func recordingPopularityScore(value model.RecordingPopularity) float64 {
+	return .7*math.Log1p(float64(value.TotalUserCount)) + .3*math.Log1p(float64(value.TotalListenCount))
 }
 
 func artistCreditName(credits []mbArtistCredit) string {
@@ -579,6 +901,45 @@ func coverArtURL(releaseGroupID string) string {
 	return "https://coverartarchive.org/release-group/" + releaseGroupID + "/front-250"
 }
 
+func coverArtReleaseURL(releaseID string) string {
+	if releaseID == "" {
+		return ""
+	}
+	return "https://coverartarchive.org/release/" + releaseID + "/front-250"
+}
+
+func httpsArtworkURLs(values ...string) []string {
+	result := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		if !strings.HasPrefix(strings.ToLower(value), "https://") {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func firstArtwork(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func tagScore(name string, tags []mbTag) float64 {
+	for _, tag := range tags {
+		if strings.EqualFold(tag.Name, name) {
+			return float64(tag.Score) / 100
+		}
+	}
+	return 0
+}
+
 func yearFromDate(value string) int {
 	if len(value) < 4 {
 		return 0
@@ -600,17 +961,24 @@ func firstNonEmpty(values ...string) string {
 }
 
 type mbTag struct {
+	Name  string `json:"name"`
+	Score int    `json:"score"`
+}
+
+type mbAlias struct {
 	Name string `json:"name"`
 }
 
 type mbArtist struct {
-	ID             string  `json:"id"`
-	Name           string  `json:"name"`
-	SortName       string  `json:"sort-name"`
-	Country        string  `json:"country"`
-	Disambiguation string  `json:"disambiguation"`
-	Type           string  `json:"type"`
-	Tags           []mbTag `json:"tags"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	SortName       string    `json:"sort-name"`
+	Country        string    `json:"country"`
+	Disambiguation string    `json:"disambiguation"`
+	Type           string    `json:"type"`
+	Tags           []mbTag   `json:"tags"`
+	Aliases        []mbAlias `json:"aliases"`
+	Score          int       `json:"score"`
 }
 
 type mbArtistCredit struct {
@@ -627,11 +995,14 @@ type mbReleaseGroup struct {
 	ArtistCredit     []mbArtistCredit   `json:"artist-credit"`
 	Tags             []mbTag            `json:"tags"`
 	Releases         []mbReleaseSummary `json:"releases"`
+	SecondaryTypes   []string           `json:"secondary-types"`
+	Score            int                `json:"score"`
 }
 
 type mbReleaseSummary struct {
-	ID   string `json:"id"`
-	Date string `json:"date"`
+	ID     string `json:"id"`
+	Date   string `json:"date"`
+	Status string `json:"status"`
 }
 
 type mbRelease struct {
@@ -659,12 +1030,17 @@ type mbRecording struct {
 	ArtistCredit []mbArtistCredit     `json:"artist-credit"`
 	Tags         []mbTag              `json:"tags"`
 	Releases     []mbRecordingRelease `json:"releases"`
+	ISRCs        []string             `json:"isrcs"`
+	Video        bool                 `json:"video"`
 }
 
 type mbRecordingRelease struct {
-	Date         string         `json:"date"`
-	Title        string         `json:"title"`
-	ReleaseGroup mbReleaseGroup `json:"release-group"`
+	ID           string           `json:"id"`
+	Date         string           `json:"date"`
+	Title        string           `json:"title"`
+	Status       string           `json:"status"`
+	ArtistCredit []mbArtistCredit `json:"artist-credit"`
+	ReleaseGroup mbReleaseGroup   `json:"release-group"`
 }
 
 type mbArtistSearchResponse struct {

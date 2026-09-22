@@ -29,7 +29,21 @@ func (api *Router) searchExternalMusic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "external music search is not configured", http.StatusNotImplemented)
 		return
 	}
-	result, err := api.music.Search(r.Context(), r.URL.Query().Get("q"))
+	user, ok := request.UserFrom(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 50 {
+			http.Error(w, "limit must be between 1 and 50", http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+	result, err := api.music.Search(r.Context(), user.ID, r.URL.Query().Get("q"), limit)
 	if err != nil {
 		writeMusicError(w, r, err, http.StatusBadGateway)
 		return

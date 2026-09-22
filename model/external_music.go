@@ -5,52 +5,79 @@ import "time"
 // ExternalMusicSearch contains results returned by an external music catalog.
 // These types intentionally do not depend on the web UI or on a provider SDK.
 type ExternalMusicSearch struct {
+	Results         []ExternalSearchHit `json:"results"`
+	Partial         bool                `json:"partial,omitempty"`
+	DegradedSources []string            `json:"degradedSources,omitempty"`
+
 	Artists []ExternalArtist `json:"artists"`
 	Albums  []ExternalAlbum  `json:"albums"`
 	Songs   []ExternalTrack  `json:"songs"`
 	Genres  []ExternalGenre  `json:"genres"`
 }
 
+// ExternalSearchHit is one item in the server-ranked mixed search stream.
+// Exactly one entity pointer is populated for each hit.
+type ExternalSearchHit struct {
+	Kind   string          `json:"kind"`
+	Artist *ExternalArtist `json:"artist,omitempty"`
+	Album  *ExternalAlbum  `json:"album,omitempty"`
+	Song   *ExternalTrack  `json:"song,omitempty"`
+	Genre  *ExternalGenre  `json:"genre,omitempty"`
+}
+
 type ExternalArtist struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	SortName       string `json:"sortName,omitempty"`
-	Country        string `json:"country,omitempty"`
-	Disambiguation string `json:"disambiguation,omitempty"`
-	Type           string `json:"type,omitempty"`
-	ImageURL       string `json:"imageUrl,omitempty"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	SortName       string   `json:"sortName,omitempty"`
+	Country        string   `json:"country,omitempty"`
+	Disambiguation string   `json:"disambiguation,omitempty"`
+	Type           string   `json:"type,omitempty"`
+	ImageURL       string   `json:"imageUrl,omitempty"`
+	Aliases        []string `json:"-"`
+	ProviderScore  float64  `json:"-"`
+	Popularity     float64  `json:"-"`
 }
 
 type ExternalAlbum struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	ArtistID    string `json:"artistId,omitempty"`
-	ArtistName  string `json:"artistName,omitempty"`
-	ReleaseDate string `json:"releaseDate,omitempty"`
-	Year        int    `json:"year,omitempty"`
-	Type        string `json:"type,omitempty"`
-	TrackCount  int    `json:"trackCount,omitempty"`
-	ImageURL    string `json:"imageUrl,omitempty"`
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	ArtistID      string   `json:"artistId,omitempty"`
+	ArtistName    string   `json:"artistName,omitempty"`
+	ReleaseDate   string   `json:"releaseDate,omitempty"`
+	Year          int      `json:"year,omitempty"`
+	Type          string   `json:"type,omitempty"`
+	TrackCount    int      `json:"trackCount,omitempty"`
+	ImageURL      string   `json:"imageUrl,omitempty"`
+	ArtworkURLs   []string `json:"artworkUrls,omitempty"`
+	ProviderScore float64  `json:"-"`
+	Popularity    float64  `json:"-"`
 }
 
 type ExternalTrack struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	ArtistID    string `json:"artistId,omitempty"`
-	ArtistName  string `json:"artistName,omitempty"`
-	AlbumID     string `json:"albumId,omitempty"`
-	AlbumTitle  string `json:"albumTitle,omitempty"`
-	ReleaseDate string `json:"releaseDate,omitempty"`
-	Year        int    `json:"year,omitempty"`
-	Duration    int    `json:"duration,omitempty"`
-	TrackNumber int    `json:"trackNumber,omitempty"`
-	DiscNumber  int    `json:"discNumber,omitempty"`
-	Genre       string `json:"genre,omitempty"`
-	ImageURL    string `json:"imageUrl,omitempty"`
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	ArtistID      string   `json:"artistId,omitempty"`
+	ArtistName    string   `json:"artistName,omitempty"`
+	AlbumID       string   `json:"albumId,omitempty"`
+	AlbumTitle    string   `json:"albumTitle,omitempty"`
+	ReleaseDate   string   `json:"releaseDate,omitempty"`
+	Year          int      `json:"year,omitempty"`
+	Duration      int      `json:"duration,omitempty"`
+	TrackNumber   int      `json:"trackNumber,omitempty"`
+	DiscNumber    int      `json:"discNumber,omitempty"`
+	Genre         string   `json:"genre,omitempty"`
+	ImageURL      string   `json:"imageUrl,omitempty"`
+	ArtworkURLs   []string `json:"artworkUrls,omitempty"`
+	ISRCs         []string `json:"isrcs,omitempty"`
+	Video         bool     `json:"video,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	ProviderScore float64  `json:"-"`
+	Popularity    float64  `json:"-"`
 }
 
 type ExternalGenre struct {
-	Name string `json:"name"`
+	Name          string  `json:"name"`
+	ProviderScore float64 `json:"-"`
 }
 
 type ExternalArtistDetails struct {

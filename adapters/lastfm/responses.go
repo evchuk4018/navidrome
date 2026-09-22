@@ -1,6 +1,7 @@
 package lastfm
 
 type Response struct {
+	Results        SearchResults  `json:"results"`
 	Artist         Artist         `json:"artist"`
 	SimilarArtists SimilarArtists `json:"similarartists"`
 	TopTracks      TopTracks      `json:"toptracks"`
@@ -12,6 +13,44 @@ type Response struct {
 	Session        Session        `json:"session"`
 	NowPlaying     NowPlaying     `json:"nowplaying"`
 	Scrobbles      Scrobbles      `json:"scrobbles"`
+}
+
+type SearchResults struct {
+	TrackMatches  TrackMatches  `json:"trackmatches"`
+	ArtistMatches ArtistMatches `json:"artistmatches"`
+	AlbumMatches  AlbumMatches  `json:"albummatches"`
+}
+
+type TrackMatches struct {
+	Tracks []SearchTrack `json:"track"`
+}
+type ArtistMatches struct {
+	Artists []SearchArtist `json:"artist"`
+}
+type AlbumMatches struct {
+	Albums []SearchAlbum `json:"album"`
+}
+
+type SearchTrack struct {
+	Name      string          `json:"name"`
+	Artist    string          `json:"artist"`
+	MBID      string          `json:"mbid"`
+	Listeners string          `json:"listeners"`
+	Image     []ExternalImage `json:"image"`
+}
+
+type SearchArtist struct {
+	Name      string          `json:"name"`
+	MBID      string          `json:"mbid"`
+	Listeners string          `json:"listeners"`
+	Image     []ExternalImage `json:"image"`
+}
+
+type SearchAlbum struct {
+	Name   string          `json:"name"`
+	Artist string          `json:"artist"`
+	MBID   string          `json:"mbid"`
+	Image  []ExternalImage `json:"image"`
 }
 
 type Album struct {

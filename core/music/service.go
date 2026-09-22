@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/navidrome/navidrome/conf"
+	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/id"
@@ -33,12 +34,18 @@ type Tagger interface {
 
 type Service interface {
 	Start(context.Context)
-	Search(context.Context, string) (model.ExternalMusicSearch, error)
+	Search(context.Context, string, string, int) (model.ExternalMusicSearch, error)
 	Artist(context.Context, string) (model.ExternalArtistDetails, error)
 	Album(context.Context, string) (model.ExternalAlbumDetails, error)
 	CreateDownload(context.Context, string, model.ExternalDownloadRequest) (*model.MusicDownloadJob, error)
 	GetDownload(context.Context, string, string) (*model.MusicDownloadJob, error)
 	ListDownloads(context.Context, string, int) ([]model.MusicDownloadJob, error)
+}
+
+// SearchAffinityRepository deliberately exposes lookup only. External search
+// must never synchronously rebuild the user's taste model.
+type SearchAffinityRepository interface {
+	LookupAffinityForCandidates(string, []recommendations.TasteCandidateIdentity) (map[string]recommendations.TasteAffinity, error)
 }
 
 type service struct {
@@ -49,6 +56,7 @@ type service struct {
 	scanner    model.Scanner
 	wake       chan struct{}
 	startOnce  sync.Once
+	affinity   SearchAffinityRepository
 }
 
 func New(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.MusicDownloadJobRepository, scanner model.Scanner) Service {
@@ -60,6 +68,14 @@ func New(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.Music
 		scanner:    scanner,
 		wake:       make(chan struct{}, 1),
 	}
+}
+
+// NewWithAffinity is the production constructor. New remains useful for jobs,
+// commands and tests which do not need personalized search ordering.
+func NewWithAffinity(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.MusicDownloadJobRepository, scanner model.Scanner, affinity SearchAffinityRepository) Service {
+	service := New(catalog, downloader, tagger, jobs, scanner).(*service)
+	service.affinity = affinity
+	return service
 }
 
 func (s *service) Start(ctx context.Context) {
@@ -75,12 +91,27 @@ func (s *service) Start(ctx context.Context) {
 	})
 }
 
-func (s *service) Search(ctx context.Context, query string) (model.ExternalMusicSearch, error) {
+func (s *service) Search(ctx context.Context, userID, query string, limit int) (model.ExternalMusicSearch, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || len(query) > 200 {
 		return model.ExternalMusicSearch{}, fmt.Errorf("%w: search query must be between 1 and 200 characters", model.ErrValidation)
 	}
-	return s.catalog.Search(ctx, query)
+	if limit < 1 || limit > 50 {
+		return model.ExternalMusicSearch{}, fmt.Errorf("%w: limit must be between 1 and 50", model.ErrValidation)
+	}
+	result, err := s.catalog.Search(ctx, query)
+	if err != nil {
+		return model.ExternalMusicSearch{}, err
+	}
+	affinities := map[string]recommendations.TasteAffinity{}
+	if s.affinity != nil && strings.TrimSpace(userID) != "" {
+		if values, lookupErr := s.affinity.LookupAffinityForCandidates(userID, searchTasteCandidates(result)); lookupErr == nil {
+			affinities = values
+		} else {
+			log.Warn(ctx, "External search affinity lookup failed", lookupErr)
+		}
+	}
+	return rankExternalSearch(query, result, limit, affinities), nil
 }
 
 func (s *service) Artist(ctx context.Context, artistID string) (model.ExternalArtistDetails, error) {

@@ -14,6 +14,7 @@ import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import { makeStyles } from '@material-ui/core/styles'
 import * as musicProvider from './provider'
 import { DownloadButton, DownloadStatus } from './DownloadStatus'
+import ExternalArtwork from './ExternalArtwork'
 import { useDownloadJobs } from './useDownloadJobs'
 
 const useStyles = makeStyles((theme) => ({
@@ -60,7 +61,10 @@ const MusicArtist = () => {
     musicProvider
       .getArtist(id)
       .then((value) => mounted && setArtist(value))
-      .catch(() => mounted && setError('Artist information is unavailable right now.'))
+      .catch(
+        () =>
+          mounted && setError('Artist information is unavailable right now.'),
+      )
     return () => {
       mounted = false
     }
@@ -93,18 +97,19 @@ const MusicArtist = () => {
                   <CardActionArea
                     onClick={() => history.push(`/search/album/${album.id}`)}
                   >
-                    {album.imageUrl ? (
-                      <img className={classes.image} src={album.imageUrl} alt="" />
-                    ) : (
-                      <div className={classes.placeholder}>
-                        {album.title?.slice(0, 1) || '♪'}
-                      </div>
-                    )}
+                    <ExternalArtwork
+                      artworkUrls={album.artworkUrls}
+                      imageUrl={album.imageUrl}
+                      alt={album.title}
+                      className={`${classes.image} ${classes.placeholder}`}
+                    />
                     <CardContent>
                       <Typography variant="h6">{album.title}</Typography>
                       <Typography color="textSecondary" variant="body2">
                         {album.year || 'Release year unknown'}
-                        {album.trackCount ? ` • ${album.trackCount} tracks` : ''}
+                        {album.trackCount
+                          ? ` • ${album.trackCount} tracks`
+                          : ''}
                       </Typography>
                     </CardContent>
                   </CardActionArea>

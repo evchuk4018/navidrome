@@ -18,6 +18,7 @@ import (
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -27,6 +28,7 @@ const (
 	popularityEndpoint  = "popularity/recording"
 	popularityBatchSize = 100
 	popularityCacheTTL  = 10 * time.Minute
+	popularityCacheSize = 4096
 )
 
 var (
@@ -61,13 +63,15 @@ type client struct {
 type PopularityClient struct {
 	client *client
 
-	cacheMu sync.RWMutex
-	cache   map[string]popularityCacheEntry
+	cacheMu  sync.RWMutex
+	cache    map[string]popularityCacheEntry
+	requests singleflight.Group
 }
 
 type popularityCacheEntry struct {
 	value     model.RecordingPopularity
 	expiresAt time.Time
+	storedAt  time.Time
 }
 
 type recordingPopularityRequest struct {
@@ -354,10 +358,13 @@ func (c *PopularityClient) GetRecordingPopularity(ctx context.Context, recording
 	for start := 0; start < len(missing); start += popularityBatchSize {
 		end := min(start+popularityBatchSize, len(missing))
 		batch := missing[start:end]
-		popularity, err := c.fetchRecordingPopularity(ctx, batch)
+		value, err, _ := c.requests.Do(strings.Join(batch, ","), func() (any, error) {
+			return c.fetchRecordingPopularity(ctx, batch)
+		})
 		if err != nil {
 			return nil, err
 		}
+		popularity := value.(map[string]model.RecordingPopularity)
 
 		for _, recordingMBID := range batch {
 			value := popularity[recordingMBID]
@@ -400,6 +407,7 @@ func (c *PopularityClient) fetchRecordingPopularity(ctx context.Context, recordi
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("User-Agent", "Navidrome/2 (https://github.com/navidrome/navidrome)")
 
 	log.Trace(ctx, fmt.Sprintf("Sending ListenBrainz %s request", req.Method), "url", req.URL)
 	resp, err := c.client.hc.Do(req)
@@ -450,9 +458,28 @@ func (c *PopularityClient) cachedPopularity(recordingMBID string) (model.Recordi
 
 func (c *PopularityClient) cachePopularity(recordingMBID string, value model.RecordingPopularity) {
 	c.cacheMu.Lock()
+	now := time.Now()
+	for key, entry := range c.cache {
+		if now.After(entry.expiresAt) {
+			delete(c.cache, key)
+		}
+	}
+	if len(c.cache) >= popularityCacheSize {
+		oldestKey := ""
+		var oldest time.Time
+		for key, entry := range c.cache {
+			if oldestKey == "" || entry.storedAt.Before(oldest) {
+				oldestKey, oldest = key, entry.storedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(c.cache, oldestKey)
+		}
+	}
 	c.cache[recordingMBID] = popularityCacheEntry{
 		value:     value,
-		expiresAt: time.Now().Add(popularityCacheTTL),
+		expiresAt: now.Add(popularityCacheTTL),
+		storedAt:  now,
 	}
 	c.cacheMu.Unlock()
 }

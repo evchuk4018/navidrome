@@ -206,8 +206,9 @@ func (c *client) makeRequest(ctx context.Context, method string, params url.Valu
 		req, _ = http.NewRequestWithContext(ctx, method, apiBaseUrl, nil)
 		req.URL.RawQuery = params.Encode()
 	}
+	req.Header.Set("User-Agent", "Navidrome/2 (https://github.com/navidrome/navidrome)")
 
-	log.Trace(ctx, fmt.Sprintf("Sending Last.fm %s request", req.Method), "url", req.URL)
+	log.Trace(ctx, fmt.Sprintf("Sending Last.fm %s request", req.Method), "method", params.Get("method"))
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, err

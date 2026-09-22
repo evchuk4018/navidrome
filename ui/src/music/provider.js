@@ -4,8 +4,11 @@ import { REST_URL } from '../consts'
 const request = (path, options) =>
   httpClient(`${REST_URL}${path}`, options).then(({ json }) => json)
 
-export const search = (query) =>
-  request(`/music/search?q=${encodeURIComponent(query)}`)
+export const search = (query, { signal, limit = 30 } = {}) =>
+  request(
+    `/music/search?q=${encodeURIComponent(query)}&limit=${encodeURIComponent(limit)}`,
+    { signal },
+  )
 
 export const getArtist = (id) =>
   request(`/music/artist/${encodeURIComponent(id)}`)

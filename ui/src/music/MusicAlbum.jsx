@@ -16,6 +16,7 @@ import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import { makeStyles } from '@material-ui/core/styles'
 import * as musicProvider from './provider'
 import { DownloadButton, DownloadStatus } from './DownloadStatus'
+import ExternalArtwork from './ExternalArtwork'
 import { useDownloadJobs } from './useDownloadJobs'
 
 const useStyles = makeStyles((theme) => ({
@@ -64,7 +65,10 @@ const MusicAlbum = () => {
     musicProvider
       .getAlbum(id)
       .then((value) => mounted && setAlbum(value))
-      .catch(() => mounted && setError('Album information is unavailable right now.'))
+      .catch(
+        () =>
+          mounted && setError('Album information is unavailable right now.'),
+      )
     return () => {
       mounted = false
     }
@@ -85,17 +89,17 @@ const MusicAlbum = () => {
       {album && (
         <>
           <Box className={classes.header}>
-            {album.album.imageUrl ? (
-              <img className={classes.image} src={album.album.imageUrl} alt="" />
-            ) : (
-              <div className={classes.placeholder}>
-                {album.album.title?.slice(0, 1) || '♪'}
-              </div>
-            )}
+            <ExternalArtwork
+              artworkUrls={album.album.artworkUrls}
+              imageUrl={album.album.imageUrl}
+              alt={album.album.title}
+              className={`${classes.image} ${classes.placeholder}`}
+            />
             <Box flex={1}>
               <Typography variant="h4">{album.album.title}</Typography>
               <Typography color="textSecondary" paragraph>
-                {album.album.artistName} {album.album.year ? `• ${album.album.year}` : ''}
+                {album.album.artistName}{' '}
+                {album.album.year ? `• ${album.album.year}` : ''}
               </Typography>
               <DownloadButton
                 kind="album"
