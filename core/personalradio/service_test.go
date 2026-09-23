@@ -21,6 +21,10 @@ type fakeSimilarityProvider struct {
 	songs []agents.Song
 }
 
+func (f fakeSimilarityProvider) GetSimilarSongsByTrack(context.Context, string, string, string, string, int) ([]agents.Song, error) {
+	return f.songs, nil
+}
+
 func (f fakeSimilarityProvider) GetSimilarSongsByTrackAll(context.Context, string, string, string, string, int) ([]agents.Song, error) {
 	return f.songs, nil
 }

@@ -25,6 +25,7 @@ const (
 	RadioModeFamiliar           = "familiar"
 	RadioModeBalanced           = "balanced"
 	RadioModeDiscover           = "discover"
+	RadioModeRelated            = "related"
 	RadioPlanningSelecting      = "selecting"
 	RadioPlanningDownloading    = "downloading"
 	RadioPlanningWaitingForScan = "waiting_for_scan"
@@ -194,6 +195,8 @@ func NormalizeRadioMode(value string) RadioMode {
 		return RadioModeFamiliar
 	case RadioModeDiscover:
 		return RadioModeDiscover
+	case RadioModeRelated:
+		return RadioModeRelated
 	default:
 		return RadioModeBalanced
 	}

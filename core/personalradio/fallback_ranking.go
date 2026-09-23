@@ -226,7 +226,7 @@ func localFallbackHasAffinity(seed *model.MediaFile, candidate model.MediaFile) 
 }
 
 func isLocalFallbackSource(source string) bool {
-	return source == "tasteFallback" || source == "exhaustiveFallback"
+	return source == "tasteFallback" || source == "exhaustiveFallback" || source == relatedLocalClose || source == relatedLocalFamily
 }
 
 func normalizeLocalFallback(value string) string {

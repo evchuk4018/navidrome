@@ -137,7 +137,7 @@ const QuickPick = () => {
   const playSongRadio = useCallback(
     (song) => {
       dispatch(playTracks({ [song.id]: song }, [song.id]))
-      createPersonalRadio(song.id)
+      createPersonalRadio(song.id, 'related')
         .then((response) => {
           const enriched = radioSongs(response)
           const seed = response.items.find((item) => item.type === 'seed')

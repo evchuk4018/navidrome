@@ -33,6 +33,7 @@ const (
 )
 
 type SimilarityProvider interface {
+	GetSimilarSongsByTrack(context.Context, string, string, string, string, int) ([]agents.Song, error)
 	GetSimilarSongsByTrackAll(context.Context, string, string, string, string, int) ([]agents.Song, error)
 }
 
@@ -626,8 +627,13 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		Mode:           string(session.Mode),
 		Slots:          slotsToAdd,
 		Active:         active,
+		SeedActive:     len(items) == 1,
 		HasDownloading: hasDownloadingItems(items),
 	})
+	if len(selected) == 0 && session.Mode == model.RadioModeRelated {
+		s.setPlanningStatus(session.ID, model.RadioPlanningExhausted)
+		return nil
+	}
 	activeKnown, activeDiscovery := radioCompositionTypeCounts(active)
 	selectedKnown, selectedDiscovery := radioCompositionTypeCountsFromCandidates(selected)
 	selectedKeys := make([]string, 0, len(selected))
@@ -793,7 +799,13 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 			"matcherConfigured", s.matcher != nil)
 	}
 	if s.agents != nil && s.matcher != nil {
-		providerRecommendations, recErr := s.agents.GetSimilarSongsByTrackAll(providerCtx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, providerLimit)
+		var providerRecommendations []agents.Song
+		var recErr error
+		if session.Mode == model.RadioModeRelated {
+			providerRecommendations, recErr = s.agents.GetSimilarSongsByTrack(providerCtx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, providerLimit)
+		} else {
+			providerRecommendations, recErr = s.agents.GetSimilarSongsByTrackAll(providerCtx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, providerLimit)
+		}
 		if recErr != nil {
 			log.Debug(ctx, "Personal radio similarity provider returned no candidates",
 				"sessionID", session.ID,
@@ -812,6 +824,15 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 					"error", matchErr)
 			} else {
 				for i, song := range providerRecommendations {
+					providerTier, providerConfidence := 0, 0.0
+					if session.Mode == model.RadioModeRelated {
+						providerTier, providerConfidence = relatedProviderTier(song, i)
+						if providerTier == 0 {
+							stats["unrelatedProvider"]++
+							continue
+						}
+					}
+					providerSource := relatedProviderSource(providerTier)
 					recordingMBID := normalizeRecordingMBID(song.MBID)
 					song.MBID = recordingMBID
 					candidateFields := []any{
@@ -840,12 +861,13 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 							rankedCandidates = append(rankedCandidates, rankedRadioCandidate{
 								candidate: recommendations.Candidate{
 									Key:              key,
-									SeedAffinity:     localSeedAffinity(seed, local),
+									SeedAffinity:     max(localSeedAffinity(seed, local), providerConfidence),
 									SessionAffinity:  seedWeight * localSeedAffinity(seed, local),
 									MediaFile:        local,
 									SimilarityScores: song.SimilarityScores,
 								},
-								local: &localCopy,
+								local:  &localCopy,
+								source: providerSource,
 							})
 							stats["matchedLocal"]++
 							traceRadioCandidate(ctx, "Personal radio candidate accepted from library",
@@ -885,6 +907,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 					rankedCandidates = append(rankedCandidates, rankedRadioCandidate{
 						candidate: recommendations.Candidate{
 							Key:             key,
+							SeedAffinity:    providerConfidence,
 							SessionAffinity: seedWeight,
 							MediaFile: model.MediaFile{
 								ID:             key,
@@ -897,6 +920,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 						},
 						discovery:   song,
 						isDiscovery: true,
+						source:      providerSource,
 					})
 					stats["acceptedDiscovery"]++
 					traceRadioCandidate(ctx, "Personal radio candidate accepted for discovery download",
@@ -944,15 +968,25 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 			stats[stage]++
 		}
 	}
-	tasteFallback, tasteStats, err := s.localCandidateFilesForFallback(ctx, seed, metadataSeen, localAddedRecordings, true)
+	var relatedFilter func(model.MediaFile) bool
+	if session.Mode == model.RadioModeRelated {
+		relatedFilter = func(file model.MediaFile) bool { return relatedLocalTier(seed, file) != 0 }
+	}
+	tasteFallback, tasteStats, err := s.localCandidateFilesForFallbackFiltered(ctx, seed, metadataSeen, localAddedRecordings, session.Mode != model.RadioModeRelated, relatedFilter)
 	if err != nil {
 		return candidatePools{}, fmt.Errorf("load local fallback candidates: %w", err)
 	}
 	stats["tasteFallbackPages"] += tasteStats.pages
 	stats["tasteFallbackScanned"] += tasteStats.scanned
 	stats["tasteFallbackRejected"] += tasteStats.rejected
-	appendLocalFallback(tasteFallback, "tasteFallback")
-	if len(localAdded) < count {
+	if session.Mode == model.RadioModeRelated {
+		for _, file := range tasteFallback {
+			appendLocalFallback(model.MediaFiles{file}, relatedLocalSource(relatedLocalTier(seed, file)))
+		}
+	} else {
+		appendLocalFallback(tasteFallback, "tasteFallback")
+	}
+	if session.Mode != model.RadioModeRelated && len(localAdded) < count {
 		broadFallback, broadStats, broadErr := s.localCandidateFilesForFallback(ctx, seed, metadataSeen, localAddedRecordings, false)
 		if broadErr != nil {
 			return candidatePools{}, fmt.Errorf("load exhaustive local fallback candidates: %w", broadErr)
@@ -965,7 +999,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 
 	transitionSourceKey := model.RadioTrackKey(seed.MbzRecordingID, seed.ID)
 	var learnedTransitions []model.RadioTransitionFeedback
-	if transitionSourceKey != "" {
+	if transitionSourceKey != "" && session.Mode != model.RadioModeRelated {
 		learnedTransitions, err = s.repo.GetTopTransitions(session.UserID, transitionSourceKey, transitionCandidateLimit)
 		if err != nil {
 			log.Warn(ctx, "Personal radio could not load learned transitions",
@@ -1226,6 +1260,12 @@ func (s *service) applyLocalFallbackFeatures(candidates []rankedRadioCandidate, 
 func (s *service) recommendationPoolsForContext(ctx context.Context, session model.PersonalRadioSession, radioContext *radioContext, seen map[string]bool, seenRecordings map[string]bool, count int) (candidatePools, error) {
 	if radioContext == nil || len(radioContext.Seeds) == 0 {
 		return candidatePools{}, fmt.Errorf("radio context has no seeds")
+	}
+	if session.Mode == model.RadioModeRelated {
+		if radioContext.OriginalSeed == nil {
+			return candidatePools{}, fmt.Errorf("related radio has no original seed")
+		}
+		return s.recommendationPoolsWithLimit(ctx, session, radioContext.OriginalSeed, seen, seenRecordings, count, discoveryCandidateLimit, 1)
 	}
 	var all []rankedRadioCandidate
 	fatigue := map[string]float64{}
@@ -1535,6 +1575,10 @@ type localFallbackStats struct {
 // popularity sample: a track beyond the first page is still an eligible
 // fallback.
 func (s *service) localCandidateFilesForFallback(ctx context.Context, seed *model.MediaFile, seen, seenRecordings map[string]bool, requireAffinity bool) (model.MediaFiles, localFallbackStats, error) {
+	return s.localCandidateFilesForFallbackFiltered(ctx, seed, seen, seenRecordings, requireAffinity, nil)
+}
+
+func (s *service) localCandidateFilesForFallbackFiltered(ctx context.Context, seed *model.MediaFile, seen, seenRecordings map[string]bool, requireAffinity bool, eligible func(model.MediaFile) bool) (model.MediaFiles, localFallbackStats, error) {
 	if s.ds == nil {
 		return nil, localFallbackStats{}, fmt.Errorf("media datastore is unavailable")
 	}
@@ -1576,7 +1620,7 @@ func (s *service) localCandidateFilesForFallback(ctx context.Context, seed *mode
 				stats.rejected++
 				continue
 			}
-			if requireAffinity && !localFallbackHasAffinity(seed, file) {
+			if (requireAffinity && !localFallbackHasAffinity(seed, file)) || (eligible != nil && !eligible(file)) {
 				stats.rejected++
 				continue
 			}

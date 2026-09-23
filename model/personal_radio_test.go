@@ -29,6 +29,9 @@ func TestIsAcceptedRadioPlaybackOutcome(t *testing.T) {
 }
 
 func TestNormalizeRadioMode(t *testing.T) {
+	if got := NormalizeRadioMode(" RELATED "); got != RadioModeRelated {
+		t.Fatalf("NormalizeRadioMode(related) = %q, want %q", got, RadioModeRelated)
+	}
 	if got := NormalizeRadioMode(" DISCOVER "); got != RadioModeDiscover {
 		t.Fatalf("NormalizeRadioMode(discover) = %q, want %q", got, RadioModeDiscover)
 	}

@@ -23,6 +23,7 @@ type radioCompositionOptions struct {
 	Mode              string
 	Slots             int
 	Active            []model.PersonalRadioItem
+	SeedActive        bool
 	HasDownloading    bool
 	ReadyLibraryFloor int
 }
@@ -32,6 +33,9 @@ type radioCompositionOptions struct {
 // a greedy score/diversity pass fills the batch. Quotas are relaxed only when
 // the available stream cannot satisfy them.
 func composeRadioCandidates(candidates []rankedRadioCandidate, options radioCompositionOptions) []rankedRadioCandidate {
+	if model.NormalizeRadioMode(options.Mode) == model.RadioModeRelated {
+		return composeRelatedRadioCandidates(candidates, options)
+	}
 	if options.Slots <= 0 || len(candidates) == 0 {
 		return nil
 	}
