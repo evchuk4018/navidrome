@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useHistory } from 'react-router-dom'
+import { useHistory, useLocation } from 'react-router-dom'
 import {
   Box,
   ButtonBase,
@@ -78,8 +78,7 @@ const saveRecentSearch = (query) => {
   localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(next))
   return next
 }
-const initialQuery = () =>
-  new URLSearchParams(window.location.search).get('q') || ''
+const queryFromSearch = (search) => new URLSearchParams(search).get('q') || ''
 const compatibilityResults = (response) =>
   Array.isArray(response?.results)
     ? response.results
@@ -95,8 +94,9 @@ const compatibilityResults = (response) =>
 
 const MusicSearch = () => {
   const classes = useStyles(),
-    history = useHistory()
-  const [query, setQuery] = useState(initialQuery),
+    history = useHistory(),
+    location = useLocation()
+  const [query, setQuery] = useState(() => queryFromSearch(location.search)),
     [recent, setRecent] = useState(readRecentSearches)
   const [response, setResponse] = useState(null),
     [loading, setLoading] = useState(false),
@@ -117,10 +117,11 @@ const MusicSearch = () => {
       setRecent(saveRecentSearch(trimmed))
       setLoading(true)
       setError('')
-      const params = new URLSearchParams(window.location.search)
+      const params = new URLSearchParams(history.location.search)
       params.set('q', trimmed)
-      if (history.replace)
-        history.replace(`${window.location.pathname}?${params.toString()}`)
+      const search = `?${params.toString()}`
+      if (history.location.search !== search)
+        history.replace({ ...history.location, search })
       musicProvider
         .search(trimmed, { signal: controller.current.signal, limit: 30 })
         .then((value) => {
@@ -146,12 +147,10 @@ const MusicSearch = () => {
     return () => clearTimeout(debounceTimer.current)
   }, [query, runSearch])
   useEffect(() => {
-    const restore = () => setQuery(initialQuery())
-    window.addEventListener('popstate', restore)
-    return () => {
-      window.removeEventListener('popstate', restore)
-      controller.current?.abort()
-    }
+    setQuery(queryFromSearch(location.search))
+  }, [location.search])
+  useEffect(() => {
+    return () => controller.current?.abort()
   }, [])
 
   const hits = compatibilityResults(response)

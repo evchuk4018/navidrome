@@ -1,14 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { createHashHistory } from 'history'
+import { Route, Router, Switch } from 'react-router-dom'
 import { vi } from 'vitest'
 import MusicSearch from './MusicSearch'
 
 const mocks = vi.hoisted(() => ({
   search: vi.fn(),
-  push: vi.fn(),
-}))
-
-vi.mock('react-router-dom', () => ({
-  useHistory: () => ({ push: mocks.push }),
 }))
 
 vi.mock('./provider', () => ({
@@ -40,10 +37,28 @@ const submitSearch = (value) => {
   fireEvent.submit(input.closest('form'))
 }
 
+const renderSearch = (route = '/search') => {
+  window.history.replaceState(null, '', `/navidrome/#${route}`)
+  const history = createHashHistory()
+  const view = render(
+    <Router history={history}>
+      <Switch>
+        <Route exact path="/search" component={MusicSearch} />
+        <Route
+          exact
+          path="/search/artist/:id"
+          render={() => <p>Artist details</p>}
+        />
+        <Route render={() => <p>Not Found</p>} />
+      </Switch>
+    </Router>,
+  )
+  return { history, ...view }
+}
+
 describe('<MusicSearch />', () => {
   beforeEach(() => {
     mocks.search.mockReset()
-    mocks.push.mockReset()
     localStorage.clear()
   })
 
@@ -67,7 +82,7 @@ describe('<MusicSearch />', () => {
       }),
     )
 
-    render(<MusicSearch />)
+    renderSearch()
     submitSearch('The one that got away')
 
     const songHeading = await screen.findByRole('heading', {
@@ -97,7 +112,7 @@ describe('<MusicSearch />', () => {
       }),
     )
 
-    render(<MusicSearch />)
+    renderSearch()
     submitSearch('Katy Perry')
 
     await waitFor(() =>
@@ -126,7 +141,7 @@ describe('<MusicSearch />', () => {
       }),
     )
 
-    const { container } = render(<MusicSearch />)
+    const { container } = renderSearch()
     submitSearch('Covered Song')
 
     await screen.findByText('Artist')
@@ -135,5 +150,57 @@ describe('<MusicSearch />', () => {
         'img[src="https://coverartarchive.org/covered-song.jpg"]',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('keeps a submitted search on the hash route under the base path', async () => {
+    mocks.search.mockResolvedValue(searchResults())
+    const { history } = renderSearch()
+
+    submitSearch('Katy Perry')
+
+    await waitFor(() => expect(mocks.search).toHaveBeenCalled())
+    expect(history.location.pathname).toBe('/search')
+    expect(history.location.search).toBe('?q=Katy+Perry')
+    expect(window.location.pathname).toBe('/navidrome/')
+    expect(window.location.hash).toBe('#/search?q=Katy+Perry')
+    expect(screen.queryByText('Not Found')).not.toBeInTheDocument()
+  })
+
+  it('loads a direct search URL and restores it after navigation', async () => {
+    mocks.search.mockResolvedValue(searchResults())
+    const { history } = renderSearch('/search?q=Katy+Perry')
+
+    await waitFor(() =>
+      expect(mocks.search).toHaveBeenCalledWith(
+        'Katy Perry',
+        expect.objectContaining({ limit: 30 }),
+      ),
+    )
+    expect(screen.getByPlaceholderText(/Search artists/)).toHaveValue(
+      'Katy Perry',
+    )
+
+    history.push('/search/artist/example')
+    expect(screen.getByText('Artist details')).toBeInTheDocument()
+    history.goBack()
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/Search artists/)).toHaveValue(
+        'Katy Perry',
+      ),
+    )
+    history.push('/search?q=Roar')
+
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText(/Search artists/)).toHaveValue('Roar'),
+    )
+    await waitFor(() =>
+      expect(mocks.search).toHaveBeenCalledWith(
+        'Roar',
+        expect.objectContaining({ limit: 30 }),
+      ),
+    )
+    expect(history.location.pathname).toBe('/search')
+    expect(window.location.hash).toBe('#/search?q=Roar')
   })
 })
