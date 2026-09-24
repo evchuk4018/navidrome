@@ -140,6 +140,64 @@ func relatedReplayOlder(left, right rankedRadioCandidate) bool {
 	return left.replayPosition < right.replayPosition
 }
 
+func relatedCandidateLess(left, right rankedRadioCandidate) bool {
+	leftTier, rightTier := relatedCandidateTier(left), relatedCandidateTier(right)
+	if leftTier != rightTier {
+		return leftTier < rightTier
+	}
+	if left.source == relatedReplay && right.source == relatedReplay &&
+		(!left.replayTime.Equal(right.replayTime) || left.replayPosition != right.replayPosition) {
+		return relatedReplayOlder(left, right)
+	}
+	if left.ranked.Score != right.ranked.Score {
+		return left.ranked.Score > right.ranked.Score
+	}
+	return left.candidate.Key < right.candidate.Key
+}
+
+type relatedSelectionState struct {
+	options           radioCompositionOptions
+	activeTotal       int
+	activeDiscovery   int
+	selectedDiscovery int
+	selectedCount     int
+	readyLibrary      int
+	artistCounts      map[string]int
+	albumCounts       map[string]int
+}
+
+func selectRelatedCandidate(remaining []rankedRadioCandidate, state relatedSelectionState) int {
+	best, bestTier, bestScore := -1, 9, math.Inf(-1)
+	for index, candidate := range remaining {
+		if candidate.isDiscovery {
+			queueAfter := state.activeTotal + state.selectedCount + 1
+			maxDiscovery := int(math.Floor(0.35 * float64(queueAfter)))
+			if state.activeDiscovery+state.selectedDiscovery+1 > maxDiscovery {
+				continue
+			}
+			if state.options.HasDownloading && state.readyLibrary < state.options.ReadyLibraryFloor {
+				continue
+			}
+		}
+		tier := relatedCandidateTier(candidate)
+		score := candidateSelectionScore(candidate, state.artistCounts, state.albumCounts)
+		prefer := tier < bestTier
+		if tier == bestTier && best >= 0 {
+			if candidate.source == relatedReplay && remaining[best].source == relatedReplay &&
+				(!candidate.replayTime.Equal(remaining[best].replayTime) ||
+					candidate.replayPosition != remaining[best].replayPosition) {
+				prefer = relatedReplayOlder(candidate, remaining[best])
+			} else {
+				prefer = score > bestScore
+			}
+		}
+		if prefer {
+			best, bestTier, bestScore = index, tier, score
+		}
+	}
+	return best
+}
+
 // Related radio treats discovery as a ceiling, not a quota. A discovery must
 // fit within 35% of the actual active queue, including the playing seed.
 func composeRelatedRadioCandidates(candidates []rankedRadioCandidate, options radioCompositionOptions) []rankedRadioCandidate {
@@ -151,19 +209,7 @@ func composeRelatedRadioCandidates(candidates []rankedRadioCandidate, options ra
 	}
 	remaining := append([]rankedRadioCandidate(nil), candidates...)
 	sort.SliceStable(remaining, func(left, right int) bool {
-		leftTier, rightTier := relatedCandidateTier(remaining[left]), relatedCandidateTier(remaining[right])
-		if leftTier != rightTier {
-			return leftTier < rightTier
-		}
-		if remaining[left].source == relatedReplay && remaining[right].source == relatedReplay &&
-			(!remaining[left].replayTime.Equal(remaining[right].replayTime) ||
-				remaining[left].replayPosition != remaining[right].replayPosition) {
-			return relatedReplayOlder(remaining[left], remaining[right])
-		}
-		if remaining[left].ranked.Score != remaining[right].ranked.Score {
-			return remaining[left].ranked.Score > remaining[right].ranked.Score
-		}
-		return remaining[left].candidate.Key < remaining[right].candidate.Key
+		return relatedCandidateLess(remaining[left], remaining[right])
 	})
 
 	activeTotal, activeDiscovery, readyLibrary := 0, 0, 0
@@ -191,36 +237,11 @@ func composeRelatedRadioCandidates(candidates []rankedRadioCandidate, options ra
 	selected := make([]rankedRadioCandidate, 0, options.Slots)
 	selectedDiscovery := 0
 	for len(selected) < options.Slots && len(remaining) > 0 {
-		best := -1
-		bestTier := 9
-		bestScore := math.Inf(-1)
-		for index, candidate := range remaining {
-			if candidate.isDiscovery {
-				queueAfter := activeTotal + len(selected) + 1
-				maxDiscovery := int(math.Floor(0.35 * float64(queueAfter)))
-				if activeDiscovery+selectedDiscovery+1 > maxDiscovery {
-					continue
-				}
-				if options.HasDownloading && readyLibrary < options.ReadyLibraryFloor {
-					continue
-				}
-			}
-			tier := relatedCandidateTier(candidate)
-			score := candidateSelectionScore(candidate, artistCounts, albumCounts)
-			prefer := tier < bestTier
-			if tier == bestTier && best >= 0 {
-				if candidate.source == relatedReplay && remaining[best].source == relatedReplay &&
-					(!candidate.replayTime.Equal(remaining[best].replayTime) ||
-						candidate.replayPosition != remaining[best].replayPosition) {
-					prefer = relatedReplayOlder(candidate, remaining[best])
-				} else {
-					prefer = score > bestScore
-				}
-			}
-			if prefer {
-				best, bestTier, bestScore = index, tier, score
-			}
-		}
+		best := selectRelatedCandidate(remaining, relatedSelectionState{
+			options: options, activeTotal: activeTotal, activeDiscovery: activeDiscovery,
+			selectedDiscovery: selectedDiscovery, selectedCount: len(selected), readyLibrary: readyLibrary,
+			artistCounts: artistCounts, albumCounts: albumCounts,
+		})
 		if best < 0 {
 			break
 		}
