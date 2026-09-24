@@ -11,9 +11,34 @@ import (
 const (
 	relatedProviderStrong = "related_provider_strong"
 	relatedProviderBroad  = "related_provider_broad"
+	relatedArtist         = "related_artist"
+	relatedArtistDownload = "related_artist_download"
 	relatedLocalClose     = "related_local_close"
 	relatedLocalFamily    = "related_local_family"
+	relatedReplay         = "related_replay"
 )
+
+// These values describe a video category, not a musical style. Treating
+// "Music" as an exact genre match makes every imported video appear related.
+var uninformativeRelatedGenres = map[string]bool{
+	"music": true, "people and blogs": true, "entertainment": true,
+	"travel and events": true, "gaming": true, "howto and style": true,
+	"film and animation": true, "education": true, "comedy": true,
+	"news and politics": true, "science and technology": true,
+	"sports": true, "autos and vehicles": true, "pets and animals": true,
+	"nonprofits and activism": true, "shows": true, "movies": true,
+	"trailers": true,
+}
+
+func relatedGenres(file model.MediaFile) map[string]bool {
+	genres := genreSet(file)
+	for genre := range genres {
+		if uninformativeRelatedGenres[normalizeGenre(genre)] {
+			delete(genres, genre)
+		}
+	}
+	return genres
+}
 
 // The provider's own ordering is used only when it supplies no usable score.
 // Its lower-ranked unscored tail is never eligible for an automatic download.
@@ -54,10 +79,11 @@ func relatedLocalTier(seed *model.MediaFile, file model.MediaFile) int {
 	if seed == nil {
 		return 0
 	}
-	if localFallbackArtistRelationship(*seed, file) > 0 || genreAffinity(genreSet(*seed), genreSet(file)) >= 2 {
+	genreMatch := genreAffinity(relatedGenres(*seed), relatedGenres(file))
+	if localFallbackArtistRelationship(*seed, file) > 0 || genreMatch >= 2 {
 		return 3
 	}
-	if genreAffinity(genreSet(*seed), genreSet(file)) >= 1 {
+	if genreMatch >= 1 {
 		return 4
 	}
 	return 0
@@ -74,15 +100,44 @@ func relatedSourceTier(source string) int {
 	switch source {
 	case relatedProviderStrong:
 		return 1
-	case relatedLocalClose:
+	case relatedArtist:
 		return 2
-	case relatedProviderBroad:
+	case relatedLocalClose:
 		return 3
-	case relatedLocalFamily:
+	case relatedProviderBroad:
 		return 4
-	default:
+	case relatedLocalFamily:
 		return 5
+	case relatedArtistDownload:
+		return 6
+	case relatedReplay:
+		return 7
+	default:
+		return 8
 	}
+}
+
+func relatedCandidateTier(candidate rankedRadioCandidate) int {
+	if candidate.source == relatedReplay && candidate.replayEarlySkipped {
+		return 8
+	}
+	if candidate.isDiscovery {
+		return 6
+	}
+	return relatedSourceTier(candidate.source)
+}
+
+func relatedReplayOlder(left, right rankedRadioCandidate) bool {
+	if !left.replayTime.Equal(right.replayTime) {
+		if left.replayTime.IsZero() {
+			return true
+		}
+		if right.replayTime.IsZero() {
+			return false
+		}
+		return left.replayTime.Before(right.replayTime)
+	}
+	return left.replayPosition < right.replayPosition
 }
 
 // Related radio treats discovery as a ceiling, not a quota. A discovery must
@@ -96,9 +151,14 @@ func composeRelatedRadioCandidates(candidates []rankedRadioCandidate, options ra
 	}
 	remaining := append([]rankedRadioCandidate(nil), candidates...)
 	sort.SliceStable(remaining, func(left, right int) bool {
-		leftTier, rightTier := relatedSourceTier(remaining[left].source), relatedSourceTier(remaining[right].source)
+		leftTier, rightTier := relatedCandidateTier(remaining[left]), relatedCandidateTier(remaining[right])
 		if leftTier != rightTier {
 			return leftTier < rightTier
+		}
+		if remaining[left].source == relatedReplay && remaining[right].source == relatedReplay &&
+			(!remaining[left].replayTime.Equal(remaining[right].replayTime) ||
+				remaining[left].replayPosition != remaining[right].replayPosition) {
+			return relatedReplayOlder(remaining[left], remaining[right])
 		}
 		if remaining[left].ranked.Score != remaining[right].ranked.Score {
 			return remaining[left].ranked.Score > remaining[right].ranked.Score
@@ -132,7 +192,7 @@ func composeRelatedRadioCandidates(candidates []rankedRadioCandidate, options ra
 	selectedDiscovery := 0
 	for len(selected) < options.Slots && len(remaining) > 0 {
 		best := -1
-		bestTier := 6
+		bestTier := 9
 		bestScore := math.Inf(-1)
 		for index, candidate := range remaining {
 			if candidate.isDiscovery {
@@ -145,9 +205,19 @@ func composeRelatedRadioCandidates(candidates []rankedRadioCandidate, options ra
 					continue
 				}
 			}
-			tier := relatedSourceTier(candidate.source)
+			tier := relatedCandidateTier(candidate)
 			score := candidateSelectionScore(candidate, artistCounts, albumCounts)
-			if tier < bestTier || (tier == bestTier && score > bestScore) {
+			prefer := tier < bestTier
+			if tier == bestTier && best >= 0 {
+				if candidate.source == relatedReplay && remaining[best].source == relatedReplay &&
+					(!candidate.replayTime.Equal(remaining[best].replayTime) ||
+						candidate.replayPosition != remaining[best].replayPosition) {
+					prefer = relatedReplayOlder(candidate, remaining[best])
+				} else {
+					prefer = score > bestScore
+				}
+			}
+			if prefer {
 				best, bestTier, bestScore = index, tier, score
 			}
 		}

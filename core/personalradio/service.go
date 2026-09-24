@@ -14,12 +14,14 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/navidrome/navidrome/core/agents"
+	"github.com/navidrome/navidrome/core/external"
 	"github.com/navidrome/navidrome/core/matcher"
 	musicservice "github.com/navidrome/navidrome/core/music"
 	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/id"
+	"github.com/navidrome/navidrome/utils/cache"
 )
 
 const (
@@ -37,6 +39,15 @@ type SimilarityProvider interface {
 	GetSimilarSongsByTrackAll(context.Context, string, string, string, string, int) ([]agents.Song, error)
 }
 
+type RelatedSongProvider interface {
+	SimilarSongs(context.Context, string, int) (model.MediaFiles, error)
+}
+
+type ArtistRecommendationProvider interface {
+	agents.ArtistSimilarRetriever
+	agents.ArtistTopSongsRetriever
+}
+
 type Service interface {
 	Start(context.Context)
 	Create(context.Context, string, model.CreatePersonalRadioRequest) (*model.PersonalRadioSessionResponse, error)
@@ -48,6 +59,10 @@ type service struct {
 	ds             model.DataStore
 	repo           model.PersonalRadioRepository
 	agents         SimilarityProvider
+	artistAgents   ArtistRecommendationProvider
+	relatedSongs   RelatedSongProvider
+	relatedLocal   cache.SimpleCache[string, model.MediaFiles]
+	relatedArtists cache.SimpleCache[string, []relatedArtistSong]
 	matcher        *matcher.Matcher
 	music          musicservice.Service
 	scanner        model.Scanner
@@ -62,6 +77,10 @@ func New(ds model.DataStore, repo model.PersonalRadioRepository, ag *agents.Agen
 		ds:             ds,
 		repo:           repo,
 		agents:         ag,
+		artistAgents:   ag,
+		relatedSongs:   external.NewProvider(ds, ag, songMatcher),
+		relatedLocal:   cache.NewSimpleCache[string, model.MediaFiles](cache.Options{SizeLimit: 100, DefaultTTL: relatedSourceTTL}),
+		relatedArtists: cache.NewSimpleCache[string, []relatedArtistSong](cache.Options{SizeLimit: 100, DefaultTTL: relatedSourceTTL}),
 		matcher:        songMatcher,
 		music:          music,
 		scanner:        scanner,
@@ -249,6 +268,9 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string, request 
 				item.Status = model.RadioItemReady
 				if err := s.updateRadioItem(ctx, item, "marking completed download ready"); err != nil {
 					return nil, err
+				}
+				if session.Mode == model.RadioModeRelated {
+					s.invalidateRelatedLocalSongs(session.SeedMediaFileID)
 				}
 				expires := time.Now().UTC().Add(discoveryTTL)
 				if err := s.repo.UpsertDiscovery(&model.DiscoveryTrack{ID: id.NewRandom(), UserID: userID, RecordingMBID: item.RecordingMBID, MediaFileID: file.ID, State: model.DiscoveryTemporary, ExpiresAt: &expires, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
@@ -604,6 +626,9 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 	if err != nil {
 		return fmt.Errorf("build personal radio recommendation pools: %w", err)
 	}
+	if session.Mode == model.RadioModeRelated && len(pools.local) < slotsToAdd {
+		pools.ranked = append(pools.ranked, s.relatedReplayCandidates(ctx, items, activeRadioItems(items, radioContext), seed, pools.ranked)...)
+	}
 	log.Info(ctx, "Personal radio recommendation pools built",
 		"sessionID", session.ID,
 		"userID", session.UserID,
@@ -662,6 +687,7 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		"selectedScores", selectedScores)
 	newItems := make([]model.PersonalRadioItem, 0, len(selected))
 	selectedKeysSet := make(map[string]bool, len(selected))
+	appendedSources := map[string]int{}
 	appendLocalItem := func(candidate rankedRadioCandidate) bool {
 		if candidate.local == nil || !isPlayableLocalFile(*candidate.local) {
 			return false
@@ -679,6 +705,7 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		})
+		appendedSources[candidate.source]++
 		position++
 		return true
 	}
@@ -690,6 +717,7 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 				continue
 			}
 			newItems = append(newItems, item)
+			appendedSources[candidate.source]++
 			position++
 			continue
 		}
@@ -736,6 +764,7 @@ func (s *service) planWithContext(ctx context.Context, session model.PersonalRad
 		"itemsAdded", len(newItems),
 		"libraryItems", localItems,
 		"discoveryItems", discoveryItems,
+		"sources", appendedSources,
 		"itemPositions", plannedPositions(newItems))
 	if hasDiscoveryItems(newItems) {
 		s.setPlanningStatus(session.ID, model.RadioPlanningDownloading)
@@ -754,13 +783,16 @@ type candidatePools struct {
 }
 
 type rankedRadioCandidate struct {
-	candidate   recommendations.Candidate
-	ranked      recommendations.RankedCandidate
-	local       *model.MediaFile
-	discovery   agents.Song
-	isDiscovery bool
-	injected    bool
-	source      string
+	candidate          recommendations.Candidate
+	ranked             recommendations.RankedCandidate
+	local              *model.MediaFile
+	discovery          agents.Song
+	isDiscovery        bool
+	injected           bool
+	source             string
+	replayPosition     int
+	replayTime         time.Time
+	replayEarlySkipped bool
 }
 
 func (s *service) recommendationPools(ctx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count int) (candidatePools, error) {
@@ -946,7 +978,9 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 		for _, file := range files {
 			key := radioMediaFileCandidateKey(file)
 			recordingMBID := normalizeRecordingMBID(file.MbzRecordingID)
-			if localAdded[file.ID] || localAddedKeys[key] || (recordingMBID != "" && localAddedRecordings[recordingMBID]) {
+			if !isPlayableLocalFile(file) || file.ID == seed.ID || seen[file.ID] ||
+				(recordingMBID != "" && seenRecordings[recordingMBID]) ||
+				localAdded[file.ID] || localAddedKeys[key] || (recordingMBID != "" && localAddedRecordings[recordingMBID]) {
 				continue
 			}
 			localAdded[file.ID] = true
@@ -966,6 +1000,12 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 				source: stage,
 			})
 			stats[stage]++
+		}
+	}
+	if session.Mode == model.RadioModeRelated {
+		appendLocalFallback(s.relatedLocalSongs(ctx, seed), relatedArtist)
+		for mediaFileID := range localAdded {
+			metadataSeen[mediaFileID] = true
 		}
 	}
 	var relatedFilter func(model.MediaFile) bool
@@ -995,6 +1035,56 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 		stats["exhaustiveFallbackScanned"] += broadStats.scanned
 		stats["exhaustiveFallbackRejected"] += broadStats.rejected
 		appendLocalFallback(broadFallback, "exhaustiveFallback")
+	}
+	if session.Mode == model.RadioModeRelated && len(localAdded) < count && s.matcher != nil {
+		artistSongs := s.relatedArtistSongs(ctx, seed)
+		if len(artistSongs) > 0 {
+			songs := make([]agents.Song, len(artistSongs))
+			for i, candidate := range artistSongs {
+				songs[i] = candidate.song
+			}
+			matches, matchErr := s.matcher.MatchSongsIndexed(ctx, songs)
+			if matchErr != nil {
+				log.Warn(ctx, "Related radio could not match artist suggestions", "seedID", seed.ID, "error", matchErr)
+			} else {
+				discoveryAdded := map[string]bool{}
+				for _, candidate := range rankedCandidates {
+					if candidate.isDiscovery {
+						discoveryAdded[normalizeRecordingMBID(candidate.discovery.MBID)] = true
+					}
+				}
+				for i, candidate := range artistSongs {
+					song := candidate.song
+					mbid := normalizeRecordingMBID(song.MBID)
+					if local, ok := matches[i]; ok {
+						if isPlayableLocalFile(local) {
+							if !seen[local.ID] && (mbid == "" || !seenRecordings[mbid]) && !localAdded[local.ID] {
+								appendLocalFallback(model.MediaFiles{local}, relatedArtist)
+							}
+							continue
+						}
+					}
+					if mbid == "" || seenRecordings[mbid] || localAddedRecordings[mbid] || discoveryAdded[mbid] {
+						continue
+					}
+					discoveryAdded[mbid] = true
+					key := radioDiscoveryCandidateKey(song)
+					rankedCandidates = append(rankedCandidates, rankedRadioCandidate{
+						candidate: recommendations.Candidate{
+							Key:             key,
+							SeedAffinity:    candidate.affinity,
+							SessionAffinity: seedWeight * candidate.affinity,
+							MediaFile: model.MediaFile{
+								ID: key, Title: song.Name, Artist: firstSongArtist(song), Album: song.Album,
+								MbzRecordingID: mbid,
+							},
+						},
+						discovery: song, isDiscovery: true, source: relatedArtistDownload,
+					})
+					stats[relatedArtistDownload]++
+				}
+			}
+		}
 	}
 
 	transitionSourceKey := model.RadioTrackKey(seed.MbzRecordingID, seed.ID)
