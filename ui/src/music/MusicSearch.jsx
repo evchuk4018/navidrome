@@ -103,7 +103,8 @@ const MusicSearch = () => {
     [error, setError] = useState('')
   const generation = useRef(0),
     controller = useRef(null),
-    debounceTimer = useRef(null)
+    debounceTimer = useRef(null),
+    queuedHere = useRef(new Set())
   const { jobs, refreshJobs } = useDownloadJobs()
 
   const runSearch = useCallback(
@@ -152,8 +153,19 @@ const MusicSearch = () => {
   useEffect(() => {
     return () => controller.current?.abort()
   }, [])
+  useEffect(() => {
+    const finished = jobs.some(
+      (job) => job.status === 'succeeded' && queuedHere.current.has(job.id),
+    )
+    if (!finished) return
+    for (const job of jobs) {
+      if (job.status === 'succeeded') queuedHere.current.delete(job.id)
+    }
+    if (query.trim().length >= 2) runSearch(query)
+  }, [jobs, query, runSearch])
 
   const hits = compatibilityResults(response)
+  const libraryUnavailable = response?.degradedSources?.includes('library')
   const runImmediate = (value) => {
     clearTimeout(debounceTimer.current)
     runSearch(value)
@@ -182,6 +194,15 @@ const MusicSearch = () => {
         : hit.kind === 'album'
           ? `/search/album/${entity.id}`
           : null
+    const activeJob =
+      hit.kind === 'song'
+        ? jobs.find(
+            (job) =>
+              job.kind === 'song' &&
+              job.sourceId === entity.id &&
+              (job.status === 'queued' || job.status === 'running'),
+          )
+        : null
     const body = (
       <CardContent className={classes.row}>
         <ExternalArtwork
@@ -218,10 +239,36 @@ const MusicSearch = () => {
           ) : (
             body
           )}
-          {(hit.kind === 'song' || hit.kind === 'album') && (
+          {hit.kind === 'song' && (
+            <Box pr={2}>
+              {entity.localMediaFileId ? (
+                <Chip label="Downloaded" size="small" />
+              ) : activeJob ? (
+                <Chip
+                  label={
+                    activeJob.status === 'queued' ? 'Queued' : 'Downloading'
+                  }
+                  size="small"
+                />
+              ) : libraryUnavailable ? (
+                <Chip label="Library status unavailable" size="small" />
+              ) : (
+                <DownloadButton
+                  kind="song"
+                  id={entity.id}
+                  onCreated={(job) => {
+                    if (job?.id) queuedHere.current.add(job.id)
+                    refreshJobs()
+                  }}
+                  onConflict={() => runSearch(query)}
+                />
+              )}
+            </Box>
+          )}
+          {hit.kind === 'album' && (
             <Box pr={2}>
               <DownloadButton
-                kind={hit.kind}
+                kind="album"
                 id={entity.id}
                 onCreated={refreshJobs}
               />
@@ -293,9 +340,7 @@ const MusicSearch = () => {
         <Box className={classes.results}>
           {hits.map(renderHit)}
           {hits.length === 0 && (
-            <Typography color="textSecondary">
-              No external results found.
-            </Typography>
+            <Typography color="textSecondary">No results found.</Typography>
           )}
         </Box>
       )}

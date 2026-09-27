@@ -54,25 +54,29 @@ type ExternalAlbum struct {
 }
 
 type ExternalTrack struct {
-	ID            string   `json:"id"`
-	Title         string   `json:"title"`
-	ArtistID      string   `json:"artistId,omitempty"`
-	ArtistName    string   `json:"artistName,omitempty"`
-	AlbumID       string   `json:"albumId,omitempty"`
-	AlbumTitle    string   `json:"albumTitle,omitempty"`
-	ReleaseDate   string   `json:"releaseDate,omitempty"`
-	Year          int      `json:"year,omitempty"`
-	Duration      int      `json:"duration,omitempty"`
-	TrackNumber   int      `json:"trackNumber,omitempty"`
-	DiscNumber    int      `json:"discNumber,omitempty"`
-	Genre         string   `json:"genre,omitempty"`
-	ImageURL      string   `json:"imageUrl,omitempty"`
-	ArtworkURLs   []string `json:"artworkUrls,omitempty"`
-	ISRCs         []string `json:"isrcs,omitempty"`
-	Video         bool     `json:"video,omitempty"`
-	Version       string   `json:"version,omitempty"`
-	ProviderScore float64  `json:"-"`
-	Popularity    float64  `json:"-"`
+	ID string `json:"id"`
+	// Source distinguishes MusicBrainz recording IDs from local MediaFile IDs.
+	Source string `json:"source,omitempty"`
+	// LocalMediaFileID is present only when this user can access a non-missing copy.
+	LocalMediaFileID string   `json:"localMediaFileId,omitempty"`
+	Title            string   `json:"title"`
+	ArtistID         string   `json:"artistId,omitempty"`
+	ArtistName       string   `json:"artistName,omitempty"`
+	AlbumID          string   `json:"albumId,omitempty"`
+	AlbumTitle       string   `json:"albumTitle,omitempty"`
+	ReleaseDate      string   `json:"releaseDate,omitempty"`
+	Year             int      `json:"year,omitempty"`
+	Duration         int      `json:"duration,omitempty"`
+	TrackNumber      int      `json:"trackNumber,omitempty"`
+	DiscNumber       int      `json:"discNumber,omitempty"`
+	Genre            string   `json:"genre,omitempty"`
+	ImageURL         string   `json:"imageUrl,omitempty"`
+	ArtworkURLs      []string `json:"artworkUrls,omitempty"`
+	ISRCs            []string `json:"isrcs,omitempty"`
+	Video            bool     `json:"video,omitempty"`
+	Version          string   `json:"version,omitempty"`
+	ProviderScore    float64  `json:"-"`
+	Popularity       float64  `json:"-"`
 }
 
 type ExternalGenre struct {
@@ -86,8 +90,9 @@ type ExternalArtistDetails struct {
 }
 
 type ExternalAlbumDetails struct {
-	Album  ExternalAlbum   `json:"album"`
-	Tracks []ExternalTrack `json:"tracks"`
+	Album                    ExternalAlbum   `json:"album"`
+	Tracks                   []ExternalTrack `json:"tracks"`
+	LibraryStatusUnavailable bool            `json:"libraryStatusUnavailable,omitempty"`
 }
 
 type ExternalDownloadRequest struct {

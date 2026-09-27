@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/navidrome/navidrome/conf"
+	"github.com/navidrome/navidrome/core/matcher"
 	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
@@ -57,6 +58,8 @@ type service struct {
 	wake       chan struct{}
 	startOnce  sync.Once
 	affinity   SearchAffinityRepository
+	ds         model.DataStore
+	matcher    *matcher.Matcher
 }
 
 func New(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.MusicDownloadJobRepository, scanner model.Scanner) Service {
@@ -75,6 +78,14 @@ func New(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.Music
 func NewWithAffinity(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.MusicDownloadJobRepository, scanner model.Scanner, affinity SearchAffinityRepository) Service {
 	service := New(catalog, downloader, tagger, jobs, scanner).(*service)
 	service.affinity = affinity
+	return service
+}
+
+// NewWithLibrary enables library-aware catalog searches in the production service.
+func NewWithLibrary(catalog Catalog, downloader Downloader, tagger Tagger, jobs model.MusicDownloadJobRepository, scanner model.Scanner, affinity SearchAffinityRepository, ds model.DataStore, songMatcher *matcher.Matcher) Service {
+	service := NewWithAffinity(catalog, downloader, tagger, jobs, scanner, affinity).(*service)
+	service.ds = ds
+	service.matcher = songMatcher
 	return service
 }
 
@@ -99,16 +110,32 @@ func (s *service) Search(ctx context.Context, userID, query string, limit int) (
 	if limit < 1 || limit > 50 {
 		return model.ExternalMusicSearch{}, fmt.Errorf("%w: limit must be between 1 and 50", model.ErrValidation)
 	}
-	result, err := s.catalog.Search(ctx, query)
-	if err != nil {
-		return model.ExternalMusicSearch{}, err
+	result, catalogErr := s.catalog.Search(ctx, query)
+	if catalogErr != nil {
+		if s.ds == nil {
+			return model.ExternalMusicSearch{}, catalogErr
+		}
+		result = model.ExternalMusicSearch{Partial: true, DegradedSources: []string{"musicbrainz:search"}}
+		log.Warn(ctx, "External catalog search failed; searching library", catalogErr)
 	}
 	affinities := map[string]recommendations.TasteAffinity{}
-	if s.affinity != nil && strings.TrimSpace(userID) != "" {
+	if catalogErr == nil && s.affinity != nil && strings.TrimSpace(userID) != "" {
 		if values, lookupErr := s.affinity.LookupAffinityForCandidates(userID, searchTasteCandidates(result)); lookupErr == nil {
 			affinities = values
 		} else {
 			log.Warn(ctx, "External search affinity lookup failed", lookupErr)
+		}
+	}
+	if s.ds != nil {
+		var libraryErr error
+		result, libraryErr = s.mergeLibrarySearch(ctx, query, limit, result)
+		if libraryErr != nil {
+			if catalogErr != nil {
+				return model.ExternalMusicSearch{}, errors.Join(catalogErr, libraryErr)
+			}
+			result.Partial = true
+			result.DegradedSources = append(result.DegradedSources, "library")
+			log.Warn(ctx, "Music search library lookup failed", libraryErr)
 		}
 	}
 	return rankExternalSearch(query, result, limit, affinities), nil
@@ -125,7 +152,25 @@ func (s *service) Album(ctx context.Context, albumID string) (model.ExternalAlbu
 	if err := validateSourceID(albumID); err != nil {
 		return model.ExternalAlbumDetails{}, err
 	}
-	return s.catalog.Album(ctx, albumID)
+	album, err := s.catalog.Album(ctx, albumID)
+	if err != nil {
+		return album, err
+	}
+	for i := range album.Tracks {
+		album.Tracks[i].Source = "catalog"
+	}
+	if s.matcher != nil {
+		matches, matchErr := s.matchCatalogTracks(ctx, album.Tracks)
+		if matchErr != nil {
+			log.Warn(ctx, "Album track library lookup failed", matchErr)
+			album.LibraryStatusUnavailable = true
+			return album, nil
+		}
+		for i, file := range matches {
+			album.Tracks[i].LocalMediaFileID = file.ID
+		}
+	}
+	return album, nil
 }
 
 func (s *service) CreateDownload(ctx context.Context, userID string, request model.ExternalDownloadRequest) (*model.MusicDownloadJob, error) {
@@ -137,6 +182,28 @@ func (s *service) CreateDownload(ctx context.Context, userID string, request mod
 	}
 	if err := validateSourceID(request.ID); err != nil {
 		return nil, err
+	}
+	if s.matcher != nil && request.Kind == model.MusicDownloadSong && (request.Origin == "" || request.Origin == model.MusicDownloadOriginManual) {
+		track, err := s.catalog.Recording(ctx, request.ID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: check song in library: %v", model.ErrNotAvailable, err)
+		}
+		matches, err := s.matchCatalogTracks(ctx, []model.ExternalTrack{track})
+		if err != nil {
+			return nil, fmt.Errorf("%w: check song in library: %v", model.ErrNotAvailable, err)
+		}
+		if _, found := matches[0]; found {
+			return nil, model.ErrAlreadyDownloaded
+		}
+		local, err := s.ds.MediaFile(ctx).Search(track.Title, model.QueryOptions{Max: 100})
+		if err != nil {
+			return nil, fmt.Errorf("%w: check song in library: %v", model.ErrNotAvailable, err)
+		}
+		for _, file := range local {
+			if sameLibrarySong(track, file) {
+				return nil, model.ErrAlreadyDownloaded
+			}
+		}
 	}
 
 	now := time.Now().UTC()

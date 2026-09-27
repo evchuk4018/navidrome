@@ -134,7 +134,7 @@ func deduplicateCandidates(input []searchCandidate) []searchCandidate {
 	byKey := map[string]int{}
 	for _, candidate := range input {
 		key := dedupeKey(candidate)
-		if candidate.kind == kindSong {
+		if candidate.kind == kindSong && candidate.hit.Song.Source != "library" {
 			if equivalent := equivalentSongIndex(output, candidate); equivalent >= 0 {
 				mergeCandidate(&output[equivalent], candidate)
 				continue
@@ -155,11 +155,15 @@ func dedupeKey(candidate searchCandidate) string {
 		return candidate.kind + ":" + candidate.id
 	}
 	song := candidate.hit.Song
+	if song.Source == "library" {
+		return "library-song:" + song.ID
+	}
+	prefix := "song:"
 	artistTitle := normalizeText(song.ArtistName) + "\x00" + normalizeText(song.Title)
 	if len(song.ISRCs) > 0 {
-		return "song:isrc:" + strings.ToUpper(song.ISRCs[0]) + "\x00" + artistTitle
+		return prefix + "isrc:" + strings.ToUpper(song.ISRCs[0]) + "\x00" + artistTitle + "\x00" + songVersion(*song)
 	}
-	return "song:" + artistTitle + "\x00" + songVersion(*song) + "\x00" + strconv.Itoa(song.Duration/2)
+	return prefix + artistTitle + "\x00" + songVersion(*song) + "\x00" + strconv.Itoa(song.Duration/2)
 }
 
 func equivalentSongIndex(existing []searchCandidate, candidate searchCandidate) int {
@@ -169,7 +173,7 @@ func equivalentSongIndex(existing []searchCandidate, candidate searchCandidate) 
 	}
 	for index := range existing {
 		left := existing[index].hit.Song
-		if left == nil || songVersion(*left) != songVersion(*right) {
+		if left == nil || left.Source != right.Source || songVersion(*left) != songVersion(*right) {
 			continue
 		}
 		if normalizeText(left.ArtistName) != normalizeText(right.ArtistName) || normalizeText(left.Title) != normalizeText(right.Title) {
@@ -192,11 +196,16 @@ func mergeCandidate(destination *searchCandidate, source searchCandidate) {
 	// Prefer canonical non-video recordings, then the earliest release.
 	if destination.hit.Song != nil && source.hit.Song != nil {
 		left, right := destination.hit.Song, source.hit.Song
+		localID := left.LocalMediaFileID
+		if localID == "" {
+			localID = right.LocalMediaFileID
+		}
 		if (left.Video && !right.Video) || (!right.Video && earlierDate(right.ReleaseDate, left.ReleaseDate)) {
 			right.Popularity = destination.popularity
 			destination.hit.Song = right
 			destination.id = right.ID
 		}
+		destination.hit.Song.LocalMediaFileID = localID
 	}
 }
 
@@ -374,16 +383,33 @@ func boundedDistance(left, right string) bool {
 }
 
 func songVersion(song model.ExternalTrack) string {
-	if song.Version != "" {
-		return normalizeText(song.Version)
+	if song.Video {
+		return "video"
 	}
-	text := normalizeText(song.Title)
-	for _, marker := range []string{"live", "remix", "acoustic", "instrumental", "radio edit", "karaoke", "video"} {
-		if strings.Contains(text, marker) {
+	if song.Version != "" {
+		version := normalizeText(song.Version)
+		if marker := versionMarker(version); marker != "" {
+			return marker
+		}
+		return version
+	}
+	if marker := versionMarker(song.Title); marker != "" {
+		return marker
+	}
+	return "original"
+}
+
+func versionMarker(value string) string {
+	text := " " + normalizeText(value) + " "
+	for _, marker := range []string{"live", "remix", "acoustic", "instrumental", "radio edit", "karaoke", "video", "remastered", "remaster", "demo"} {
+		if strings.Contains(text, " "+marker+" ") {
+			if marker == "remastered" {
+				return "remaster"
+			}
 			return marker
 		}
 	}
-	return "original"
+	return ""
 }
 
 func candidateKey(candidate searchCandidate) string { return candidate.kind + ":" + candidate.id }

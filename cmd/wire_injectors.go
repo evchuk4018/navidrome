@@ -49,7 +49,7 @@ var allProviders = wire.NewSet(
 	persistence.NewQuickPickMetricsRepository,
 	persistence.NewPersonalRadioRepository,
 	persistence.NewSearchAffinityRepository,
-	musicservice.NewWithAffinity,
+	musicservice.NewWithLibrary,
 	quickpick.New,
 	personalradio.New,
 	musicbrainz.New,

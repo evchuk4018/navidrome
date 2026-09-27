@@ -54,3 +54,18 @@ func TestRankExternalSearchPreservesVersionsDuringDeduplication(t *testing.T) {
 		t.Fatalf("expected equivalent studio recordings merged and live preserved: %#v", result.Songs)
 	}
 }
+
+func TestRankExternalSearchKeepsLibraryOwnershipWhenCatalogDuplicatesMerge(t *testing.T) {
+	input := model.ExternalMusicSearch{Songs: []model.ExternalTrack{
+		{ID: "original", Source: "catalog", Title: "Talking Body", ArtistName: "Tove Lo", Duration: 240, LocalMediaFileID: "local-owned"},
+		{ID: "alternate", Source: "catalog", Title: "Talking Body", ArtistName: "Tove Lo", Duration: 240, ReleaseDate: "2014-01-01"},
+		{ID: "local-live", Source: "library", LocalMediaFileID: "local-live", Title: "Talking Body (Live)", ArtistName: "Tove Lo", Duration: 250},
+	}}
+	result := rankExternalSearch("Talking Body", input, 30, nil)
+	if len(result.Songs) != 2 {
+		t.Fatalf("got %d songs, want one catalog and one live library song: %#v", len(result.Songs), result.Songs)
+	}
+	if result.Songs[0].LocalMediaFileID != "local-owned" {
+		t.Fatalf("merged catalog song lost library ownership: %#v", result.Songs[0])
+	}
+}

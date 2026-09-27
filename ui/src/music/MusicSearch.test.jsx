@@ -17,7 +17,7 @@ vi.mock('./useDownloadJobs', () => ({
 }))
 
 vi.mock('./DownloadStatus', () => ({
-  DownloadButton: () => null,
+  DownloadButton: ({ id }) => <button>Download {id}</button>,
   DownloadStatus: () => null,
 }))
 
@@ -150,6 +150,83 @@ describe('<MusicSearch />', () => {
         'img[src="https://coverartarchive.org/covered-song.jpg"]',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('merges a downloaded catalog song with local-only songs in the mixed list', async () => {
+    mocks.search.mockResolvedValue(
+      searchResults({
+        results: [
+          {
+            kind: 'song',
+            song: {
+              id: 'catalog-owned',
+              source: 'catalog',
+              localMediaFileId: 'local-owned',
+              title: 'Talking Body',
+              artistName: 'Tove Lo',
+            },
+          },
+          {
+            kind: 'song',
+            song: {
+              id: 'local-live',
+              source: 'library',
+              localMediaFileId: 'local-live',
+              title: 'Talking Body (Live)',
+              artistName: 'Tove Lo',
+            },
+          },
+          {
+            kind: 'song',
+            song: {
+              id: 'catalog-new',
+              source: 'catalog',
+              title: 'New Song',
+              artistName: 'Tove Lo',
+            },
+          },
+        ],
+      }),
+    )
+
+    renderSearch()
+    submitSearch('Talking Body')
+
+    await screen.findByRole('heading', { name: 'Talking Body' })
+    expect(screen.getAllByText('Downloaded')).toHaveLength(2)
+    expect(screen.queryByText('Download catalog-owned')).not.toBeInTheDocument()
+    expect(screen.queryByText('Download local-live')).not.toBeInTheDocument()
+    expect(screen.getByText('Download catalog-new')).toBeInTheDocument()
+    expect(
+      screen.getAllByRole('heading', { name: 'Talking Body' }),
+    ).toHaveLength(1)
+  })
+
+  it('withholds song downloads when library status is unavailable', async () => {
+    mocks.search.mockResolvedValue(
+      searchResults({
+        partial: true,
+        degradedSources: ['library'],
+        results: [
+          {
+            kind: 'song',
+            song: {
+              id: 'unknown',
+              title: 'Unknown Song',
+              artistName: 'Artist',
+            },
+          },
+        ],
+      }),
+    )
+
+    renderSearch()
+    submitSearch('Unknown Song')
+
+    expect(
+      await screen.findByText('Library status unavailable'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Download unknown')).not.toBeInTheDocument()
   })
 
   it('keeps a submitted search on the hash route under the base path', async () => {

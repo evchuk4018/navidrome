@@ -14,7 +14,7 @@ import * as musicProvider from './provider'
 
 const activeStatuses = new Set(['queued', 'running'])
 
-export const DownloadButton = ({ kind, id, onCreated }) => {
+export const DownloadButton = ({ kind, id, onCreated, onConflict }) => {
   const notify = useNotify()
   const [loading, setLoading] = useState(false)
 
@@ -28,7 +28,14 @@ export const DownloadButton = ({ kind, id, onCreated }) => {
         notify('Download queued')
         onCreated?.(job)
       })
-      .catch(() => notify('Unable to queue download', 'warning'))
+      .catch((error) => {
+        if (error?.status === 409) {
+          notify('Already in your library', 'warning')
+          onConflict?.()
+        } else {
+          notify('Unable to queue download', 'warning')
+        }
+      })
       .finally(() => setLoading(false))
   }
 
@@ -59,7 +66,8 @@ export const DownloadStatus = ({ jobs }) => {
         {jobs.slice(0, 6).map((job) => {
           const progress = job.total > 0 ? (job.completed / job.total) * 100 : 0
           const label = job.title || job.album || `${job.kind} download`
-          const statusLabel = job.status === 'succeeded' ? 'Complete' : job.status
+          const statusLabel =
+            job.status === 'succeeded' ? 'Complete' : job.status
           return (
             <ListItem key={job.id} disableGutters>
               <ListItemText

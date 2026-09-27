@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useHistory, useParams } from 'react-router-dom'
 import {
   Box,
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
   Divider,
   List,
@@ -56,6 +57,8 @@ const MusicAlbum = () => {
   const { id } = useParams()
   const [album, setAlbum] = useState(null)
   const [error, setError] = useState('')
+  const [revision, setRevision] = useState(0)
+  const queuedHere = useRef(new Set())
   const { jobs, refreshJobs } = useDownloadJobs()
 
   useEffect(() => {
@@ -72,7 +75,18 @@ const MusicAlbum = () => {
     return () => {
       mounted = false
     }
-  }, [id])
+  }, [id, revision])
+
+  useEffect(() => {
+    const finished = jobs.some(
+      (job) => job.status === 'succeeded' && queuedHere.current.has(job.id),
+    )
+    if (!finished) return
+    for (const job of jobs) {
+      if (job.status === 'succeeded') queuedHere.current.delete(job.id)
+    }
+    setRevision((value) => value + 1)
+  }, [jobs])
 
   return (
     <Box className={classes.root}>
@@ -114,22 +128,52 @@ const MusicAlbum = () => {
                 Tracks
               </Typography>
               <List>
-                {album.tracks?.map((track, index) => (
-                  <Box key={track.id}>
-                    <ListItem className={classes.track}>
-                      <ListItemText
-                        primary={`${track.trackNumber || index + 1}. ${track.title}`}
-                        secondary={track.artistName}
-                      />
-                      <DownloadButton
-                        kind="song"
-                        id={track.id}
-                        onCreated={refreshJobs}
-                      />
-                    </ListItem>
-                    {index < album.tracks.length - 1 && <Divider />}
-                  </Box>
-                ))}
+                {album.tracks?.map((track, index) => {
+                  const activeJob = jobs.find(
+                    (job) =>
+                      job.kind === 'song' &&
+                      job.sourceId === track.id &&
+                      (job.status === 'queued' || job.status === 'running'),
+                  )
+                  return (
+                    <Box key={track.id}>
+                      <ListItem className={classes.track}>
+                        <ListItemText
+                          primary={`${track.trackNumber || index + 1}. ${track.title}`}
+                          secondary={track.artistName}
+                        />
+                        {track.localMediaFileId ? (
+                          <Chip label="Downloaded" size="small" />
+                        ) : activeJob ? (
+                          <Chip
+                            label={
+                              activeJob.status === 'queued'
+                                ? 'Queued'
+                                : 'Downloading'
+                            }
+                            size="small"
+                          />
+                        ) : album.libraryStatusUnavailable ? (
+                          <Chip
+                            label="Library status unavailable"
+                            size="small"
+                          />
+                        ) : (
+                          <DownloadButton
+                            kind="song"
+                            id={track.id}
+                            onCreated={(job) => {
+                              if (job?.id) queuedHere.current.add(job.id)
+                              refreshJobs()
+                            }}
+                            onConflict={() => setRevision((value) => value + 1)}
+                          />
+                        )}
+                      </ListItem>
+                      {index < album.tracks.length - 1 && <Divider />}
+                    </Box>
+                  )
+                })}
               </List>
             </CardContent>
           </Card>

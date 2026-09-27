@@ -160,6 +160,10 @@ func writeMusicError(w http.ResponseWriter, r *http.Request, err error, fallback
 	switch {
 	case errors.Is(err, model.ErrValidation):
 		status = http.StatusBadRequest
+	case errors.Is(err, model.ErrAlreadyDownloaded):
+		status = http.StatusConflict
+	case errors.Is(err, model.ErrNotAvailable):
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, model.ErrNotFound):
 		status = http.StatusNotFound
 	default:
