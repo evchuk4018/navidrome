@@ -50,6 +50,7 @@ import { HTML5Backend } from 'react-dnd-html5-backend'
 import { DndProvider } from 'react-dnd'
 import missing from './missing/index.js'
 import { useEffect } from 'react'
+import { usePreventPageZoom } from './common/usePreventPageZoom'
 
 const history = createHashHistory()
 
@@ -189,6 +190,7 @@ const Admin = (props) => {
 }
 
 const AppWithHotkeys = () => {
+  usePreventPageZoom()
   let language = localStorage.getItem('locale') || 'en'
   document.documentElement.lang = language
   if (config.enableSharing && shareInfo) {
