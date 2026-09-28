@@ -17,6 +17,8 @@ import (
 	"github.com/navidrome/navidrome/model/id"
 )
 
+const playNowDownloadPriority = 200
+
 type Catalog interface {
 	Search(context.Context, string) (model.ExternalMusicSearch, error)
 	Artist(context.Context, string) (model.ExternalArtistDetails, error)
@@ -180,8 +182,21 @@ func (s *service) CreateDownload(ctx context.Context, userID string, request mod
 	if request.Kind != model.MusicDownloadSong && request.Kind != model.MusicDownloadAlbum {
 		return nil, fmt.Errorf("%w: unsupported download kind", model.ErrValidation)
 	}
+	if request.PlayNow && request.Kind != model.MusicDownloadSong {
+		return nil, fmt.Errorf("%w: playNow requires a song", model.ErrValidation)
+	}
 	if err := validateSourceID(request.ID); err != nil {
 		return nil, err
+	}
+	if request.PlayNow {
+		active, err := s.jobs.PromoteActivePlay(userID, request.ID, playNowDownloadPriority)
+		if err != nil {
+			return nil, err
+		}
+		if active != nil {
+			s.signal()
+			return active, nil
+		}
 	}
 	if s.matcher != nil && request.Kind == model.MusicDownloadSong && (request.Origin == "" || request.Origin == model.MusicDownloadOriginManual) {
 		track, err := s.catalog.Recording(ctx, request.ID)
@@ -226,8 +241,17 @@ func (s *service) CreateDownload(ctx context.Context, userID string, request mod
 	if job.Origin == "" {
 		job.Origin = model.MusicDownloadOriginManual
 	}
-	if err := s.jobs.Create(job); err != nil {
-		return nil, err
+	if request.PlayNow {
+		job.Priority = playNowDownloadPriority
+		var err error
+		job, err = s.jobs.FindOrCreatePlay(job)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.jobs.Create(job); err != nil {
+			return nil, err
+		}
 	}
 	log.Info(ctx, "Music download job queued",
 		"jobID", job.ID,
@@ -241,11 +265,42 @@ func (s *service) CreateDownload(ctx context.Context, userID string, request mod
 	return job, nil
 }
 
-func (s *service) GetDownload(_ context.Context, userID, jobID string) (*model.MusicDownloadJob, error) {
+func (s *service) GetDownload(ctx context.Context, userID, jobID string) (*model.MusicDownloadJob, error) {
 	if strings.TrimSpace(userID) == "" || strings.TrimSpace(jobID) == "" {
 		return nil, model.ErrNotFound
 	}
-	return s.jobs.GetForUser(jobID, userID)
+	job, err := s.jobs.GetForUser(jobID, userID)
+	if err != nil || job == nil {
+		return job, err
+	}
+	if job.Kind == model.MusicDownloadSong && job.Status == model.MusicDownloadSuccess && job.MediaFileID == "" {
+		if resolveErr := s.resolveDownloadedSong(ctx, job); resolveErr != nil {
+			log.Warn(ctx, "Unable to resolve completed music download", "jobID", job.ID, "error", resolveErr)
+		}
+	}
+	return job, nil
+}
+
+// resolveDownloadedSong also runs on GET so an import completed during a
+// concurrent library scan can become playable when that scan finishes.
+func (s *service) resolveDownloadedSong(ctx context.Context, job *model.MusicDownloadJob) error {
+	if s.matcher == nil || job == nil || job.Kind != model.MusicDownloadSong || job.MediaFileID != "" {
+		return nil
+	}
+	matches, err := s.matchCatalogTracks(ctx, []model.ExternalTrack{{
+		ID: job.SourceID, Title: job.Title, ArtistName: job.Artist, AlbumTitle: job.Album,
+	}})
+	if err != nil {
+		return err
+	}
+	if file, ok := matches[0]; ok {
+		job.MediaFileID = file.ID
+		if err := s.jobs.Update(job); err != nil {
+			job.MediaFileID = ""
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *service) ListDownloads(_ context.Context, userID string, limit int) ([]model.MusicDownloadJob, error) {
@@ -313,6 +368,9 @@ func (s *service) process(ctx context.Context, job *model.MusicDownloadJob) {
 		"radioItemID", job.RadioItemID)
 	err := s.processDownload(ctx, job)
 	if err == nil {
+		if resolveErr := s.resolveDownloadedSong(ctx, job); resolveErr != nil {
+			log.Warn(ctx, "Downloaded song is not indexed yet", "jobID", job.ID, "error", resolveErr)
+		}
 		now := time.Now().UTC()
 		job.Status = model.MusicDownloadSuccess
 		job.Message = "Added to library"

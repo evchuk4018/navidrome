@@ -16,6 +16,9 @@ import {
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
   PLAYER_RESOLVE_QUEUE_URLS,
+  PLAYER_REQUEST_SEARCH_PLAY,
+  PLAYER_UPDATE_SEARCH_PLAY,
+  PLAYER_CLEAR_SEARCH_PLAY,
 } from '../actions'
 import config from '../config'
 
@@ -26,6 +29,7 @@ const initialState = {
   volume: config.defaultUIVolume / 100,
   savedPlayIndex: 0,
   radioSession: null,
+  pendingSearchPlay: null,
 }
 
 // The music-player dependency uses musicSrc as a fallback identity when it
@@ -132,7 +136,7 @@ const mapToAudioLists = (item) => {
 
 const reduceClearQueue = () => ({ ...initialState, clear: true })
 
-const reducePlayTracks = (state, { data, id }) => {
+const reducePlayTracks = (state, { data, id, searchPlayRequestId }) => {
   let playIndex = 0
   const queue = Object.keys(data).map((key, idx) => {
     if (key === id) {
@@ -146,6 +150,10 @@ const reducePlayTracks = (state, { data, id }) => {
     playIndex,
     clear: true,
     radioSession: null,
+    pendingSearchPlay:
+      searchPlayRequestId === state.pendingSearchPlay?.requestId
+        ? state.pendingSearchPlay
+        : null,
   }
 }
 
@@ -156,6 +164,7 @@ const reduceSetTrack = (state, { data }) => {
     playIndex: 0,
     clear: true,
     radioSession: null,
+    pendingSearchPlay: null,
   }
 }
 
@@ -281,6 +290,24 @@ const reduceMode = (state, { data: { mode } }) => {
 export const playerReducer = (previousState = initialState, payload) => {
   const { type } = payload
   switch (type) {
+    case PLAYER_REQUEST_SEARCH_PLAY:
+      return { ...previousState, pendingSearchPlay: payload.data }
+    case PLAYER_UPDATE_SEARCH_PLAY:
+      return previousState.pendingSearchPlay?.requestId ===
+        payload.data.requestId
+        ? {
+            ...previousState,
+            pendingSearchPlay: {
+              ...previousState.pendingSearchPlay,
+              status: payload.data.status,
+            },
+          }
+        : previousState
+    case PLAYER_CLEAR_SEARCH_PLAY:
+      return previousState.pendingSearchPlay?.requestId ===
+        payload.data.requestId
+        ? { ...previousState, pendingSearchPlay: null }
+        : previousState
     case PLAYER_CLEAR_QUEUE:
       return reduceClearQueue()
     case PLAYER_PLAY_TRACKS:

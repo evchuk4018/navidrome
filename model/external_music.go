@@ -98,6 +98,7 @@ type ExternalAlbumDetails struct {
 type ExternalDownloadRequest struct {
 	Kind        string `json:"kind"`
 	ID          string `json:"id"`
+	PlayNow     bool   `json:"playNow,omitempty"`
 	Origin      string `json:"-"`
 	Priority    int    `json:"-"`
 	RadioItemID string `json:"-"`
@@ -145,6 +146,8 @@ type MusicDownloadJob struct {
 
 type MusicDownloadJobRepository interface {
 	Create(*MusicDownloadJob) error
+	PromoteActivePlay(userID, sourceID string, priority int) (*MusicDownloadJob, error)
+	FindOrCreatePlay(*MusicDownloadJob) (*MusicDownloadJob, error)
 	Get(id string) (*MusicDownloadJob, error)
 	GetForUser(id, userID string) (*MusicDownloadJob, error)
 	GetAllForUser(userID string, limit int) ([]MusicDownloadJob, error)

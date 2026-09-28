@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/navidrome/navidrome/conf"
+	"github.com/navidrome/navidrome/core/matcher"
 	"github.com/navidrome/navidrome/core/recommendations"
 	"github.com/navidrome/navidrome/model"
 )
@@ -70,6 +71,27 @@ func (f *fakeJobs) Create(job *model.MusicDownloadJob) error {
 	clone := *job
 	f.job = &clone
 	return nil
+}
+
+func (f *fakeJobs) FindOrCreatePlay(job *model.MusicDownloadJob) (*model.MusicDownloadJob, error) {
+	if active, err := f.PromoteActivePlay(job.UserID, job.SourceID, job.Priority); err != nil || active != nil {
+		return active, err
+	}
+	if err := f.Create(job); err != nil {
+		return nil, err
+	}
+	return f.job, nil
+}
+
+func (f *fakeJobs) PromoteActivePlay(userID, sourceID string, priority int) (*model.MusicDownloadJob, error) {
+	if f.job != nil && f.job.UserID == userID && f.job.SourceID == sourceID &&
+		(f.job.Status == model.MusicDownloadQueued || f.job.Status == model.MusicDownloadRunning) {
+		if f.job.Status == model.MusicDownloadQueued && f.job.Priority < priority {
+			f.job.Priority = priority
+		}
+		return f.job, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeJobs) Get(string) (*model.MusicDownloadJob, error) { return f.job, nil }
@@ -153,6 +175,74 @@ func TestCreateDownloadValidatesAndQueues(t *testing.T) {
 	})
 	if !errors.Is(err, model.ErrValidation) {
 		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestPlayNowPromotesAndReusesActiveSongDownload(t *testing.T) {
+	jobs := &fakeJobs{}
+	service := New(fakeCatalog{}, fakeDownloader{}, &fakeTagger{}, jobs, nil)
+	request := model.ExternalDownloadRequest{Kind: model.MusicDownloadSong, ID: "recording-1", PlayNow: true}
+	queued, err := service.CreateDownload(context.Background(), "user-1", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Priority != playNowDownloadPriority || queued.Origin != model.MusicDownloadOriginManual {
+		t.Fatalf("interactive job was not prioritized: %#v", queued)
+	}
+	queued.Priority = 0
+	reused, err := service.CreateDownload(context.Background(), "user-1", request)
+	if err != nil || reused.ID != queued.ID || reused.Priority != playNowDownloadPriority {
+		t.Fatalf("queued job was not promoted and reused: %#v, %v", reused, err)
+	}
+	reused.Status = model.MusicDownloadRunning
+	reused.Priority = 0
+	running, err := service.CreateDownload(context.Background(), "user-1", request)
+	if err != nil || running.ID != queued.ID || running.Priority != 0 {
+		t.Fatalf("running job should be reused without reprioritizing: %#v, %v", running, err)
+	}
+	_, err = service.CreateDownload(context.Background(), "user-1", model.ExternalDownloadRequest{
+		Kind: model.MusicDownloadAlbum, ID: "album-1", PlayNow: true,
+	})
+	if !errors.Is(err, model.ErrValidation) {
+		t.Fatalf("album playNow should fail validation, got %v", err)
+	}
+}
+
+func TestPlayNowReusesActiveJobWhileCatalogIsUnavailable(t *testing.T) {
+	jobs := &fakeJobs{job: &model.MusicDownloadJob{
+		ID: "job-1", UserID: "user-1", Kind: model.MusicDownloadSong,
+		SourceID: "recording-1", Status: model.MusicDownloadQueued,
+	}}
+	store := librarySearchStore{repo: &librarySearchRepo{}}
+	service := NewWithLibrary(fakeCatalog{trackErr: errors.New("catalog unavailable")},
+		nil, nil, jobs, nil, nil, store, matcher.New(store))
+	job, err := service.CreateDownload(context.Background(), "user-1", model.ExternalDownloadRequest{
+		Kind: model.MusicDownloadSong, ID: "recording-1", PlayNow: true,
+	})
+	if err != nil || job.ID != "job-1" || job.Priority != playNowDownloadPriority {
+		t.Fatalf("active job should be reusable without catalog: %#v, %v", job, err)
+	}
+}
+
+func TestGetDownloadResolvesSongAfterDelayedScan(t *testing.T) {
+	repo := &librarySearchRepo{}
+	store := librarySearchStore{repo: repo}
+	jobs := &fakeJobs{job: &model.MusicDownloadJob{
+		ID: "job-1", UserID: "user-1", Kind: model.MusicDownloadSong,
+		SourceID: "recording-1", Title: "Seed Song",
+		Status: model.MusicDownloadSuccess,
+	}}
+	service := NewWithLibrary(fakeCatalog{}, nil, nil, jobs, nil, nil, store, matcher.New(store))
+	first, err := service.GetDownload(context.Background(), "user-1", "job-1")
+	if err != nil || first.MediaFileID != "" {
+		t.Fatalf("download should wait for library indexing: %#v, %v", first, err)
+	}
+	repo.files = model.MediaFiles{{
+		ID: "local-1", MbzRecordingID: "recording-1", Title: "Seed Song", Artist: "Seed Artist",
+	}}
+	ready, err := service.GetDownload(context.Background(), "user-1", "job-1")
+	if err != nil || ready.MediaFileID != "local-1" || jobs.job.MediaFileID != "local-1" {
+		t.Fatalf("completed job did not resolve its local song: %#v, %v", ready, err)
 	}
 }
 

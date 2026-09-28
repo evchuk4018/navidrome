@@ -10,9 +10,35 @@ import {
   PLAYER_SET_RADIO_PLANNING,
   PLAYER_SYNC_RADIO_TRACKS,
   PLAYER_RESOLVE_QUEUE_URLS,
+  requestSearchPlay,
+  playTracks,
+  clearSearchPlay,
 } from '../actions'
 
 describe('playerReducer', () => {
+  it('keeps Search Play pending for its own seed and cancels it for newer playback', () => {
+    const pending = playerReducer(
+      undefined,
+      requestSearchPlay({ id: 'recording-1', title: 'Seed' }),
+    )
+    const requestId = pending.pendingSearchPlay.requestId
+    const seed = { id: 'local-1', title: 'Seed' }
+    const ownStart = playerReducer(pending, {
+      ...playTracks({ [seed.id]: seed }, [seed.id]),
+      searchPlayRequestId: requestId,
+    })
+    expect(ownStart.pendingSearchPlay.requestId).toBe(requestId)
+    expect(ownStart.queue[0].trackId).toBe('local-1')
+
+    const newer = { id: 'local-2', title: 'New Choice' }
+    const replaced = playerReducer(
+      ownStart,
+      playTracks({ [newer.id]: newer }, [newer.id]),
+    )
+    expect(replaced.pendingSearchPlay).toBeNull()
+    expect(playerReducer(replaced, clearSearchPlay(requestId))).toBe(replaced)
+  })
+
   it('updates radio planning status without changing the queue', () => {
     const state = {
       queue: [{ trackId: 'seed' }],

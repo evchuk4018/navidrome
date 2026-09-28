@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useHistory, useLocation } from 'react-router-dom'
 import {
   Box,
+  Button,
   ButtonBase,
   Card,
   CardContent,
@@ -12,11 +13,14 @@ import {
   Typography,
 } from '@material-ui/core'
 import SearchIcon from '@material-ui/icons/Search'
+import PlayArrowIcon from '@material-ui/icons/PlayArrow'
+import { useDispatch, useSelector } from 'react-redux'
 import { makeStyles } from '@material-ui/core/styles'
 import * as musicProvider from './provider'
 import { DownloadButton, DownloadStatus } from './DownloadStatus'
 import ExternalArtwork from './ExternalArtwork'
 import { useDownloadJobs } from './useDownloadJobs'
+import { requestSearchPlay } from '../actions'
 
 const RECENT_SEARCHES_KEY = 'navidrome.externalMusic.recentSearches'
 
@@ -96,6 +100,8 @@ const MusicSearch = () => {
   const classes = useStyles(),
     history = useHistory(),
     location = useLocation()
+  const dispatch = useDispatch()
+  const pendingPlay = useSelector((state) => state.player?.pendingSearchPlay)
   const [query, setQuery] = useState(() => queryFromSearch(location.search)),
     [recent, setRecent] = useState(readRecentSearches)
   const [response, setResponse] = useState(null),
@@ -203,6 +209,8 @@ const MusicSearch = () => {
               (job.status === 'queued' || job.status === 'running'),
           )
         : null
+    const playingThis =
+      hit.kind === 'song' && pendingPlay?.sourceId === entity.id
     const body = (
       <CardContent className={classes.row}>
         <ExternalArtwork
@@ -240,7 +248,28 @@ const MusicSearch = () => {
             body
           )}
           {hit.kind === 'song' && (
-            <Box pr={2}>
+            <Box pr={2} display="flex" alignItems="center" gridGap={8}>
+              {(!libraryUnavailable || entity.localMediaFileId) && (
+                <Button
+                  size="small"
+                  color="primary"
+                  startIcon={<PlayArrowIcon />}
+                  disabled={playingThis}
+                  aria-label={`Play ${title}`}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    dispatch(requestSearchPlay(entity))
+                  }}
+                >
+                  {playingThis
+                    ? pendingPlay.status === 'queued'
+                      ? 'Queued to play'
+                      : pendingPlay.status === 'running'
+                        ? 'Downloading'
+                        : 'Starting…'
+                    : 'Play'}
+                </Button>
+              )}
               {entity.localMediaFileId ? (
                 <Chip label="Downloaded" size="small" />
               ) : activeJob ? (

@@ -4,13 +4,9 @@ import { useDataProvider, useNotify } from 'react-admin'
 import { useDispatch } from 'react-redux'
 import { useHistory } from 'react-router-dom'
 import { Artwork } from '../common/Artwork'
-import { playTracks, setRadioSession, syncRadioTracks } from '../actions'
-import {
-  createPersonalRadio,
-  getQuickPick,
-  radioSongs,
-  recordPlaylistPlay,
-} from './provider'
+import { playTracks } from '../actions'
+import { getQuickPick, recordPlaylistPlay } from './provider'
+import { startRelatedRadio } from './startRelatedRadio'
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -136,30 +132,7 @@ const QuickPick = () => {
 
   const playSongRadio = useCallback(
     (song) => {
-      dispatch(playTracks({ [song.id]: song }, [song.id]))
-      createPersonalRadio(song.id, 'related')
-        .then((response) => {
-          const enriched = radioSongs(response)
-          const seed = response.items.find((item) => item.type === 'seed')
-          dispatch(
-            setRadioSession({
-              id: response.session.id,
-              seedItemId: seed?.id,
-              planningStatus: response.planningStatus,
-            }),
-          )
-          const rest = enriched.ids.filter(
-            (key) => enriched.data[key].radioItemType !== 'seed',
-          )
-          if (rest.length)
-            dispatch(syncRadioTracks(enriched.data, rest))
-        })
-        .catch(() =>
-          notify(
-            'Radio could not be started; playing the selected song',
-            'warning',
-          ),
-        )
+      startRelatedRadio(dispatch, notify, song)
     },
     [dispatch, notify],
   )
@@ -171,9 +144,7 @@ const QuickPick = () => {
       </div>
     )
 
-  const recommendations = items.filter(
-    (item) => item.kind === 'recommendation',
-  )
+  const recommendations = items.filter((item) => item.kind === 'recommendation')
   const favorites = items.filter((item) => item.kind !== 'recommendation')
 
   const renderTiles = (tiles) =>
@@ -211,11 +182,7 @@ const QuickPick = () => {
             <Typography className={classes.title} noWrap>
               {title}
             </Typography>
-            <Typography
-              className={classes.subtitle}
-              variant="body2"
-              noWrap
-            >
+            <Typography className={classes.subtitle} variant="body2" noWrap>
               {subtitle}
             </Typography>
           </div>

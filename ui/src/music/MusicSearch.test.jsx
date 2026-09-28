@@ -2,10 +2,14 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createHashHistory } from 'history'
 import { Route, Router, Switch } from 'react-router-dom'
 import { vi } from 'vitest'
+import { Provider } from 'react-redux'
+import { combineReducers, createStore } from 'redux'
+import { playerReducer } from '../reducers/playerReducer'
 import MusicSearch from './MusicSearch'
 
 const mocks = vi.hoisted(() => ({
   search: vi.fn(),
+  jobs: [],
 }))
 
 vi.mock('./provider', () => ({
@@ -13,7 +17,7 @@ vi.mock('./provider', () => ({
 }))
 
 vi.mock('./useDownloadJobs', () => ({
-  useDownloadJobs: () => ({ jobs: [], refreshJobs: vi.fn() }),
+  useDownloadJobs: () => ({ jobs: mocks.jobs, refreshJobs: vi.fn() }),
 }))
 
 vi.mock('./DownloadStatus', () => ({
@@ -40,26 +44,81 @@ const submitSearch = (value) => {
 const renderSearch = (route = '/search') => {
   window.history.replaceState(null, '', `/navidrome/#${route}`)
   const history = createHashHistory()
+  const store = createStore(combineReducers({ player: playerReducer }))
   const view = render(
-    <Router history={history}>
-      <Switch>
-        <Route exact path="/search" component={MusicSearch} />
-        <Route
-          exact
-          path="/search/artist/:id"
-          render={() => <p>Artist details</p>}
-        />
-        <Route render={() => <p>Not Found</p>} />
-      </Switch>
-    </Router>,
+    <Provider store={store}>
+      <Router history={history}>
+        <Switch>
+          <Route exact path="/search" component={MusicSearch} />
+          <Route
+            exact
+            path="/search/artist/:id"
+            render={() => <p>Artist details</p>}
+          />
+          <Route render={() => <p>Not Found</p>} />
+        </Switch>
+      </Router>
+    </Provider>,
   )
-  return { history, ...view }
+  return { history, store, ...view }
 }
 
 describe('<MusicSearch />', () => {
   beforeEach(() => {
     mocks.search.mockReset()
+    mocks.jobs = []
     localStorage.clear()
+  })
+
+  it('requests playback for a downloaded song without changing the route', async () => {
+    mocks.search.mockResolvedValue(
+      searchResults({
+        songs: [
+          {
+            id: 'catalog-song',
+            localMediaFileId: 'local-song',
+            title: 'Ready Song',
+            artistName: 'Artist',
+          },
+        ],
+      }),
+    )
+    const { history, store } = renderSearch()
+    submitSearch('Ready Song')
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Play Ready Song' }),
+    )
+
+    expect(store.getState().player.pendingSearchPlay).toEqual(
+      expect.objectContaining({
+        sourceId: 'catalog-song',
+        localMediaFileId: 'local-song',
+      }),
+    )
+    expect(history.location.pathname).toBe('/search')
+    history.push('/search/artist/example')
+    expect(store.getState().player.pendingSearchPlay.sourceId).toBe(
+      'catalog-song',
+    )
+  })
+
+  it('offers Play for a queued catalog song', async () => {
+    mocks.jobs = [
+      { id: 'job-1', kind: 'song', sourceId: 'catalog-song', status: 'queued' },
+    ]
+    mocks.search.mockResolvedValue(
+      searchResults({
+        songs: [{ id: 'catalog-song', title: 'Waiting Song' }],
+      }),
+    )
+    const { store } = renderSearch()
+    submitSearch('Waiting Song')
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Play Waiting Song' }),
+    )
+    expect(store.getState().player.pendingSearchPlay.sourceId).toBe(
+      'catalog-song',
+    )
   })
 
   it('preserves the mixed server result order', async () => {
@@ -227,6 +286,9 @@ describe('<MusicSearch />', () => {
       await screen.findByText('Library status unavailable'),
     ).toBeInTheDocument()
     expect(screen.queryByText('Download unknown')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Play Unknown Song' }),
+    ).not.toBeInTheDocument()
   })
 
   it('keeps a submitted search on the hash route under the base path', async () => {

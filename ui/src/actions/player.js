@@ -1,3 +1,5 @@
+import { v4 as uuidv4 } from 'uuid'
+
 export const PLAYER_ADD_TRACKS = 'PLAYER_ADD_TRACKS'
 export const PLAYER_PLAY_NEXT = 'PLAYER_PLAY_NEXT'
 export const PLAYER_SET_TRACK = 'PLAYER_SET_TRACK'
@@ -13,6 +15,31 @@ export const PLAYER_SET_RADIO_SESSION = 'PLAYER_SET_RADIO_SESSION'
 export const PLAYER_SET_RADIO_PLANNING = 'PLAYER_SET_RADIO_PLANNING'
 export const PLAYER_SYNC_RADIO_TRACKS = 'PLAYER_SYNC_RADIO_TRACKS'
 export const PLAYER_RESOLVE_QUEUE_URLS = 'PLAYER_RESOLVE_QUEUE_URLS'
+export const PLAYER_REQUEST_SEARCH_PLAY = 'PLAYER_REQUEST_SEARCH_PLAY'
+export const PLAYER_UPDATE_SEARCH_PLAY = 'PLAYER_UPDATE_SEARCH_PLAY'
+export const PLAYER_CLEAR_SEARCH_PLAY = 'PLAYER_CLEAR_SEARCH_PLAY'
+
+export const requestSearchPlay = (song) => ({
+  type: PLAYER_REQUEST_SEARCH_PLAY,
+  data: {
+    requestId: uuidv4(),
+    sourceId: song.id,
+    localMediaFileId: song.localMediaFileId,
+    title: song.title,
+    artist: song.artistName,
+    status: 'starting',
+  },
+})
+
+export const updateSearchPlay = (requestId, status) => ({
+  type: PLAYER_UPDATE_SEARCH_PLAY,
+  data: { requestId, status },
+})
+
+export const clearSearchPlay = (requestId) => ({
+  type: PLAYER_CLEAR_SEARCH_PLAY,
+  data: { requestId },
+})
 
 export const setTrack = (data) => ({
   type: PLAYER_SET_TRACK,

@@ -18,6 +18,14 @@ func NewMusicDownloadJobRepository(db *sql.DB) model.MusicDownloadJobRepository 
 }
 
 func (r *musicDownloadJobRepository) Create(job *model.MusicDownloadJob) error {
+	return insertMusicDownloadJob(r.db, job)
+}
+
+type musicJobExecer interface {
+	Exec(string, ...any) (sql.Result, error)
+}
+
+func insertMusicDownloadJob(execer musicJobExecer, job *model.MusicDownloadJob) error {
 	now := time.Now().UTC()
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = now
@@ -25,7 +33,7 @@ func (r *musicDownloadJobRepository) Create(job *model.MusicDownloadJob) error {
 	if job.UpdatedAt.IsZero() {
 		job.UpdatedAt = now
 	}
-	_, err := r.db.Exec(`
+	_, err := execer.Exec(`
 		insert into music_download_job
 		(id, user_id, kind, source_id, artist, album, title, status, message, error,
 		 output_path, completed, total, created_at, updated_at, started_at, finished_at,
@@ -36,6 +44,73 @@ func (r *musicDownloadJobRepository) Create(job *model.MusicDownloadJob) error {
 		job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt,
 		job.Origin, job.Priority, job.RadioItemID, job.MediaFileID)
 	return err
+}
+
+// PromoteActivePlay reuses a waiting or running job before catalog lookup.
+func (r *musicDownloadJobRepository) PromoteActivePlay(userID, sourceID string, priority int) (*model.MusicDownloadJob, error) {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	existing, err := promoteActivePlayTx(tx, userID, sourceID, priority)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+// FindOrCreatePlay serializes interactive song requests. A waiting job is
+// promoted ahead of ordinary downloads; a running job is reused as-is.
+func (r *musicDownloadJobRepository) FindOrCreatePlay(job *model.MusicDownloadJob) (*model.MusicDownloadJob, error) {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	existing, err := promoteActivePlayTx(tx, job.UserID, job.SourceID, job.Priority)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		if err := insertMusicDownloadJob(tx, job); err != nil {
+			return nil, err
+		}
+		existing = job
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
+func promoteActivePlayTx(tx *sql.Tx, userID, sourceID string, priority int) (*model.MusicDownloadJob, error) {
+	// Perform a write first so concurrent requests cannot both observe no job.
+	_, err := tx.Exec(`update music_download_job set
+		priority = max(priority, ?), updated_at = ?
+		where id = (select id from music_download_job
+			where user_id = ? and kind = ? and source_id = ?
+				and status in (?, ?)
+			order by case status when ? then 0 else 1 end, priority desc, created_at asc
+			limit 1) and status = ?`,
+		priority, time.Now().UTC(), userID, model.MusicDownloadSong, sourceID,
+		model.MusicDownloadQueued, model.MusicDownloadRunning, model.MusicDownloadRunning,
+		model.MusicDownloadQueued)
+	if err != nil {
+		return nil, err
+	}
+	query := musicDownloadJobSelect + ` where user_id = ? and kind = ? and source_id = ?
+		and status in (?, ?)
+		order by case status when ? then 0 else 1 end, priority desc, created_at asc limit 1`
+	existing, err := scanMusicDownloadJob(tx.QueryRow(query, userID, model.MusicDownloadSong,
+		sourceID, model.MusicDownloadQueued, model.MusicDownloadRunning, model.MusicDownloadRunning))
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return existing, nil
 }
 
 func (r *musicDownloadJobRepository) Get(id string) (*model.MusicDownloadJob, error) {

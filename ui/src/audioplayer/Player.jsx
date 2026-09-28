@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useInterval } from '../common'
-import { useDispatch, useSelector } from 'react-redux'
+import { useDispatch, useSelector, useStore } from 'react-redux'
 import { ThemeProvider } from '@material-ui/core/styles'
 import {
   createMuiTheme,
   useAuthState,
   useDataProvider,
+  useNotify,
   useTranslate,
 } from 'react-admin'
 import ReactGA from 'react-ga'
@@ -29,6 +30,8 @@ import {
   setVolume,
   syncQueue,
   syncRadioTracks,
+  updateSearchPlay,
+  clearSearchPlay,
 } from '../actions'
 import PlayerToolbar from './PlayerToolbar'
 import { sendNotification } from '../utils'
@@ -47,6 +50,8 @@ import {
   sendRadioFeedback,
 } from '../quickpick/provider'
 import { isRadioPlanning } from '../quickpick/radioPlanning'
+import { startRelatedRadio } from '../quickpick/startRelatedRadio'
+import { resolveSearchSongForPlayback } from '../music/playSearchSong'
 
 const MINI_MODE = 'mini'
 const FULL_MODE = 'full'
@@ -74,8 +79,10 @@ const Player = () => {
   const translate = useTranslate()
   const playerTheme = theme.player?.theme || 'dark'
   const dataProvider = useDataProvider()
+  const notify = useNotify()
   const playerState = useSelector((state) => state.player)
   const dispatch = useDispatch()
+  const store = useStore()
   const [currentTrackId, setCurrentTrackId] = useState(null)
   const [heartbeatTrackId, setHeartbeatTrackId] = useState(null)
   const lastPositionMsRef = useRef(0)
@@ -100,8 +107,52 @@ const Player = () => {
   // without re-triggering on every queue/position change
   const playerStateRef = useRef(playerState)
   playerStateRef.current = playerState
+  const searchPlayProviderRef = useRef(dataProvider)
+  searchPlayProviderRef.current = dataProvider
+  const searchPlayNotifyRef = useRef(notify)
+  searchPlayNotifyRef.current = notify
 
   currentTrackIdRef.current = currentTrackId
+
+  const searchPlayRequestId = playerState.pendingSearchPlay?.requestId
+  useEffect(() => {
+    if (!searchPlayRequestId) return undefined
+    const request = store.getState().player.pendingSearchPlay
+    let active = true
+    const isCurrent = () =>
+      active &&
+      store.getState().player.pendingSearchPlay?.requestId ===
+        searchPlayRequestId
+
+    const run = async () => {
+      try {
+        const song = await resolveSearchSongForPlayback(request, {
+          dataProvider: searchPlayProviderRef.current,
+          isCurrent,
+          onStatus: (status) =>
+            dispatch(updateSearchPlay(searchPlayRequestId, status)),
+        })
+        if (song && isCurrent()) {
+          await startRelatedRadio(dispatch, searchPlayNotifyRef.current, song, {
+            searchPlayRequestId,
+            isCurrent,
+          })
+        }
+      } catch (error) {
+        if (isCurrent())
+          searchPlayNotifyRef.current(
+            error?.message || 'Unable to play this song',
+            'warning',
+          )
+      } finally {
+        if (isCurrent()) dispatch(clearSearchPlay(searchPlayRequestId))
+      }
+    }
+    run()
+    return () => {
+      active = false
+    }
+  }, [searchPlayRequestId, dispatch, store])
 
   const appendRadioItems = useCallback(
     (response) => {
@@ -234,7 +285,8 @@ const Player = () => {
         .slice(index + 1)
         .find((item) => !item.radioPending)
       if (nextPlayable) {
-        audioInstance && audioInstance.playByIndex(audioLists.indexOf(nextPlayable))
+        audioInstance &&
+          audioInstance.playByIndex(audioLists.indexOf(nextPlayable))
       }
     },
     [audioInstance],
@@ -662,11 +714,7 @@ const Player = () => {
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
     },
-    [
-      currentTrackId,
-      reportRadioFeedback,
-      skipPendingRadioItem,
-    ],
+    [currentTrackId, reportRadioFeedback, skipPendingRadioItem],
   )
 
   const onAudioPause = useCallback(
@@ -791,7 +839,11 @@ const Player = () => {
   useEffect(() => {
     if (!audioInstance || isRadio) return
 
-    return configureMediaSessionTrackNavigation(audioInstance, undefined, context)
+    return configureMediaSessionTrackNavigation(
+      audioInstance,
+      undefined,
+      context,
+    )
   }, [audioInstance, isRadio, playerState.queue, context])
 
   // Report every seek (including programmatic ones the library does not surface

@@ -16,11 +16,14 @@ export const getArtist = (id) =>
 export const getAlbum = (id) =>
   request(`/music/album/${encodeURIComponent(id)}`)
 
-export const createDownload = (kind, id) =>
+export const createDownload = (kind, id, options = {}) =>
   request('/music/downloads', {
     method: 'POST',
     headers: new Headers({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ kind, id }),
+    body: JSON.stringify({ kind, id, ...options }),
   })
 
 export const listDownloads = () => request('/music/downloads?limit=20')
+
+export const getDownload = (id) =>
+  request(`/music/downloads/${encodeURIComponent(id)}`)
