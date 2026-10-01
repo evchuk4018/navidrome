@@ -1,4 +1,4 @@
-import React, { createElement, forwardRef, Fragment } from 'react'
+import React, { createElement, forwardRef, Fragment, useEffect } from 'react'
 import {
   AppBar as RAAppBar,
   MenuItemLink,
@@ -7,8 +7,17 @@ import {
   getResources,
 } from 'react-admin'
 import { MdInfo, MdPerson, MdSupervisorAccount } from 'react-icons/md'
-import { useSelector } from 'react-redux'
-import { makeStyles, MenuItem, ListItemIcon, Divider } from '@material-ui/core'
+import { useDispatch, useSelector } from 'react-redux'
+import {
+  makeStyles,
+  MenuItem,
+  ListItemIcon,
+  Divider,
+  useMediaQuery,
+} from '@material-ui/core'
+import { COMPACT_NAVIGATION_QUERY } from './navigation'
+import authProvider from '../authProvider'
+import { startEventStream } from '../eventStream'
 import ViewListIcon from '@material-ui/icons/ViewList'
 import { Dialogs } from '../dialogs/Dialogs'
 import { AboutDialog } from '../dialogs'
@@ -134,13 +143,35 @@ const CustomUserMenu = ({ onClick, ...rest }) => {
         <Divider />
         <AboutMenuItem />
       </UserMenu>
-      <Dialogs />
     </>
   )
 }
 
-const AppBar = (props) => (
-  <RAAppBar {...props} container={Fragment} userMenu={<CustomUserMenu />} />
-)
+const AppBar = (props) => {
+  const compact = useMediaQuery(COMPACT_NAVIGATION_QUERY, { noSsr: true })
+  const dispatch = useDispatch()
+
+  useEffect(() => {
+    if (config.devActivityPanel) {
+      authProvider
+        .checkAuth()
+        .then(() => startEventStream(dispatch))
+        .catch(() => {})
+    }
+  }, [dispatch])
+
+  return (
+    <>
+      {!compact && (
+        <RAAppBar
+          {...props}
+          container={Fragment}
+          userMenu={<CustomUserMenu />}
+        />
+      )}
+      <Dialogs />
+    </>
+  )
+}
 
 export default AppBar

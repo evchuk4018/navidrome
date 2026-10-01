@@ -1,4 +1,8 @@
 import { makeStyles } from '@material-ui/core/styles'
+import {
+  BOTTOM_NAVIGATION_SPACE,
+  COMPACT_NAVIGATION_MEDIA,
+} from '../layout/navigation'
 
 const useStyle = makeStyles(
   (theme) => ({
@@ -34,6 +38,13 @@ const useStyle = makeStyles(
     },
     player: {
       display: (props) => (props.visible ? 'block' : 'none'),
+      [COMPACT_NAVIGATION_MEDIA]: {
+        '& .music-player-panel': {
+          bottom: BOTTOM_NAVIGATION_SPACE,
+          zIndex: 1001,
+        },
+        '& .react-jinke-music-player-mobile': { zIndex: 1200 },
+      },
       // The dependency's mini mode is a draggable circular controller. The
       // source-owned MiniPlayer renders the collapsed UI instead; the
       // dependency remains responsible for the expanded player and audio.

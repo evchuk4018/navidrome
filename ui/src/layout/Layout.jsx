@@ -1,11 +1,17 @@
 import React, { useCallback, useMemo } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { Layout as RALayout, toggleSidebar } from 'react-admin'
+import { Layout as RALayout, Sidebar, toggleSidebar } from 'react-admin'
+import { useMediaQuery } from '@material-ui/core'
 import { makeStyles } from '@material-ui/core/styles'
 import { HotKeys } from 'react-hotkeys'
 import { useLocation } from 'react-router-dom'
 import Menu from './Menu'
 import AppBar from './AppBar'
+import BottomNavigation from './BottomNavigation'
+import {
+  BOTTOM_NAVIGATION_HEIGHT,
+  COMPACT_NAVIGATION_QUERY,
+} from './navigation'
 import Notification from './Notification'
 import useCurrentTheme from '../themes/useCurrentTheme'
 import { useSearchRefocus } from '../common/useSearchRefocus'
@@ -19,17 +25,20 @@ import {
 const useStyles = makeStyles({
   root: {
     paddingBottom: (props) =>
-      props.addPadding ? 'calc(80px + env(safe-area-inset-bottom, 0px))' : 0,
+      props.compact || props.addPadding
+        ? `calc(${(props.compact ? BOTTOM_NAVIGATION_HEIGHT : 0) + (props.addPadding ? 80 : 0)}px + env(safe-area-inset-bottom, 0px))`
+        : 0,
   },
 })
 
 const Layout = (props) => {
   const currentTheme = useCurrentTheme()
+  const compact = useMediaQuery(COMPACT_NAVIGATION_QUERY, { noSsr: true })
   const { pathname } = useLocation()
   const isQuickPick = pathname === '/quick-pick'
   const queue = useSelector((state) => state.player?.queue)
   const hasPlayer = (queue?.length || 0) > 0
-  const classes = useStyles({ addPadding: hasPlayer })
+  const classes = useStyles({ addPadding: hasPlayer, compact })
   const dispatch = useDispatch()
   useSearchRefocus()
   useUserLibraries()
@@ -52,27 +61,39 @@ const Layout = (props) => {
       },
       overrides: {
         ...currentTheme.overrides,
-        ...(isQuickPick && {
+        ...((isQuickPick || compact) && {
           RaLayout: {
             ...existingLayout,
             root: {
               ...existingLayout.root,
-              background: `${sidebarColors.background} !important`,
-              color: sidebarColors.text,
+              ...(isQuickPick && {
+                background: `${sidebarColors.background} !important`,
+                color: sidebarColors.text,
+              }),
               minWidth: 0,
             },
             contentWithSidebar: {
               ...existingLayout.contentWithSidebar,
-              background: `${sidebarColors.background} !important`,
+              ...(isQuickPick && {
+                background: `${sidebarColors.background} !important`,
+              }),
               gap: 0,
             },
             content: {
               ...existingLayout.content,
-              background: `${sidebarColors.background} !important`,
-              padding: '0 !important',
+              ...(isQuickPick && {
+                background: `${sidebarColors.background} !important`,
+                padding: '0 !important',
+                borderRadius: 0,
+              }),
               minWidth: 0,
-              borderRadius: 0,
             },
+            ...(compact && {
+              appFrame: {
+                ...existingLayout.appFrame,
+                marginTop: '0 !important',
+              },
+            }),
           },
         }),
         RaSidebar: {
@@ -111,10 +132,12 @@ const Layout = (props) => {
         },
       },
     }
-  }, [currentTheme, hasPlayer, isQuickPick])
+  }, [currentTheme, hasPlayer, isQuickPick, compact])
 
   const keyHandlers = {
-    TOGGLE_MENU: useCallback(() => dispatch(toggleSidebar()), [dispatch]),
+    TOGGLE_MENU: useCallback(() => {
+      if (!compact) dispatch(toggleSidebar())
+    }, [dispatch, compact]),
   }
 
   return (
@@ -124,9 +147,12 @@ const Layout = (props) => {
         className={classes.root}
         menu={Menu}
         appBar={AppBar}
+        sidebar={compact ? BottomNavigation : Sidebar}
         theme={theme}
         notification={Notification}
-      />
+      >
+        {props.children}
+      </RALayout>
     </HotKeys>
   )
 }

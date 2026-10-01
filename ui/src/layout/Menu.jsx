@@ -3,10 +3,7 @@ import { useSelector } from 'react-redux'
 import { Divider, makeStyles } from '@material-ui/core'
 import clsx from 'clsx'
 import { useTranslate, MenuItemLink } from 'react-admin'
-import SearchIcon from '@material-ui/icons/Search'
-import FlashOnIcon from '@material-ui/icons/FlashOn'
-import MusicNoteOutlinedIcon from '@material-ui/icons/MusicNoteOutlined'
-import PlaylistPlayIcon from '@material-ui/icons/PlaylistPlay'
+import { useNavigationLinks } from './navigation'
 import SidebarPlaylists from './SidebarPlaylists'
 import {
   PLAYLIST_ROW_HEIGHT,
@@ -92,6 +89,7 @@ const Menu = () => {
   const open = useSelector((state) => state.admin.ui.sidebarOpen)
   const translate = useTranslate()
   const classes = useStyles()
+  const links = useNavigationLinks()
   const previewRef = useRef(null)
   const [visibleCount, setVisibleCount] = useState(0)
   const showPlaylists = open && config.devSidebarPlaylists
@@ -111,34 +109,6 @@ const Menu = () => {
     return () => observer.disconnect()
   }, [showPlaylists])
 
-  const links = [
-    {
-      to: '/quick-pick',
-      label: 'Quick Pick',
-      icon: <NavigationIcon icon={FlashOnIcon} />,
-      exact: true,
-    },
-    {
-      to: '/search',
-      label: translate('menu.search', { _: 'Search' }),
-      icon: <NavigationIcon icon={SearchIcon} />,
-      exact: true,
-    },
-    {
-      to: '/song',
-      label: translate('resources.song.name', { smart_count: 2, _: 'Songs' }),
-      icon: <NavigationIcon icon={MusicNoteOutlinedIcon} />,
-    },
-    {
-      to: '/playlist',
-      label: translate('resources.playlist.name', {
-        smart_count: 2,
-        _: 'Playlists',
-      }),
-      icon: <NavigationIcon icon={PlaylistPlayIcon} />,
-    },
-  ]
-
   return (
     <nav className={classes.root} aria-label={translate('ra.action.menu')}>
       <div className={classes.navigation}>
@@ -152,7 +122,7 @@ const Menu = () => {
             className={clsx(classes.link, !open && classes.closedLink)}
             classes={{ icon: clsx(classes.icon, !open && classes.closedIcon) }}
             primaryText={<span className={classes.label}>{label}</span>}
-            leftIcon={icon}
+            leftIcon={<NavigationIcon icon={icon} />}
           />
         ))}
       </div>

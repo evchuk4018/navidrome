@@ -1,6 +1,7 @@
 import React from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import MiniPlayer from './MiniPlayer'
+import { emittedRules } from '../layout/testMediaQuery'
 
 describe('<MiniPlayer />', () => {
   const track = {
@@ -128,5 +129,33 @@ describe('<MiniPlayer />', () => {
     )
 
     expect(container).toBeEmptyDOMElement()
+  })
+
+  it('sits immediately above compact navigation without duplicating its safe-area inset', () => {
+    render(
+      <MiniPlayer
+        track={track}
+        audioInstance={{ paused: true }}
+        onExpand={vi.fn()}
+      />,
+    )
+    const player = screen.getByTestId('mini-player')
+    const responsive = emittedRules().filter(
+      ({ rule, media }) =>
+        rule.selectorText &&
+        player.matches(rule.selectorText) &&
+        media.includes('(max-width:959.95px)'),
+    )
+    const tablet = responsive.find(({ media }) => media.length === 1).rule
+    expect(tablet.style.getPropertyValue('bottom')).toBe(
+      'calc(64px + env(safe-area-inset-bottom, 0px))',
+    )
+    expect(tablet.style.getPropertyValue('height')).toBe('72px')
+    expect(tablet.style.getPropertyValue('padding-bottom')).toBe('8px')
+    const phone = responsive.find(({ media }) =>
+      media.includes('(max-width: 480px)'),
+    ).rule
+    expect(phone.style.getPropertyValue('height')).toBe('68px')
+    expect(player).toHaveStyle({ bottom: '0px' })
   })
 })

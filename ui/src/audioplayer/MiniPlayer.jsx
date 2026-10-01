@@ -8,6 +8,10 @@ import MusicNoteIcon from '@material-ui/icons/MusicNote'
 import { formatDuration } from '../utils'
 import { radioPlanningMessage } from '../quickpick/radioPlanning'
 import { togglePlayback } from './playback'
+import {
+  BOTTOM_NAVIGATION_SPACE,
+  COMPACT_NAVIGATION_MEDIA,
+} from '../layout/navigation'
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -29,6 +33,12 @@ const useStyles = makeStyles((theme) => ({
     touchAction: 'pan-y',
     '@media (max-width: 480px)': {
       height: 'calc(68px + env(safe-area-inset-bottom, 0px))',
+    },
+    [COMPACT_NAVIGATION_MEDIA]: {
+      bottom: BOTTOM_NAVIGATION_SPACE,
+      height: 72,
+      paddingBottom: 8,
+      '@media (max-width: 480px)': { height: 68 },
     },
   },
   details: {
