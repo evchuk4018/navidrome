@@ -14,7 +14,7 @@ The live deployment layout is:
 | Music library | `/srv/storage/media/music` mounted read-write at `/music` |
 | Navidrome data | external volume `musicplayer_navidrome_data` mounted at `/data` |
 | Local listener | `127.0.0.1:4533` |
-| Tailnet URL | `https://homelab.tail861ffd.ts.net/navidrome` |
+| Web URL | [https://navidrome.wowzerbowser.xyz/](https://navidrome.wowzerbowser.xyz/) |
 
 The Compose configuration keeps the existing external data volume, so the
 Navidrome database, configuration, playlists, users, and other application
