@@ -1,165 +1,170 @@
-import React, { useState } from 'react'
+import React, { useLayoutEffect, useRef, useState } from 'react'
 import { useSelector } from 'react-redux'
 import { Divider, makeStyles } from '@material-ui/core'
 import clsx from 'clsx'
-import { useTranslate, MenuItemLink, getResources } from 'react-admin'
-import ViewListIcon from '@material-ui/icons/ViewList'
-import AlbumIcon from '@material-ui/icons/Album'
+import { useTranslate, MenuItemLink } from 'react-admin'
 import SearchIcon from '@material-ui/icons/Search'
 import FlashOnIcon from '@material-ui/icons/FlashOn'
-import SubMenu from './SubMenu'
-import { humanize, pluralize } from 'inflection'
-import albumLists from '../album/albumLists'
-import PlaylistsSubMenu from './PlaylistsSubMenu'
-import LibrarySelector from '../common/LibrarySelector'
+import MusicNoteOutlinedIcon from '@material-ui/icons/MusicNoteOutlined'
+import PlaylistPlayIcon from '@material-ui/icons/PlaylistPlay'
+import SidebarPlaylists from './SidebarPlaylists'
+import {
+  PLAYLIST_ROW_HEIGHT,
+  sidebarColors,
+  sidebarLinkStates,
+} from './sidebarStyles'
 import config from '../config'
 
-const useStyles = makeStyles((theme) => ({
+const useStyles = makeStyles({
   root: {
-    marginTop: theme.spacing(1),
-    marginBottom: theme.spacing(1),
-    transition: theme.transitions.create('width', {
-      easing: theme.transitions.easing.sharp,
-      duration: theme.transitions.duration.leavingScreen,
-    }),
-    paddingBottom: (props) => (props.addPadding ? '80px' : '20px'),
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100%',
+    height: '100%',
+    minHeight: 0,
+    boxSizing: 'border-box',
+    padding: '26px 0 12px',
+    overflow: 'hidden',
+    backgroundColor: sidebarColors.background,
+    '@media (max-height:420px)': { padding: '8px 0' },
+    '@media (max-height:360px)': { padding: '4px 0' },
   },
-  open: {
-    width: 240,
+  navigation: {
+    flexShrink: 0,
   },
-  closed: {
-    width: 55,
+  link: {
+    ...sidebarLinkStates,
+    position: 'relative',
+    height: 54,
+    minHeight: 54,
+    boxSizing: 'border-box',
+    margin: '0 6px 0 5px',
+    padding: '0 24px',
+    borderRadius: 16,
+    fontSize: 17,
+    lineHeight: '24px',
+    fontWeight: 500,
+    overflow: 'hidden',
+    '@media (max-height:420px)': { height: 44, minHeight: 44 },
+    '@media (max-height:360px)': { height: 32, minHeight: 32, fontSize: 15 },
   },
-  active: {
-    color: theme.palette.text.primary,
-    fontWeight: 'bold',
+  icon: {
+    '&&': {
+      minWidth: 44,
+      color: 'inherit !important',
+      opacity: 1,
+      padding: 0,
+    },
+    '& svg': {
+      fontSize: 26,
+      color: 'inherit !important',
+    },
   },
-}))
+  closedIcon: {
+    '&&': { minWidth: 0 },
+  },
+  closedLink: {
+    padding: 0,
+    justifyContent: 'center',
+    '& $label': { display: 'none' },
+  },
+  label: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  divider: {
+    flexShrink: 0,
+    margin: '4px 14px 12px',
+    backgroundColor: sidebarColors.divider,
+  },
+  playlists: {
+    flex: '1 1 0%',
+    minHeight: 0,
+    overflow: 'hidden',
+  },
+})
 
-const translatedResourceName = (resource, translate) =>
-  translate(`resources.${resource.name}.name`, {
-    smart_count: 2,
-    _:
-      resource.options && resource.options.label
-        ? translate(resource.options.label, {
-            smart_count: 2,
-            _: resource.options.label,
-          })
-        : humanize(pluralize(resource.name)),
-  })
+// MenuItemLink passes its entire label as titleAccess. Keep that label on the
+// link and tooltip, rather than passing a React element to the SVG title.
+const NavigationIcon = ({ icon: Icon }) => <Icon />
 
-const Menu = ({ dense = false }) => {
+const Menu = () => {
   const open = useSelector((state) => state.admin.ui.sidebarOpen)
   const translate = useTranslate()
-  const queue = useSelector((state) => state.player?.queue)
-  const classes = useStyles({ addPadding: queue.length > 0 })
-  const resources = useSelector(getResources)
+  const classes = useStyles()
+  const previewRef = useRef(null)
+  const [visibleCount, setVisibleCount] = useState(0)
+  const showPlaylists = open && config.devSidebarPlaylists
 
-  // TODO State is not persisted in mobile when you close the sidebar menu. Move to redux?
-  const [state, setState] = useState({
-    menuAlbumList: true,
-    menuPlaylists: true,
-    menuSharedPlaylists: true,
-  })
+  useLayoutEffect(() => {
+    const preview = previewRef.current
+    if (!preview) return undefined
 
-  const handleToggle = (menu) => {
-    setState((state) => ({ ...state, [menu]: !state[menu] }))
-  }
-
-  const renderResourceMenuItemLink = (resource) => (
-    <MenuItemLink
-      key={resource.name}
-      to={`/${resource.name}`}
-      activeClassName={classes.active}
-      primaryText={translatedResourceName(resource, translate)}
-      leftIcon={resource.icon || <ViewListIcon />}
-      sidebarIsOpen={open}
-      dense={dense}
-    />
-  )
-
-  const renderAlbumMenuItemLink = (type, al) => {
-    const resource = resources.find((r) => r.name === 'album')
-    if (!resource) {
-      return null
+    const measure = (height) => {
+      setVisibleCount(Math.max(0, Math.floor(height / PLAYLIST_ROW_HEIGHT)))
     }
-
-    const albumListAddress = `/album/${type}`
-
-    const name = translate(`resources.album.lists.${type || 'default'}`, {
-      _: translatedResourceName(resource, translate),
+    measure(preview.getBoundingClientRect().height)
+    const observer = new ResizeObserver(([entry]) => {
+      measure(entry.contentRect.height)
     })
+    observer.observe(preview)
+    return () => observer.disconnect()
+  }, [showPlaylists])
 
-    return (
-      <MenuItemLink
-        key={albumListAddress}
-        to={albumListAddress}
-        activeClassName={classes.active}
-        primaryText={name}
-        leftIcon={al.icon || <ViewListIcon />}
-        sidebarIsOpen={open}
-        dense={dense}
-        exact
-      />
-    )
-  }
-
-  const subItems = (subMenu) => (resource) =>
-    resource.hasList && resource.options && resource.options.subMenu === subMenu
+  const links = [
+    {
+      to: '/quick-pick',
+      label: 'Quick Pick',
+      icon: <NavigationIcon icon={FlashOnIcon} />,
+      exact: true,
+    },
+    {
+      to: '/search',
+      label: translate('menu.search', { _: 'Search' }),
+      icon: <NavigationIcon icon={SearchIcon} />,
+      exact: true,
+    },
+    {
+      to: '/song',
+      label: translate('resources.song.name', { smart_count: 2, _: 'Songs' }),
+      icon: <NavigationIcon icon={MusicNoteOutlinedIcon} />,
+    },
+    {
+      to: '/playlist',
+      label: translate('resources.playlist.name', {
+        smart_count: 2,
+        _: 'Playlists',
+      }),
+      icon: <NavigationIcon icon={PlaylistPlayIcon} />,
+    },
+  ]
 
   return (
-    <div
-      className={clsx(classes.root, {
-        [classes.open]: open,
-        [classes.closed]: !open,
-      })}
-    >
-      {open && <LibrarySelector />}
-      <MenuItemLink
-        to="/quick-pick"
-        activeClassName={classes.active}
-        primaryText="Quick Pick"
-        leftIcon={<FlashOnIcon />}
-        sidebarIsOpen={open}
-        dense={dense}
-        exact
-      />
-      <MenuItemLink
-        to="/search"
-        activeClassName={classes.active}
-        primaryText={translate('menu.search', { _: 'Search' })}
-        leftIcon={<SearchIcon />}
-        sidebarIsOpen={open}
-        dense={dense}
-        exact
-      />
-      <SubMenu
-        handleToggle={() => handleToggle('menuAlbumList')}
-        isOpen={state.menuAlbumList}
-        sidebarIsOpen={open}
-        name="menu.albumList"
-        icon={<AlbumIcon />}
-        dense={dense}
-      >
-        {Object.keys(albumLists).map((type) =>
-          renderAlbumMenuItemLink(type, albumLists[type]),
-        )}
-      </SubMenu>
-      {resources.filter(subItems(undefined)).map(renderResourceMenuItemLink)}
-      {config.devSidebarPlaylists && open ? (
-        <>
-          <Divider />
-          <PlaylistsSubMenu
-            state={state}
-            setState={setState}
-            sidebarIsOpen={open}
-            dense={dense}
+    <nav className={classes.root} aria-label={translate('ra.action.menu')}>
+      <div className={classes.navigation}>
+        {links.map(({ to, label, icon, exact }) => (
+          <MenuItemLink
+            key={to}
+            role="link"
+            to={to}
+            exact={exact}
+            aria-label={label}
+            className={clsx(classes.link, !open && classes.closedLink)}
+            classes={{ icon: clsx(classes.icon, !open && classes.closedIcon) }}
+            primaryText={<span className={classes.label}>{label}</span>}
+            leftIcon={icon}
           />
+        ))}
+      </div>
+      {showPlaylists && (
+        <>
+          <Divider className={classes.divider} />
+          <div ref={previewRef} className={classes.playlists}>
+            <SidebarPlaylists visibleCount={visibleCount} />
+          </div>
         </>
-      ) : (
-        resources.filter(subItems('playlist')).map(renderResourceMenuItemLink)
       )}
-    </div>
+    </nav>
   )
 }
 
