@@ -1,6 +1,7 @@
 import { jwtDecode } from 'jwt-decode'
 import { baseUrl } from './utils'
 import config from './config'
+import { clearQuickPickCache } from './quickpick/cache'
 
 // config sent from server may contain authentication info, for example when the user is authenticated
 // by a reverse proxy request header
@@ -14,6 +15,10 @@ if (config.auth) {
 }
 
 function storeAuthenticationInfo(authInfo) {
+  const previousUserId = localStorage.getItem('userId')
+  if (previousUserId && previousUserId !== authInfo.id) {
+    clearQuickPickCache()
+  }
   authInfo.token && localStorage.setItem('token', authInfo.token)
   localStorage.setItem('userId', authInfo.id)
   localStorage.setItem('name', authInfo.name)
@@ -45,6 +50,10 @@ const authProvider = {
       })
       .then((response) => {
         jwtDecode(response.token) // Validate token
+        // A successful login starts a new page session for Quick Play. The
+        // cache remains valid across token renewal, which is handled by the
+        // data provider instead of this login flow.
+        clearQuickPickCache()
         storeAuthenticationInfo(response)
         // Avoid "going to create admin" dialog after logout/login without a refresh
         config.firstTime = false
@@ -99,6 +108,7 @@ const authProvider = {
 }
 
 const removeItems = () => {
+  clearQuickPickCache()
   localStorage.removeItem('token')
   localStorage.removeItem('userId')
   localStorage.removeItem('name')

@@ -8,6 +8,7 @@ import {
 } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import QuickPick from './QuickPick'
+import { clearQuickPickCache } from './cache'
 
 const mocks = vi.hoisted(() => ({
   getQuickPick: vi.fn(),
@@ -50,6 +51,7 @@ const grid = (viewId = 'view-1') => ({
 
 describe('QuickPick', () => {
   beforeEach(() => {
+    clearQuickPickCache()
     vi.resetAllMocks()
     mocks.getQuickPick.mockResolvedValue(grid())
     mocks.recordQuickPickImpressions.mockResolvedValue({})
@@ -122,7 +124,7 @@ describe('QuickPick', () => {
     },
   )
 
-  it('loads a new view on the next visit and reports clicks with that view', async () => {
+  it('keeps the same view on the next visit and reports clicks with that view', async () => {
     const first = render(<QuickPick />)
     await screen.findByRole('button', { name: 'Play Song 3 radio' })
     first.unmount()
@@ -133,12 +135,12 @@ describe('QuickPick', () => {
     )
     await waitFor(() =>
       expect(mocks.recordQuickPickClick).toHaveBeenCalledWith(
-        'view-2',
+        'view-1',
         'track:song-6',
       ),
     )
-    expect(mocks.getQuickPick).toHaveBeenCalledTimes(2)
-    expect(mocks.recordQuickPickImpressions).toHaveBeenCalledTimes(2)
+    expect(mocks.getQuickPick).toHaveBeenCalledTimes(1)
+    expect(mocks.recordQuickPickImpressions).toHaveBeenCalledTimes(1)
   })
 
   it.each([{ items: [] }, { items: grid().items.slice(0, 3) }])(
@@ -159,6 +161,72 @@ describe('QuickPick', () => {
       screen.getByRole('progressbar', { name: 'Loading discoveries' }),
     ).toBeInTheDocument()
     expect(screen.getByTestId('playlists')).toBeInTheDocument()
+  })
+
+  it('shares a pending discovery request when remounted before it resolves', async () => {
+    let resolve
+    mocks.getQuickPick.mockReturnValue(
+      new Promise((result) => {
+        resolve = result
+      }),
+    )
+    const first = render(<QuickPick />)
+    first.unmount()
+    render(<QuickPick />)
+    await waitFor(() => expect(mocks.getQuickPick).toHaveBeenCalledOnce())
+    resolve(grid())
+    expect(
+      await screen.findByRole('button', { name: 'Play Song 3 radio' }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not let a pre-authentication response populate the next account', async () => {
+    localStorage.setItem('userId', 'user-1')
+    let resolveOld
+    mocks.getQuickPick.mockReturnValueOnce(
+      new Promise((result) => {
+        resolveOld = result
+      }),
+    )
+    const rendered = render(<QuickPick />)
+    await waitFor(() => expect(mocks.getQuickPick).toHaveBeenCalledOnce())
+
+    localStorage.setItem('userId', 'user-2')
+    const nextResponse = grid('view-2')
+    mocks.getQuickPick.mockResolvedValueOnce(nextResponse)
+    const { rerender } = rendered
+    rerender(<QuickPick />)
+    resolveOld(grid('view-1'))
+    expect(
+      screen.queryByRole('button', { name: 'Play Song 3 radio' }),
+    ).not.toBeInTheDocument()
+    expect(
+      await screen.findByRole('button', { name: 'Play Song 3 radio' }),
+    ).toBeInTheDocument()
+    expect(mocks.recordQuickPickImpressions).toHaveBeenCalledWith(
+      'view-2',
+      nextResponse.items.slice(3).map((item) => item.itemKey),
+    )
+  })
+
+  it('does not report a deferred click after the authentication cache is cleared', async () => {
+    localStorage.setItem('userId', 'user-1')
+    let resolveImpressions
+    mocks.recordQuickPickImpressions.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImpressions = resolve
+      }),
+    )
+    render(<QuickPick />)
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Play Song 6 radio' }),
+    )
+    clearQuickPickCache()
+    localStorage.setItem('userId', 'user-2')
+    resolveImpressions({})
+    await waitFor(() =>
+      expect(mocks.recordQuickPickClick).not.toHaveBeenCalled(),
+    )
   })
 
   it('recovers from a discovery failure without blocking playlists', async () => {

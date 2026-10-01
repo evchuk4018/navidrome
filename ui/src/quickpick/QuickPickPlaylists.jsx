@@ -1,17 +1,20 @@
-import React, { useCallback, useMemo } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   Button,
   CircularProgress,
   makeStyles,
   Typography,
 } from '@material-ui/core'
-import { useLocale, useQueryWithStore, useTranslate } from 'react-admin'
-import { useSelector } from 'react-redux'
+import { useDataProvider, useLocale, useTranslate } from 'react-admin'
 import { Link } from 'react-router-dom'
 import MusicNoteOutlinedIcon from '@material-ui/icons/MusicNoteOutlined'
 import { Artwork } from '../common/Artwork'
-import { useRefreshOnEvents } from '../common/useRefreshOnEvents'
 import { sidebarColors } from '../layout/sidebarStyles'
+import {
+  getQuickPickCacheEntry,
+  getQuickPickCacheGeneration,
+  loadQuickPickSection,
+} from './cache'
 
 const useStyles = makeStyles((theme) => ({
   root: { marginTop: theme.spacing(2.5) },
@@ -88,61 +91,128 @@ const useStyles = makeStyles((theme) => ({
   accent: { '&&': { color: `${sidebarColors.accent} !important` } },
 }))
 
+const userId = () => localStorage.getItem('userId') || ''
+
+const initialPlaylistState = (identity) => {
+  const entry = getQuickPickCacheEntry(identity, 'playlists')
+  if (entry?.status === 'success') {
+    return { identity, playlists: entry.value, status: 'success' }
+  }
+  if (entry?.status === 'error') {
+    return { identity, playlists: [], status: 'error' }
+  }
+  return { identity, playlists: [], status: 'loading' }
+}
+
 const QuickPickPlaylists = () => {
   const classes = useStyles()
   const locale = useLocale()
   const translate = useTranslate()
-  const userId = localStorage.getItem('userId')
-  const playlistData = useSelector(
-    (state) => state.admin.resources.playlist?.data,
+  const dataProvider = useDataProvider()
+  const identity = userId()
+  const [playlistState, setPlaylistState] = useState(() =>
+    initialPlaylistState(identity),
   )
-  const { data, loaded, error, refetch } = useQueryWithStore(
-    {
-      type: 'getList',
-      resource: 'playlist',
-      payload: {
-        pagination: { page: 1, perPage: 0 },
-        sort: { field: 'name', order: 'ASC' },
-        filter: { owner_id: userId },
-      },
-    },
-    { action: 'CUSTOM_QUERY', enabled: !!userId },
-  )
-  const onRefresh = useCallback(async () => refetch(), [refetch])
-  useRefreshOnEvents({ events: ['playlist'], onRefresh })
+  const [retryVersion, setRetryVersion] = useState(0)
+  const consumedRetry = useRef(0)
 
-  const playlists = useMemo(() => {
-    if (!userId || !loaded || !data) return []
-    const collator = new Intl.Collator(locale, { sensitivity: 'base' })
-    // Keep query membership while picking up local edits from the resource store.
-    return Object.values(data)
-      .map((playlist) => playlistData?.[playlist.id] || playlist)
-      .filter((playlist) => playlist.ownerId === userId)
-      .sort(
-        (a, b) =>
-          collator.compare(a.name, b.name) ||
-          String(a.id).localeCompare(String(b.id)),
-      )
-  }, [data, loaded, playlistData, locale, userId])
+  useEffect(() => {
+    if (!identity) return undefined
 
-  if (!userId) return null
+    let alive = true
+    const retry = retryVersion !== consumedRetry.current
+    if (retry) consumedRetry.current = retryVersion
+    const requestGeneration = getQuickPickCacheGeneration()
+    const cached = getQuickPickCacheEntry(identity, 'playlists')
+
+    if (!retry && cached?.status === 'success') {
+      setPlaylistState({
+        identity,
+        playlists: cached.value,
+        status: 'success',
+      })
+      return () => {
+        alive = false
+      }
+    }
+    if (!retry && cached?.status === 'error') {
+      setPlaylistState({ identity, playlists: [], status: 'error' })
+      return () => {
+        alive = false
+      }
+    }
+
+    setPlaylistState({ identity, playlists: [], status: 'loading' })
+    const load = () =>
+      dataProvider
+        .getList('playlist', {
+          pagination: { page: 1, perPage: 0 },
+          sort: { field: 'name', order: 'ASC' },
+          filter: { owner_id: identity },
+        })
+        .then((result) => {
+          const records = Array.isArray(result?.data)
+            ? result.data
+            : Object.values(result?.data || {})
+          const collator = new Intl.Collator(locale, { sensitivity: 'base' })
+          return records
+            .filter((playlist) => playlist.ownerId === identity)
+            .sort(
+              (a, b) =>
+                collator.compare(a.name, b.name) ||
+                String(a.id).localeCompare(String(b.id)),
+            )
+        })
+
+    loadQuickPickSection(identity, 'playlists', load, { retry })
+      .then((playlists) => {
+        if (
+          alive &&
+          getQuickPickCacheGeneration() === requestGeneration &&
+          userId() === identity
+        ) {
+          setPlaylistState({ identity, playlists, status: 'success' })
+        }
+      })
+      .catch(() => {
+        if (
+          alive &&
+          getQuickPickCacheGeneration() === requestGeneration &&
+          userId() === identity
+        ) {
+          setPlaylistState({ identity, playlists: [], status: 'error' })
+        }
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [dataProvider, identity, locale, retryVersion])
+
+  if (!identity) return null
+
+  const currentState =
+    playlistState.identity === identity
+      ? playlistState
+      : { identity, playlists: [], status: 'loading' }
+  const playlists = currentState.playlists
 
   return (
     <section className={classes.root} aria-label="My playlists">
-      {error ? (
+      {currentState.status === 'error' ? (
         <div className={classes.status} role="alert">
           <Typography className={classes.statusText}>
             Unable to load playlists.
           </Typography>
           <Button
             className={classes.accent}
-            onClick={refetch}
+            onClick={() => setRetryVersion((version) => version + 1)}
             aria-label="Retry playlists"
           >
             Retry
           </Button>
         </div>
-      ) : !loaded ? (
+      ) : currentState.status !== 'success' ? (
         <div className={classes.status}>
           <CircularProgress
             size={28}

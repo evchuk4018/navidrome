@@ -16,6 +16,12 @@ import {
   recordQuickPickImpressions,
 } from './provider'
 import { startRelatedRadio } from './startRelatedRadio'
+import {
+  ensureQuickPickImpressions,
+  getQuickPickCacheEntry,
+  getQuickPickCacheGeneration,
+  loadQuickPickSection,
+} from './cache'
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -145,14 +151,31 @@ const initials = (value) =>
     .join('')
     .toUpperCase()
 
+const userId = () => localStorage.getItem('userId') || ''
+
+const initialDiscoveryState = (identity) => {
+  const entry = getQuickPickCacheEntry(identity, 'discovery')
+  if (entry?.status === 'success') {
+    return { identity, response: entry.value, status: 'success' }
+  }
+  if (entry?.status === 'error')
+    return { identity, response: null, status: 'error' }
+  return { identity, response: null, status: 'loading' }
+}
+
 const QuickPick = () => {
   const classes = useStyles()
   const dispatch = useDispatch()
   const notify = useNotify()
-  const [response, setResponse] = useState(null)
-  const [error, setError] = useState(false)
-  const [loadVersion, setLoadVersion] = useState(0)
+  const identity = userId()
+  const [discovery, setDiscovery] = useState(() =>
+    initialDiscoveryState(identity),
+  )
+  const [retryVersion, setRetryVersion] = useState(0)
+  const consumedRetry = useRef(0)
   const impressions = useRef(null)
+  const response = discovery.identity === identity ? discovery.response : null
+  const error = discovery.identity === identity && discovery.status === 'error'
   const recommendations = useMemo(
     () =>
       (response?.items || []).filter(
@@ -163,37 +186,100 @@ const QuickPick = () => {
 
   useEffect(() => {
     let alive = true
-    setError(false)
-    setResponse(null)
-    getQuickPick()
-      .then((data) => alive && setResponse(data))
-      .catch(() => alive && setError(true))
+    const retry = retryVersion !== consumedRetry.current
+    if (retry) consumedRetry.current = retryVersion
+    const requestGeneration = getQuickPickCacheGeneration()
+    const cached = getQuickPickCacheEntry(identity, 'discovery')
+
+    if (!retry && cached?.status === 'success') {
+      setDiscovery({ identity, response: cached.value, status: 'success' })
+      return () => {
+        alive = false
+      }
+    }
+    if (!retry && cached?.status === 'error') {
+      setDiscovery({ identity, response: null, status: 'error' })
+      return () => {
+        alive = false
+      }
+    }
+
+    setDiscovery({ identity, response: null, status: 'loading' })
+    loadQuickPickSection(identity, 'discovery', getQuickPick, { retry })
+      .then((data) => {
+        if (
+          alive &&
+          getQuickPickCacheGeneration() === requestGeneration &&
+          userId() === identity
+        ) {
+          setDiscovery({ identity, response: data, status: 'success' })
+        }
+      })
+      .catch(() => {
+        if (
+          alive &&
+          getQuickPickCacheGeneration() === requestGeneration &&
+          userId() === identity
+        ) {
+          setDiscovery({ identity, response: null, status: 'error' })
+        }
+      })
     return () => {
       alive = false
     }
-  }, [loadVersion])
+  }, [identity, retryVersion])
 
   useEffect(() => {
-    if (!response?.viewId || impressions.current?.viewId === response.viewId)
+    if (
+      !response?.viewId ||
+      (impressions.current?.identity === identity &&
+        impressions.current?.generation === getQuickPickCacheGeneration() &&
+        impressions.current?.viewId === response.viewId)
+    )
       return
     const itemKeys = recommendations.map((item) => item.itemKey).filter(Boolean)
     if (!itemKeys.length) return
-    const request = recordQuickPickImpressions(response.viewId, itemKeys)
+    const request = ensureQuickPickImpressions(
+      identity,
+      response.viewId,
+      itemKeys,
+      () => recordQuickPickImpressions(response.viewId, itemKeys),
+    )
+    if (!request) return
     request.catch(() => {})
-    impressions.current = { viewId: response.viewId, request }
-  }, [response, recommendations])
+    impressions.current = {
+      identity,
+      generation: getQuickPickCacheGeneration(),
+      viewId: response.viewId,
+      request,
+    }
+  }, [identity, response, recommendations])
 
   const playSongRadio = useCallback(
     (item) => {
       startRelatedRadio(dispatch, notify, item.song)
       const tracked = impressions.current
-      if (tracked && item.itemKey && item.viewId === tracked.viewId) {
+      if (
+        tracked &&
+        tracked.identity === identity &&
+        tracked.generation === getQuickPickCacheGeneration() &&
+        item.itemKey &&
+        item.viewId === tracked.viewId
+      ) {
         tracked.request
-          .then(() => recordQuickPickClick(item.viewId, item.itemKey))
+          .then(() => {
+            if (
+              userId() === identity &&
+              getQuickPickCacheGeneration() === tracked.generation
+            ) {
+              return recordQuickPickClick(item.viewId, item.itemKey)
+            }
+            return undefined
+          })
           .catch(() => {})
       }
     },
-    [dispatch, notify],
+    [dispatch, identity, notify],
   )
 
   const renderTiles = () =>
@@ -243,7 +329,7 @@ const QuickPick = () => {
             </Typography>
             <Button
               className={classes.accent}
-              onClick={() => setLoadVersion((version) => version + 1)}
+              onClick={() => setRetryVersion((version) => version + 1)}
               aria-label="Retry discoveries"
             >
               Retry
