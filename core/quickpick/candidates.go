@@ -15,7 +15,6 @@ const (
 	playCountPoolSize         = 200
 	recentPoolSize            = 200
 	likedPoolSize             = 250
-	fallbackPoolMin           = 40
 	fallbackRandomMax         = 75
 	playlistPoolSize          = 100
 	playlistAffinityShortlist = 24
@@ -56,7 +55,7 @@ type playlistAffinityBatcher interface {
 	PlaylistTrackAffinities(playlistIDs []string, songScores map[string]float64) (map[string]float64, error)
 }
 
-func (s *service) recallSongs(ctx context.Context) ([]recalledSong, error) {
+func (s *service) recallSongs(ctx context.Context, retainedItemKeys ...string) ([]recalledSong, error) {
 	type recallQuery struct {
 		options model.QueryOptions
 		source  string
@@ -97,24 +96,43 @@ func (s *service) recallSongs(ctx context.Context) ([]recalledSong, error) {
 		}
 	}
 
-	if len(byID) < fallbackPoolMin {
-		files, err := s.ds.MediaFile(ctx).GetRandom(model.QueryOptions{Max: fallbackRandomMax})
-		if err != nil && len(byID) == 0 {
-			return nil, err
+	// Discovery needs candidates outside the usual favorites even in large
+	// libraries. Keep this sample bounded and tolerate optional recall failures.
+	files, err := s.ds.MediaFile(ctx).GetRandom(model.QueryOptions{Max: fallbackRandomMax})
+	if err != nil && len(byID) == 0 {
+		return nil, err
+	}
+	for _, file := range files {
+		if file.ID == "" || file.Missing {
+			continue
 		}
-		for _, file := range files {
-			if file.ID == "" || file.Missing {
-				continue
-			}
-			candidate, exists := byID[file.ID]
-			if !exists {
-				candidate.file = file
-			} else {
-				candidate.file.Starred = candidate.file.Starred || file.Starred
-			}
-			candidate.fromLiked = candidate.fromLiked || file.Starred
-			byID[file.ID] = candidate
+		candidate, exists := byID[file.ID]
+		if !exists {
+			candidate.file = file
+		} else {
+			candidate.file.Starred = candidate.file.Starred || file.Starred
 		}
+		candidate.fromLiked = candidate.fromLiked || file.Starred
+		byID[file.ID] = candidate
+	}
+	// A clicked random pick may fall outside the next recall sample. Reload it
+	// through the user's repository so missing or inaccessible songs are skipped.
+	for index, key := range retainedItemKeys {
+		if index >= quickPickLimit {
+			break
+		}
+		if !strings.HasPrefix(key, quickPickTrackExposurePrefix) {
+			continue
+		}
+		mediaFileID := strings.TrimPrefix(key, quickPickTrackExposurePrefix)
+		if _, exists := byID[mediaFileID]; exists || mediaFileID == "" {
+			continue
+		}
+		file, getErr := s.ds.MediaFile(ctx).Get(mediaFileID)
+		if getErr != nil || file == nil || file.ID == "" || file.Missing {
+			continue
+		}
+		byID[file.ID] = recalledSong{file: *file, fromLiked: file.Starred}
 	}
 
 	result := make([]recalledSong, 0, len(byID))
@@ -124,8 +142,8 @@ func (s *service) recallSongs(ctx context.Context) ([]recalledSong, error) {
 	return result, nil
 }
 
-func (s *service) rankSongs(ctx context.Context, userID string, now time.Time, recent map[string]int64) ([]songCandidate, map[string]float64, error) {
-	recalled, err := s.recallSongs(ctx)
+func (s *service) rankSongs(ctx context.Context, userID string, now time.Time, recent map[string]int64, retainedItemKeys ...string) ([]songCandidate, map[string]float64, error) {
+	recalled, err := s.recallSongs(ctx, retainedItemKeys...)
 	if err != nil {
 		return nil, nil, err
 	}

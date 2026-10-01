@@ -1,11 +1,13 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { CircularProgress, makeStyles, Typography } from '@material-ui/core'
-import { useDataProvider, useNotify } from 'react-admin'
+import { useNotify } from 'react-admin'
 import { useDispatch } from 'react-redux'
-import { useHistory } from 'react-router-dom'
 import { Artwork } from '../common/Artwork'
-import { playTracks } from '../actions'
-import { getQuickPick, recordPlaylistPlay } from './provider'
+import {
+  getQuickPick,
+  recordQuickPickClick,
+  recordQuickPickImpressions,
+} from './provider'
 import { startRelatedRadio } from './startRelatedRadio'
 
 const useStyles = makeStyles((theme) => ({
@@ -91,85 +93,75 @@ const initials = (value) =>
 const QuickPick = () => {
   const classes = useStyles()
   const dispatch = useDispatch()
-  const history = useHistory()
   const notify = useNotify()
-  const dataProvider = useDataProvider()
-  const [items, setItems] = useState(null)
+  const [response, setResponse] = useState(null)
+  const impressions = useRef(null)
 
   useEffect(() => {
     let alive = true
     getQuickPick()
-      .then((response) => alive && setItems(response.items || []))
+      .then((data) => alive && setResponse(data))
       .catch(() => alive && notify('Unable to load Quick Pick', 'warning'))
     return () => {
       alive = false
     }
   }, [notify])
 
-  const playPlaylist = useCallback(
-    (playlist) => {
-      dataProvider
-        .getList('playlistTrack', {
-          pagination: { page: 1, perPage: -1 },
-          sort: { field: 'id', order: 'ASC' },
-          filter: { playlist_id: playlist.id },
-        })
-        .then(({ data }) => {
-          const songs = Object.fromEntries(data.map((song) => [song.id, song]))
-          dispatch(
-            playTracks(
-              songs,
-              data.map((song) => song.id),
-            ),
-          )
-          recordPlaylistPlay(playlist.id).catch(() => {})
-          history.push(`/playlist/${playlist.id}/show`)
-        })
-        .catch(() => notify('Unable to play playlist', 'warning'))
-    },
-    [dataProvider, dispatch, history, notify],
-  )
+  useEffect(() => {
+    if (!response?.viewId || impressions.current?.viewId === response.viewId)
+      return
+    const itemKeys = (response.items || [])
+      .map((item) => item.itemKey)
+      .filter(Boolean)
+    if (!itemKeys.length) return
+    const request = recordQuickPickImpressions(response.viewId, itemKeys)
+    request.catch(() => {})
+    impressions.current = { viewId: response.viewId, request }
+  }, [response])
 
   const playSongRadio = useCallback(
-    (song) => {
-      startRelatedRadio(dispatch, notify, song)
+    (item) => {
+      startRelatedRadio(dispatch, notify, item.song)
+      const tracked = impressions.current
+      if (tracked && item.itemKey && item.viewId === tracked.viewId) {
+        tracked.request
+          .then(() => recordQuickPickClick(item.viewId, item.itemKey))
+          .catch(() => {})
+      }
     },
     [dispatch, notify],
   )
 
-  if (items == null)
+  if (response == null)
     return (
       <div className={classes.center}>
         <CircularProgress />
       </div>
     )
 
-  const recommendations = items.filter((item) => item.kind === 'recommendation')
-  const favorites = items.filter((item) => item.kind !== 'recommendation')
+  const items = response.items || []
+  const favorites = items.filter((item) => item.section === 'listen_again')
+  const recommendations = items.filter((item) => item.section === 'start_radio')
 
   const renderTiles = (tiles) =>
     tiles.map((item) => {
-      const record = item.song || item.playlist
-      const title = item.song?.title || item.playlist?.name
-      const subtitle = item.song?.artist || 'Playlist'
+      const record = item.song
+      const title = record.title
+      const subtitle = record.artist
       const identity = `${subtitle}:${title}`
       return (
         <button
           type="button"
           key={`${item.kind}-${record.id}`}
           className={classes.tile}
-          onClick={() =>
-            item.kind === 'playlist'
-              ? playPlaylist(item.playlist)
-              : playSongRadio(item.song)
-          }
-          aria-label={`Play ${title}${item.kind === 'song' ? ' radio' : ''}`}
+          onClick={() => playSongRadio(item)}
+          aria-label={`Play ${title} radio`}
         >
           <div
             className={classes.fallback}
             style={{ background: identityColor(identity) }}
           >
-            {initials(item.song?.artist || title)}
+            {initials(subtitle || title)}
           </div>
           <Artwork
             record={record}
@@ -197,7 +189,7 @@ const QuickPick = () => {
       </Typography>
       {items.length === 0 ? (
         <Typography>
-          Play a few songs or playlists and your favorites will appear here.
+          Play a few songs and your favorites will appear here.
         </Typography>
       ) : (
         <>
@@ -209,7 +201,7 @@ const QuickPick = () => {
                 variant="h6"
                 className={classes.section}
               >
-                Smart picks from Last.fm
+                Discover
               </Typography>
               <div className={classes.grid}>{renderTiles(recommendations)}</div>
             </>

@@ -2,7 +2,9 @@ package nativeapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/model"
@@ -12,6 +14,37 @@ import (
 func (api *Router) addQuickPickRoute(r chi.Router) {
 	r.Get("/quick-pick", api.getQuickPick)
 	r.Post("/quick-pick/impressions", api.recordQuickPickImpressions)
+	r.Post("/quick-pick/clicks", api.recordQuickPickClick)
+}
+
+func (api *Router) recordQuickPickClick(w http.ResponseWriter, r *http.Request) {
+	if api.quickPick == nil {
+		http.Error(w, "Quick Pick is not configured", http.StatusNotImplemented)
+		return
+	}
+	user, ok := request.UserFrom(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	var payload model.QuickPickClickRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&payload); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(payload.ViewID) == "" || strings.TrimSpace(payload.ItemKey) == "" {
+		http.Error(w, "viewId and itemKey are required", http.StatusBadRequest)
+		return
+	}
+	if err := api.quickPick.RecordClick(r.Context(), user.ID, payload.ViewID, payload.ItemKey); err != nil {
+		if errors.Is(err, model.ErrValidation) {
+			http.Error(w, "click must match a displayed Quick Pick item", http.StatusBadRequest)
+		} else {
+			writeMusicError(w, r, err, http.StatusInternalServerError)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (api *Router) recordQuickPickImpressions(w http.ResponseWriter, r *http.Request) {

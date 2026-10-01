@@ -17,6 +17,7 @@ type Service interface {
 	Get(context.Context, string) (*model.QuickPickResponse, error)
 	RecordPlaylistPlay(context.Context, string, string) error
 	RecordImpressions(context.Context, string, string, []string) error
+	RecordClick(context.Context, string, string, string) error
 }
 
 type SimilarityProvider interface {
@@ -51,27 +52,27 @@ func (s *service) Get(ctx context.Context, userID string) (*model.QuickPickRespo
 		}
 	}
 
-	songs, songScores, err := s.rankSongs(ctx, userID, now, recent)
+	var previousView *model.QuickPickView
+	if s.metrics != nil {
+		// Tracking is advisory: a history failure must not hide playable picks.
+		previousView, _ = s.metrics.LatestView(userID)
+	}
+	var retainedKeys []string
+	if previousView != nil {
+		retainedKeys = previousView.ClickedItemKeys
+	}
+	songs, _, err := s.rankSongs(ctx, userID, now, recent, retainedKeys...)
 	if err != nil {
 		return nil, err
 	}
-	playlists, err := s.rankPlaylists(ctx, userID, now, songScores)
-	if err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(songs)+len(playlists))
+	keys := make([]string, 0, len(songs))
 	for _, candidate := range songs {
 		if key := trackExposureKey(candidate.song.ID); key != "" {
 			keys = append(keys, key)
 		}
 	}
-	for _, candidate := range playlists {
-		if key := playlistExposureKey(candidate.playlist.ID); key != "" {
-			keys = append(keys, key)
-		}
-	}
 	exposures := s.readExposureMetrics(userID, keys)
-	composed := composeQuickPick(songs, playlists, compositionOptions{Limit: quickPickLimit, Now: now, Exposures: exposures})
+	composed := composeQuickPick(songs, compositionOptions{Limit: quickPickLimit, Exposures: exposures, PreviousView: previousView})
 	viewID := id.NewRandom()
 	for index := range composed.Items {
 		item := &composed.Items[index]
@@ -208,6 +209,22 @@ func (s *service) RecordImpressions(ctx context.Context, userID, viewID string, 
 		return errors.New("quick pick metrics are not configured")
 	}
 	return s.metrics.RecordImpressions(userID, viewID, itemKeys, time.Now().UTC())
+}
+
+func (s *service) RecordClick(ctx context.Context, userID, viewID, itemKey string) error {
+	viewID = strings.TrimSpace(viewID)
+	itemKey = strings.TrimSpace(itemKey)
+	if viewID == "" || !strings.HasPrefix(itemKey, quickPickTrackExposurePrefix) || strings.TrimSpace(strings.TrimPrefix(itemKey, quickPickTrackExposurePrefix)) == "" {
+		return model.ErrValidation
+	}
+	if s.metrics == nil {
+		return errors.New("quick pick metrics are not configured")
+	}
+	err := s.metrics.RecordClick(userID, viewID, itemKey, time.Now().UTC())
+	if errors.Is(err, model.ErrNotFound) {
+		return model.ErrValidation
+	}
+	return err
 }
 
 func firstSongArtist(song agents.Song) string {

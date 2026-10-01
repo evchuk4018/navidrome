@@ -2,6 +2,7 @@ package quickpick
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,6 +24,8 @@ func (shortlistMetrics) ExposureMetrics(string, []string) (map[string]model.Quic
 }
 func (shortlistMetrics) RecordExposures(string, []string, time.Time) error           { return nil }
 func (shortlistMetrics) RecordImpressions(string, string, []string, time.Time) error { return nil }
+func (shortlistMetrics) LatestView(string) (*model.QuickPickView, error)             { return nil, nil }
+func (shortlistMetrics) RecordClick(string, string, string, time.Time) error         { return nil }
 
 type batchShortlistMetrics struct {
 	shortlistMetrics
@@ -91,5 +94,80 @@ func TestRankPlaylistsUsesBatchAffinityWhenAvailable(t *testing.T) {
 	}
 	if repo.withTracksCalls != 0 {
 		t.Fatalf("GetWithTracks calls = %d, want 0 when batch affinity is available", repo.withTracksCalls)
+	}
+}
+
+type changingRecallRepo struct {
+	*tests.MockMediaFileRepo
+	pool        model.MediaFiles
+	random      model.MediaFiles
+	randomLimit int
+	blocked     map[string]bool
+}
+
+func (r *changingRecallRepo) GetAll(...model.QueryOptions) (model.MediaFiles, error) {
+	return r.pool, nil
+}
+
+func (r *changingRecallRepo) GetRandom(options ...model.QueryOptions) (model.MediaFiles, error) {
+	r.randomLimit = options[0].Max
+	return r.random, nil
+}
+
+func (r *changingRecallRepo) Get(id string) (*model.MediaFile, error) {
+	if r.blocked[id] {
+		return nil, model.ErrNotAuthorized
+	}
+	return r.MockMediaFileRepo.Get(id)
+}
+
+func TestRecallSongsAlwaysSamplesAndHydratesRetainedClicks(t *testing.T) {
+	base := tests.CreateMockMediaFileRepo()
+	base.SetData(model.MediaFiles{
+		{ID: "clicked", Title: "Retained"},
+		{ID: "missing", Missing: true},
+		{ID: "blocked"},
+	})
+	repo := &changingRecallRepo{
+		MockMediaFileRepo: base,
+		random:            model.MediaFiles{{ID: "random", Title: "Discovery"}},
+		blocked:           map[string]bool{"blocked": true},
+	}
+	for i := 0; i < 60; i++ {
+		repo.pool = append(repo.pool, model.MediaFile{ID: fmt.Sprintf("favorite-%d", i), Annotations: model.Annotations{PlayCount: 50}})
+	}
+	svc := &service{ds: &tests.MockDataStore{MockedMediaFile: repo}}
+	recalled, err := svc.recallSongs(context.Background(), "track:clicked", "track:missing", "track:blocked", "track:deleted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.randomLimit != fallbackRandomMax {
+		t.Fatalf("random sample limit = %d, want %d even with 60 favorites", repo.randomLimit, fallbackRandomMax)
+	}
+	seen := map[string]bool{}
+	for _, song := range recalled {
+		seen[song.file.ID] = true
+	}
+	if !seen["random"] || !seen["clicked"] || seen["missing"] || seen["blocked"] || seen["deleted"] {
+		t.Fatalf("recalled song eligibility = %v", seen)
+	}
+
+	svc.metrics = fakeMetrics{view: &model.QuickPickView{
+		ViewID: "previous", ItemKeys: []string{"track:clicked", "track:blocked", "track:missing"},
+		ClickedItemKeys: []string{"track:clicked", "track:blocked", "track:missing"},
+	}}
+	response, err := svc.Get(context.Background(), "user")
+	if err != nil || len(response.Items) != 12 {
+		t.Fatalf("Get() = %#v, %v; want 12 library songs", response, err)
+	}
+	retained := false
+	for _, item := range response.Items {
+		retained = retained || item.Song.ID == "clicked"
+		if item.Song.ID == "blocked" || item.Song.ID == "missing" {
+			t.Fatalf("inaccessible or missing retained song was served: %#v", item)
+		}
+	}
+	if !retained {
+		t.Fatal("clicked song outside recall pool did not survive into discovery")
 	}
 }

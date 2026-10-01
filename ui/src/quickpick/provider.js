@@ -6,6 +6,18 @@ const jsonRequest = (path, options = {}) =>
 
 export const getQuickPick = () => jsonRequest('/quick-pick')
 
+export const recordQuickPickImpressions = (viewId, itemKeys) =>
+  httpClient(`${REST_URL}/quick-pick/impressions`, {
+    method: 'POST',
+    body: JSON.stringify({ viewId, itemKeys }),
+  })
+
+export const recordQuickPickClick = (viewId, itemKey) =>
+  httpClient(`${REST_URL}/quick-pick/clicks`, {
+    method: 'POST',
+    body: JSON.stringify({ viewId, itemKey }),
+  })
+
 export const recordPlaylistPlay = (playlistId) =>
   httpClient(`${REST_URL}/playlist/${playlistId}/plays`, { method: 'POST' })
 

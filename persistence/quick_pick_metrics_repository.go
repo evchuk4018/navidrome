@@ -263,6 +263,61 @@ func (r *quickPickMetricsRepository) RecordImpressions(userID, viewID string, it
 	return tx.Commit()
 }
 
+// LatestView reads one coherent snapshot of the user's latest displayed grid.
+// Click timestamps never affect which view is considered latest.
+func (r *quickPickMetricsRepository) LatestView(userID string) (*model.QuickPickView, error) {
+	rows, err := r.db.Query(`
+		select view_id, item_key, clicked_at is not null
+		from quick_pick_impression
+		where user_id = ? and view_id = (
+			select view_id from quick_pick_impression
+			where user_id = ?
+			order by shown_at desc, view_id desc limit 1
+		)
+		order by item_key`, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	view := &model.QuickPickView{}
+	for rows.Next() {
+		var key string
+		var clicked bool
+		if err := rows.Scan(&view.ViewID, &key, &clicked); err != nil {
+			return nil, err
+		}
+		view.ItemKeys = append(view.ItemKeys, key)
+		if clicked {
+			view.ClickedItemKeys = append(view.ClickedItemKeys, key)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if view.ViewID == "" {
+		return nil, nil
+	}
+	return view, nil
+}
+
+func (r *quickPickMetricsRepository) RecordClick(userID, viewID, itemKey string, clickedAt time.Time) error {
+	result, err := r.db.Exec(`
+		update quick_pick_impression set clicked_at = coalesce(clicked_at, ?)
+		where user_id = ? and view_id = ? and item_key = ?`,
+		clickedAt.UTC(), userID, viewID, itemKey)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
 // PlaylistTrackAffinities returns the strongest song affinity for each
 // playlist in one bounded query. Quick Pick uses it after cheap playlist
 // shortlisting so a 100-row playlist recall does not turn into 100 track-load

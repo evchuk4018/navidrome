@@ -41,6 +41,19 @@ type QuickPickImpressionRequest struct {
 	ItemKeys []string `json:"itemKeys"`
 }
 
+type QuickPickClickRequest struct {
+	ViewID  string `json:"viewId"`
+	ItemKey string `json:"itemKey"`
+}
+
+// QuickPickView contains the last displayed grid and the songs selected from it.
+// Clicks belong to a view, so carrying a song does not permanently pin it.
+type QuickPickView struct {
+	ViewID          string
+	ItemKeys        []string
+	ClickedItemKeys []string
+}
+
 type PlaylistPlayMetric struct {
 	PlaylistID   string
 	TotalStarts  int64
@@ -69,4 +82,6 @@ type QuickPickMetricsRepository interface {
 	ExposureMetrics(userID string, itemKeys []string) (map[string]QuickPickExposureMetric, error)
 	RecordExposures(userID string, itemKeys []string, shownAt time.Time) error
 	RecordImpressions(userID, viewID string, itemKeys []string, shownAt time.Time) error
+	LatestView(userID string) (*QuickPickView, error)
+	RecordClick(userID, viewID, itemKey string, clickedAt time.Time) error
 }

@@ -3,15 +3,14 @@ package quickpick
 import (
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/navidrome/navidrome/model"
 )
 
 type compositionOptions struct {
-	Limit     int
-	Now       time.Time
-	Exposures map[string]model.QuickPickExposureMetric
+	Limit        int
+	Exposures    map[string]model.QuickPickExposureMetric
+	PreviousView *model.QuickPickView
 }
 
 type composedQuickPick struct {
@@ -21,19 +20,21 @@ type composedQuickPick struct {
 }
 
 const (
-	listenAgainSongQuota     = 4
-	listenAgainPlaylistQuota = 2
-	startRadioSongQuota      = 6
-	listenAgainCooldown      = 6 * time.Hour
-	startRadioCooldown       = 24 * time.Hour
+	listenAgainSongQuota = 3
+	startRadioSongQuota  = 9
 )
 
-func composeQuickPick(songs []songCandidate, playlists []playlistCandidate, options compositionOptions) composedQuickPick {
+func composeQuickPick(songs []songCandidate, options compositionOptions) composedQuickPick {
 	if options.Limit <= 0 {
-		options.Limit = listenAgainSongQuota + listenAgainPlaylistQuota + startRadioSongQuota
+		options.Limit = listenAgainSongQuota + startRadioSongQuota
 	}
-	options.Limit = minQuickPick(options.Limit, listenAgainSongQuota+listenAgainPlaylistQuota+startRadioSongQuota)
-	orderedSongs := append([]songCandidate(nil), songs...)
+	options.Limit = minQuickPick(options.Limit, listenAgainSongQuota+startRadioSongQuota)
+	orderedSongs := make([]songCandidate, 0, len(songs))
+	for _, candidate := range songs {
+		if candidate.song.ID != "" && !candidate.song.Missing {
+			orderedSongs = append(orderedSongs, candidate)
+		}
+	}
 	sort.SliceStable(orderedSongs, func(left, right int) bool {
 		if orderedSongs[left].baseRank != orderedSongs[right].baseRank {
 			return orderedSongs[left].baseRank < orderedSongs[right].baseRank
@@ -44,28 +45,29 @@ func composeQuickPick(songs []songCandidate, playlists []playlistCandidate, opti
 		return orderedSongs[left].song.ID < orderedSongs[right].song.ID
 	})
 
-	playlistSlots := minQuickPick(listenAgainPlaylistQuota, len(playlists))
-	// Keep the old sparse-library behavior for callers that explicitly request
-	// the legacy nine-tile layout. The normal service path uses twelve tiles and
-	// always targets two Listen Again playlists before backfilling.
-	if options.Limit <= 9 && uniqueSongCount(orderedSongs) < 6 {
-		playlistSlots = minQuickPick(3, len(playlists))
+	previousKeys := map[string]bool{}
+	clickedKeys := map[string]bool{}
+	if options.PreviousView != nil {
+		for _, key := range options.PreviousView.ItemKeys {
+			previousKeys[key] = true
+		}
+		for _, key := range options.PreviousView.ClickedItemKeys {
+			clickedKeys[key] = previousKeys[key]
+		}
 	}
-	playlistSlots = minQuickPick(playlistSlots, options.Limit)
-	listenSongSlots := minQuickPick(listenAgainSongQuota, options.Limit-playlistSlots)
-	radioSlots := minQuickPick(startRadioSongQuota, options.Limit-listenSongSlots-playlistSlots)
 
-	selectedListenSongs := make([]songCandidate, 0, minQuickPick(listenSongSlots, len(orderedSongs)))
-	selectedRadioSongs := make([]songCandidate, 0, minQuickPick(radioSlots, len(orderedSongs)))
-	selectedIDs := make(map[string]struct{}, len(orderedSongs))
+	listenSlots := minQuickPick(listenAgainSongQuota, options.Limit)
+	discoverySlots := options.Limit - listenSlots
+	familiar := make([]songCandidate, 0, listenSlots)
+	discovery := make([]songCandidate, 0, discoverySlots)
+	selectedIDs := make(map[string]struct{}, options.Limit)
 	artistCounts := map[string]int{}
 	albumCounts := map[string]int{}
 	addSong := func(candidate songCandidate, target *[]songCandidate) bool {
-		identity := quickPickSongIdentity(candidate.song)
-		if _, exists := selectedIDs[identity]; exists {
+		if _, exists := selectedIDs[candidate.song.ID]; exists {
 			return false
 		}
-		selectedIDs[identity] = struct{}{}
+		selectedIDs[candidate.song.ID] = struct{}{}
 		if artist := normalizeQuickPickValue(candidate.song.Artist); artist != "" {
 			artistCounts[artist]++
 		}
@@ -75,34 +77,32 @@ func composeQuickPick(songs []songCandidate, playlists []playlistCandidate, opti
 		*target = append(*target, candidate)
 		return true
 	}
-
-	if listenSongSlots > 0 {
-		for _, candidate := range orderedSongs {
-			// The highest base-ranked playable song is the stable Listen Again
-			// anchor. It is deliberately exempt from the exposure cooldown.
-			if addSong(candidate, &selectedListenSongs) {
-				break
-			}
-		}
-	}
-
-	selectBestSong := func(predicate func(songCandidate) bool, target *[]songCandidate, section string, cooldown time.Duration, enforceCooldown bool) bool {
+	selectSong := func(predicate func(songCandidate) bool, target *[]songCandidate, useBase, oldestFirst bool) bool {
 		best := -1
-		bestScore := -1e300
+		bestScore := 0.0
 		for index, candidate := range orderedSongs {
 			if predicate != nil && !predicate(candidate) {
 				continue
 			}
-			if _, exists := selectedIDs[quickPickSongIdentity(candidate.song)]; exists {
+			if _, exists := selectedIDs[candidate.song.ID]; exists {
 				continue
 			}
-			if enforceCooldown && quickPickExposureCooling(options.Exposures, trackExposureKey(candidate.song.ID), options.Now, cooldown) {
-				continue
+			if useBase {
+				candidate.adjustedScore = candidate.baseScore
 			}
 			score := songSelectionScore(candidate, artistCounts, albumCounts)
-			if best < 0 || score > bestScore || (score == bestScore && candidate.baseRank < orderedSongs[best].baseRank) {
-				best = index
-				bestScore = score
+			if best >= 0 && oldestFirst {
+				shown := options.Exposures[trackExposureKey(candidate.song.ID)].LastShownAt
+				bestShown := options.Exposures[trackExposureKey(orderedSongs[best].song.ID)].LastShownAt
+				if !shown.Equal(bestShown) {
+					if shown.Before(bestShown) {
+						best, bestScore = index, score
+					}
+					continue
+				}
+			}
+			if best < 0 || score > bestScore {
+				best, bestScore = index, score
 			}
 		}
 		if best < 0 {
@@ -111,176 +111,55 @@ func composeQuickPick(songs []songCandidate, playlists []playlistCandidate, opti
 		return addSong(orderedSongs[best], target)
 	}
 
-	listenCooldownEnabled := uniqueSongCount(orderedSongs) >= 1+2*listenSongSlots
-	for len(selectedListenSongs) < listenSongSlots {
-		before := len(selectedListenSongs)
-		selectBestSong(func(candidate songCandidate) bool { return candidate.fromLiked }, &selectedListenSongs, model.QuickPickSectionListenAgain, listenAgainCooldown, listenCooldownEnabled)
-		if len(selectedListenSongs) == before {
-			break
-		}
+	// Keep the familiar favorite and exploration buckets, without imposing
+	// discovery exposure penalties on the familiar row.
+	if listenSlots > 0 && len(orderedSongs) > 0 {
+		addSong(orderedSongs[0], &familiar)
 	}
-	for len(selectedListenSongs) < listenSongSlots {
-		before := len(selectedListenSongs)
-		selectBestSong(func(candidate songCandidate) bool { return candidate.baseRank >= 5 && candidate.baseRank <= 20 }, &selectedListenSongs, model.QuickPickSectionListenAgain, listenAgainCooldown, listenCooldownEnabled)
-		if len(selectedListenSongs) == before {
-			break
-		}
-	}
-	for len(selectedListenSongs) < listenSongSlots {
-		before := len(selectedListenSongs)
-		selectBestSong(func(candidate songCandidate) bool { return candidate.baseRank >= 20 && candidate.baseRank <= 60 }, &selectedListenSongs, model.QuickPickSectionListenAgain, listenAgainCooldown, listenCooldownEnabled)
-		if len(selectedListenSongs) == before {
-			break
-		}
-	}
-	for len(selectedListenSongs) < listenSongSlots {
-		if !selectBestSong(nil, &selectedListenSongs, model.QuickPickSectionListenAgain, listenAgainCooldown, listenCooldownEnabled) {
-			break
-		}
-	}
-	// If the cooldown left a quota short, relax it only after exhausting the
-	// non-cooled alternatives. This keeps small libraries usable.
-	for len(selectedListenSongs) < listenSongSlots {
-		if !selectBestSong(nil, &selectedListenSongs, model.QuickPickSectionListenAgain, 0, false) {
-			break
+	for _, predicate := range []func(songCandidate) bool{
+		func(candidate songCandidate) bool { return candidate.fromLiked },
+		func(candidate songCandidate) bool { return candidate.baseRank >= 5 && candidate.baseRank <= 20 },
+		func(candidate songCandidate) bool { return candidate.baseRank >= 20 && candidate.baseRank <= 60 },
+		nil,
+	} {
+		for len(familiar) < listenSlots && selectSong(predicate, &familiar, true, false) {
 		}
 	}
 
-	orderedPlaylists := append([]playlistCandidate(nil), playlists...)
-	sort.SliceStable(orderedPlaylists, func(left, right int) bool {
-		leftScore := playlistSelectionScore(orderedPlaylists[left], options)
-		rightScore := playlistSelectionScore(orderedPlaylists[right], options)
-		if leftScore != rightScore {
-			return leftScore > rightScore
-		}
-		return orderedPlaylists[left].playlist.ID < orderedPlaylists[right].playlist.ID
-	})
-
-	selectedPlaylists := make([]playlistCandidate, 0, playlistSlots)
-	playlistCooldownEnabled := len(orderedPlaylists) >= 2*playlistSlots
-	selectPlaylist := func(enforceCooldown bool) bool {
-		for _, candidate := range orderedPlaylists {
-			alreadySelected := false
-			for _, selected := range selectedPlaylists {
-				if selected.playlist.ID == candidate.playlist.ID {
-					alreadySelected = true
-					break
-				}
-			}
-			if alreadySelected {
-				continue
-			}
-			if enforceCooldown && quickPickExposureCooling(options.Exposures, playlistExposureKey(candidate.playlist.ID), options.Now, listenAgainCooldown) {
-				continue
-			}
-			selectedPlaylists = append(selectedPlaylists, candidate)
-			return true
-		}
-		return false
+	// Only clicks from the last displayed grid earn another visit. A carried
+	// song must be clicked in its new view to earn the following visit as well.
+	for len(discovery) < discoverySlots && selectSong(func(candidate songCandidate) bool {
+		return clickedKeys[trackExposureKey(candidate.song.ID)]
+	}, &discovery, false, false) {
 	}
-	for len(selectedPlaylists) < playlistSlots {
-		if !selectPlaylist(playlistCooldownEnabled) {
-			break
-		}
+	for len(discovery) < discoverySlots && selectSong(func(candidate songCandidate) bool {
+		return !previousKeys[trackExposureKey(candidate.song.ID)]
+	}, &discovery, false, false) {
 	}
-	for len(selectedPlaylists) < playlistSlots {
-		if !selectPlaylist(false) {
-			break
-		}
+	// Exhaust all alternatives before repeating unclicked songs. Small libraries
+	// remain usable, with the oldest displays receiving repeat slots first.
+	for len(discovery) < discoverySlots && selectSong(nil, &discovery, false, true) {
 	}
 
-	// Radio candidates are selected from the remaining local, playable pool.
-	// They intentionally do not invoke similarity agents; the radio session can
-	// do deeper discovery after the user starts playback.
-	radioCooldownEnabled := uniqueSongCount(orderedSongs)-len(selectedListenSongs) >= 2*startRadioSongQuota
-	for len(selectedRadioSongs) < radioSlots {
-		if !selectBestSong(nil, &selectedRadioSongs, model.QuickPickSectionStartRadio, startRadioCooldown, radioCooldownEnabled) {
-			break
-		}
-	}
-	for len(selectedRadioSongs) < radioSlots {
-		if !selectBestSong(nil, &selectedRadioSongs, model.QuickPickSectionStartRadio, 0, false) {
-			break
-		}
-	}
-
-	items := make([]model.QuickPickItem, 0, minQuickPick(options.Limit, len(selectedListenSongs)+len(selectedPlaylists)+len(selectedRadioSongs)))
-	selectedTrackIDs := make(map[string]struct{}, len(selectedListenSongs)+len(selectedRadioSongs))
-	seedSongs := make([]model.MediaFile, 0, len(selectedRadioSongs))
+	items := make([]model.QuickPickItem, 0, len(familiar)+len(discovery))
+	seedSongs := make([]model.MediaFile, 0, len(discovery))
 	appendSong := func(candidate songCandidate, section string) {
-		if len(items) >= options.Limit {
-			return
-		}
 		song := candidate.song
-		itemScore := candidate.adjustedScore
-		if len(items) == 0 {
-			itemScore = candidate.baseScore
-		}
-		items = append(items, model.QuickPickItem{Kind: model.QuickPickSong, Song: &song, Section: section, Score: itemScore})
-		if song.ID != "" {
-			selectedTrackIDs[song.ID] = struct{}{}
-		}
-		if section == model.QuickPickSectionStartRadio {
+		score := candidate.adjustedScore
+		if section == model.QuickPickSectionListenAgain {
+			score = candidate.baseScore
+		} else {
 			seedSongs = append(seedSongs, song)
 		}
+		items = append(items, model.QuickPickItem{Kind: model.QuickPickSong, Song: &song, Section: section, Score: score})
 	}
-	for _, candidate := range selectedListenSongs {
+	for _, candidate := range familiar {
 		appendSong(candidate, model.QuickPickSectionListenAgain)
 	}
-	for _, candidate := range selectedPlaylists {
-		if len(items) >= options.Limit {
-			break
-		}
-		playlist := candidate.playlist
-		items = append(items, model.QuickPickItem{
-			Kind:     model.QuickPickPlaylist,
-			Playlist: &playlist,
-			Section:  model.QuickPickSectionListenAgain,
-			Score:    playlistSelectionScore(candidate, options),
-		})
-	}
-	for _, candidate := range selectedRadioSongs {
+	for _, candidate := range discovery {
 		appendSong(candidate, model.QuickPickSectionStartRadio)
 	}
-	// Backfill either section when the preferred quotas cannot be met. This is
-	// especially useful for libraries with fewer than ten playable songs or two
-	// playlists, while keeping the 4/2/6 target for healthy pools.
-	for len(items) < options.Limit {
-		if !selectBestSong(nil, &selectedRadioSongs, model.QuickPickSectionStartRadio, startRadioCooldown, radioCooldownEnabled) {
-			break
-		}
-		appendSong(selectedRadioSongs[len(selectedRadioSongs)-1], model.QuickPickSectionStartRadio)
-	}
-	for len(items) < options.Limit {
-		if !selectPlaylist(false) {
-			break
-		}
-		candidate := selectedPlaylists[len(selectedPlaylists)-1]
-		playlist := candidate.playlist
-		items = append(items, model.QuickPickItem{Kind: model.QuickPickPlaylist, Playlist: &playlist, Section: model.QuickPickSectionListenAgain, Score: playlistSelectionScore(candidate, options)})
-	}
-
-	return composedQuickPick{Items: items, SeedSongs: seedSongs, SelectedTrackIDs: selectedTrackIDs}
-}
-
-func quickPickExposureCooling(exposures map[string]model.QuickPickExposureMetric, key string, now time.Time, cooldown time.Duration) bool {
-	if cooldown <= 0 || key == "" || now.IsZero() {
-		return false
-	}
-	metric, ok := exposures[key]
-	if !ok || metric.LastShownAt.IsZero() {
-		return false
-	}
-	age := now.Sub(metric.LastShownAt.UTC())
-	return age >= 0 && age < cooldown
-}
-
-func uniqueSongCount(songs []songCandidate) int {
-	seen := make(map[string]struct{}, len(songs))
-	for _, candidate := range songs {
-		seen[quickPickSongIdentity(candidate.song)] = struct{}{}
-	}
-	return len(seen)
+	return composedQuickPick{Items: items, SeedSongs: seedSongs, SelectedTrackIDs: selectedIDs}
 }
 
 func songSelectionScore(candidate songCandidate, artistCounts, albumCounts map[string]int) float64 {
@@ -296,31 +175,6 @@ func songSelectionScore(candidate songCandidate, artistCounts, albumCounts map[s
 		}
 	}
 	return score
-}
-
-func playlistSelectionScore(candidate playlistCandidate, options compositionOptions) float64 {
-	if options.Exposures != nil {
-		if metric, ok := options.Exposures[playlistExposureKey(candidate.playlist.ID)]; ok {
-			return candidate.normalizedScore - .70*exposureFatigue(metric, options.Now)
-		}
-	}
-	if candidate.hasAdjustedScore {
-		return candidate.adjustedScore
-	}
-	if candidate.normalizedScore != 0 {
-		return candidate.normalizedScore
-	}
-	return candidate.baseScore
-}
-
-func quickPickSongIdentity(song model.MediaFile) string {
-	if song.ID != "" {
-		return song.ID
-	}
-	if song.Path != "" {
-		return "path:" + song.Path
-	}
-	return "title:" + normalizeQuickPickValue(song.Title) + "|artist:" + normalizeQuickPickValue(song.Artist)
 }
 
 func normalizeQuickPickValue(value string) string {

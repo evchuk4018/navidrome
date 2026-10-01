@@ -2,6 +2,7 @@ package quickpick
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ type fakeMetrics struct {
 	exposures map[string]model.QuickPickExposureMetric
 	recorded  map[string]int
 	recordErr error
+	view      *model.QuickPickView
+	viewErr   error
 }
 
 func (f fakeMetrics) SongRecentPlays(string, time.Time) (map[string]int64, error) {
@@ -41,6 +44,12 @@ func (f fakeMetrics) RecordExposures(_ string, itemKeys []string, _ time.Time) e
 func (f fakeMetrics) RecordImpressions(_ string, _ string, _ []string, _ time.Time) error {
 	return f.recordErr
 }
+func (f fakeMetrics) LatestView(string) (*model.QuickPickView, error) {
+	return f.view, f.viewErr
+}
+func (f fakeMetrics) RecordClick(string, string, string, time.Time) error {
+	return f.recordErr
+}
 
 type fakeTasteMetrics struct {
 	fakeMetrics
@@ -56,6 +65,7 @@ func (f fakeTasteMetrics) AffinityForCandidates(string, []recommendations.TasteC
 type trackingMetrics struct {
 	fakeMetrics
 	exposures map[string]model.QuickPickExposureMetric
+	latest    *model.QuickPickView
 }
 
 func (m *trackingMetrics) ExposureMetrics(_ string, itemKeys []string) (map[string]model.QuickPickExposureMetric, error) {
@@ -82,8 +92,24 @@ func (m *trackingMetrics) RecordExposures(_ string, itemKeys []string, shownAt t
 	return nil
 }
 
-func (m *trackingMetrics) RecordImpressions(_ string, _ string, itemKeys []string, shownAt time.Time) error {
+func (m *trackingMetrics) RecordImpressions(_ string, viewID string, itemKeys []string, shownAt time.Time) error {
+	m.latest = &model.QuickPickView{ViewID: viewID, ItemKeys: append([]string(nil), itemKeys...)}
 	return m.RecordExposures("", itemKeys, shownAt)
+}
+func (m *trackingMetrics) LatestView(string) (*model.QuickPickView, error) {
+	return m.latest, nil
+}
+func (m *trackingMetrics) RecordClick(_ string, viewID, key string, _ time.Time) error {
+	if m.latest == nil || m.latest.ViewID != viewID {
+		return model.ErrNotFound
+	}
+	for _, itemKey := range m.latest.ItemKeys {
+		if itemKey == key {
+			m.latest.ClickedItemKeys = append(m.latest.ClickedItemKeys, key)
+			return nil
+		}
+	}
+	return model.ErrNotFound
 }
 
 type fakeSimilarityProvider struct {
@@ -464,6 +490,78 @@ func TestQuickPickDoesNotCallSimilarityProvidersOrRecordGETExposures(t *testing.
 	for _, item := range response.Items {
 		if item.ViewID != response.ViewID || item.ItemKey == "" || item.Section == "" {
 			t.Fatalf("item telemetry metadata = %#v, want viewId/itemKey/section", item)
+		}
+	}
+}
+
+func TestQuickPickClickRetentionRenewsOnlyAfterAnotherClick(t *testing.T) {
+	media := tests.CreateMockMediaFileRepo()
+	files := make(model.MediaFiles, 40)
+	for i, candidate := range compositionSongs(len(files)) {
+		files[i] = candidate.song
+		files[i].PlayCount = int64(len(files) - i)
+	}
+	media.SetData(files)
+	metrics := &trackingMetrics{}
+	svc := New(&tests.MockDataStore{MockedMediaFile: media}, metrics, nil, nil)
+	getView := func() *model.QuickPickResponse {
+		t.Helper()
+		response, err := svc.Get(context.Background(), "user")
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := make([]string, len(response.Items))
+		for i, item := range response.Items {
+			keys[i] = item.ItemKey
+		}
+		if err := svc.RecordImpressions(context.Background(), "user", response.ViewID, keys); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	first := getView()
+	clicked := first.Items[6].ItemKey
+	if err := svc.RecordClick(context.Background(), "user", first.ViewID, clicked); err != nil {
+		t.Fatal(err)
+	}
+	second := getView()
+	if err := svc.RecordClick(context.Background(), "user", second.ViewID, clicked); err != nil {
+		t.Fatalf("clicked song was not carried into the next view: %v", err)
+	}
+	third := getView()
+	if err := metrics.RecordClick("user", third.ViewID, clicked, time.Now()); err != nil {
+		t.Fatalf("renewed song was not carried again: %v", err)
+	}
+	// Leave the third view unclicked before the next visit.
+	metrics.latest.ClickedItemKeys = nil
+	fourth := getView()
+	for _, item := range fourth.Items[3:] {
+		if item.ItemKey == clicked {
+			t.Fatalf("unclicked carried song %q remained pinned", clicked)
+		}
+	}
+}
+
+func TestQuickPickHistoryFailureStillReturnsLibrarySongs(t *testing.T) {
+	media := tests.CreateMockMediaFileRepo()
+	media.SetData(model.MediaFiles{{ID: "song", Title: "Song"}})
+	svc := New(&tests.MockDataStore{MockedMediaFile: media}, fakeMetrics{viewErr: errors.New("unavailable history")}, nil, nil)
+	response, err := svc.Get(context.Background(), "user")
+	if err != nil || len(response.Items) != 1 {
+		t.Fatalf("Get() = %#v, %v; want one playable song", response, err)
+	}
+}
+
+func TestQuickPickRejectsClicksWithoutMatchingImpressions(t *testing.T) {
+	svc := New(nil, fakeMetrics{recordErr: model.ErrNotFound}, nil, nil)
+	for _, request := range []model.QuickPickClickRequest{
+		{ViewID: "view", ItemKey: "track:unseen"},
+		{ViewID: " ", ItemKey: "track:song"},
+		{ViewID: "view", ItemKey: "playlist:p"},
+		{ViewID: "view", ItemKey: "track:"},
+	} {
+		if err := svc.RecordClick(context.Background(), "user", request.ViewID, request.ItemKey); !errors.Is(err, model.ErrValidation) {
+			t.Fatalf("click %#v error = %v, want validation error", request, err)
 		}
 	}
 }

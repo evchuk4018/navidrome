@@ -1,5 +1,40 @@
-import { describe, expect, it } from 'vitest'
-import { radioErrorDetails, radioSongs } from './provider'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  radioErrorDetails,
+  radioSongs,
+  recordQuickPickClick,
+  recordQuickPickImpressions,
+} from './provider'
+
+const mocks = vi.hoisted(() => ({ httpClient: vi.fn() }))
+vi.mock('../dataProvider', () => ({ httpClient: mocks.httpClient }))
+vi.mock('../consts', () => ({ REST_URL: '/api' }))
+
+describe('Quick Pick tracking requests', () => {
+  beforeEach(() => mocks.httpClient.mockReset().mockResolvedValue({}))
+
+  it('posts the displayed grid with its view identifier', async () => {
+    await recordQuickPickImpressions('view-1', ['track:a', 'track:b'])
+    expect(mocks.httpClient).toHaveBeenCalledWith(
+      '/api/quick-pick/impressions',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          viewId: 'view-1',
+          itemKeys: ['track:a', 'track:b'],
+        }),
+      },
+    )
+  })
+
+  it('posts a clicked item against the view where it was selected', async () => {
+    await recordQuickPickClick('view-1', 'track:a')
+    expect(mocks.httpClient).toHaveBeenCalledWith('/api/quick-pick/clicks', {
+      method: 'POST',
+      body: JSON.stringify({ viewId: 'view-1', itemKey: 'track:a' }),
+    })
+  })
+})
 
 describe('radioSongs', () => {
   it('preserves server positions and marks downloading tracks as pending', () => {

@@ -2,10 +2,17 @@ package persistence
 
 import (
 	"database/sql"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/navidrome/navidrome/model"
 )
 
 func TestQuickPickMetricsParsesSQLiteTextTimestamps(t *testing.T) {
@@ -66,6 +73,7 @@ func newQuickPickExposureTestRepository(t *testing.T) *quickPickMetricsRepositor
 			view_id text not null,
 			item_key text not null,
 			shown_at datetime not null,
+			clicked_at datetime,
 			primary key (user_id, view_id, item_key)
 		);
 		create index quick_pick_impression_user_view
@@ -150,5 +158,101 @@ func TestQuickPickImpressionsAreIdempotentAndUpdateAggregates(t *testing.T) {
 	}
 	if details != 3 {
 		t.Fatalf("detail rows = %d, want 3", details)
+	}
+}
+
+func TestQuickPickLatestViewAndClicksAreScopedAndIdempotent(t *testing.T) {
+	repository := newQuickPickExposureTestRepository(t)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	if view, err := repository.LatestView("new-user"); err != nil || view != nil {
+		t.Fatalf("empty history = %#v, %v", view, err)
+	}
+	if err := repository.RecordImpressions("user", "old-view", []string{"track:a", "track:b"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RecordClick("user", "old-view", "track:a", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RecordClick("user", "old-view", "track:a", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	view, err := repository.LatestView("user")
+	if err != nil || view.ViewID != "old-view" || !reflect.DeepEqual(view.ClickedItemKeys, []string{"track:a"}) {
+		t.Fatalf("latest view = %#v, %v", view, err)
+	}
+	var clicked nullableSQLiteTime
+	if err := repository.db.QueryRow(`select clicked_at from quick_pick_impression where user_id = 'user' and view_id = 'old-view' and item_key = 'track:a'`).Scan(&clicked); err != nil {
+		t.Fatal(err)
+	}
+	if !clicked.Time.Equal(now.Add(time.Minute)) {
+		t.Fatalf("duplicate click changed first timestamp to %v", clicked.Time)
+	}
+	exposures, err := repository.ExposureMetrics("user", []string{"track:a"})
+	if err != nil || exposures["track:a"].ShowCount != 1 || !exposures["track:a"].LastShownAt.Equal(now) {
+		t.Fatalf("click changed exposures: %#v, %v", exposures, err)
+	}
+	if err := repository.RecordImpressions("user", "new-view", []string{"track:a", "track:c"}, now.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// A click arriving from an old tab cannot promote that tab's old view.
+	if err := repository.RecordClick("user", "old-view", "track:b", now.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	view, err = repository.LatestView("user")
+	if err != nil || view.ViewID != "new-view" || len(view.ClickedItemKeys) != 0 {
+		t.Fatalf("old click affected latest view: %#v, %v", view, err)
+	}
+	for _, click := range []struct{ user, view, key string }{
+		{"other-user", "old-view", "track:a"},
+		{"user", "unknown-view", "track:a"},
+		{"user", "new-view", "track:unseen"},
+	} {
+		if err := repository.RecordClick(click.user, click.view, click.key, now); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("unknown impression click = %v, want not found", err)
+		}
+	}
+	if view, err := repository.LatestView("other-user"); err != nil || view != nil {
+		t.Fatalf("another user's history = %#v, %v", view, err)
+	}
+}
+
+func TestQuickPickClicksMigrationPreservesExistingImpressions(t *testing.T) {
+	database, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err := database.Exec(`
+		create table quick_pick_impression (
+			user_id text, view_id text, item_key text, shown_at datetime,
+			primary key (user_id, view_id, item_key)
+		);
+		insert into quick_pick_impression values ('user', 'view', 'track:a', '2026-09-30 12:00:00');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	_, sourceFile, _, _ := runtime.Caller(0)
+	migration, err := os.ReadFile(filepath.Join(filepath.Dir(sourceFile), "..", "db", "migrations", "20261001010000_add_quick_pick_clicks.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(string(migration), "-- +goose Down")
+	if _, err := database.Exec(parts[0]); err != nil {
+		t.Fatal(err)
+	}
+	repository := &quickPickMetricsRepository{db: database}
+	view, err := repository.LatestView("user")
+	if err != nil || view == nil || len(view.ItemKeys) != 1 || len(view.ClickedItemKeys) != 0 {
+		t.Fatalf("migrated history = %#v, %v", view, err)
+	}
+	if err := repository.RecordClick("user", "view", "track:a", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(parts[1]); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.QueryRow(`select count(*) from quick_pick_impression`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("rollback lost original impressions: count=%d err=%v", count, err)
 	}
 }
