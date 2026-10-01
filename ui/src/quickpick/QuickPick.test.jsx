@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('react-admin', () => ({ useNotify: () => mocks.notify }))
 vi.mock('react-redux', () => ({ useDispatch: () => mocks.dispatch }))
+vi.mock('./QuickPickPlaylists', () => ({
+  default: () => <div data-testid="playlists" />,
+}))
 vi.mock('../common/Artwork', () => ({ Artwork: () => null }))
 vi.mock('./provider', () => ({
   getQuickPick: mocks.getQuickPick,
@@ -55,24 +58,23 @@ describe('QuickPick', () => {
   })
   afterEach(cleanup)
 
-  it('renders three familiar songs and nine discovery songs, reporting the grid once', async () => {
+  it('renders only nine discovery songs without headings or menus, reporting those songs once', async () => {
     const { rerender } = render(<QuickPick />)
-    await screen.findByRole('heading', { name: 'Discover' })
-    const heading = screen.getByRole('heading', { name: 'Quick Pick' })
-    expect(heading.nextSibling.querySelectorAll('button')).toHaveLength(3)
-    expect(
-      screen
-        .getByRole('heading', { name: 'Discover' })
-        .nextSibling.querySelectorAll('button'),
-    ).toHaveLength(9)
+    await screen.findByRole('button', { name: 'Play Song 3 radio' })
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument()
+    expect(screen.queryByText('Song 0')).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Discover' })).toBeInTheDocument()
     expect(mocks.recordQuickPickImpressions).toHaveBeenCalledWith(
       'view-1',
-      grid().items.map((item) => item.itemKey),
+      grid()
+        .items.slice(3)
+        .map((item) => item.itemKey),
     )
     rerender(<QuickPick />)
     expect(mocks.recordQuickPickImpressions).toHaveBeenCalledTimes(1)
     expect(mocks.getQuickPick).toHaveBeenCalledTimes(1)
-    expect(screen.getAllByRole('button')).toHaveLength(12)
+    expect(screen.getAllByRole('button')).toHaveLength(9)
+    expect(screen.getByTestId('playlists')).toBeInTheDocument()
   })
 
   it('plays immediately but waits for impressions before reporting a click', async () => {
@@ -115,14 +117,14 @@ describe('QuickPick', () => {
       await waitFor(() =>
         expect(mocks.startRelatedRadio).toHaveBeenCalledTimes(1),
       )
-      expect(screen.getAllByRole('button')).toHaveLength(12)
+      expect(screen.getAllByRole('button')).toHaveLength(9)
       expect(mocks.notify).not.toHaveBeenCalled()
     },
   )
 
   it('loads a new view on the next visit and reports clicks with that view', async () => {
     const first = render(<QuickPick />)
-    await screen.findByRole('heading', { name: 'Discover' })
+    await screen.findByRole('button', { name: 'Play Song 3 radio' })
     first.unmount()
     mocks.getQuickPick.mockResolvedValue(grid('view-2'))
     render(<QuickPick />)
@@ -139,12 +141,49 @@ describe('QuickPick', () => {
     expect(mocks.recordQuickPickImpressions).toHaveBeenCalledTimes(2)
   })
 
-  it('does not report empty grids', async () => {
-    mocks.getQuickPick.mockResolvedValue({ viewId: 'empty', items: [] })
+  it.each([{ items: [] }, { items: grid().items.slice(0, 3) }])(
+    'does not report empty discovery grids',
+    async ({ items }) => {
+      mocks.getQuickPick.mockResolvedValue({ viewId: 'empty', items })
+      render(<QuickPick />)
+      await screen.findByText('No songs to discover yet.')
+      expect(mocks.recordQuickPickImpressions).not.toHaveBeenCalled()
+      expect(screen.getByTestId('playlists')).toBeInTheDocument()
+    },
+  )
+
+  it('keeps playlists mounted while discoveries load', () => {
+    mocks.getQuickPick.mockReturnValue(new Promise(() => {}))
     render(<QuickPick />)
-    await screen.findByText(
-      'Play a few songs and your favorites will appear here.',
+    expect(
+      screen.getByRole('progressbar', { name: 'Loading discoveries' }),
+    ).toBeInTheDocument()
+    expect(screen.getByTestId('playlists')).toBeInTheDocument()
+  })
+
+  it('recovers from a discovery failure without blocking playlists', async () => {
+    mocks.getQuickPick.mockRejectedValueOnce(new Error('offline'))
+    render(<QuickPick />)
+    await screen.findByText('Unable to load discoveries.')
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(screen.getByTestId('playlists')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry discoveries' }))
+    await screen.findByRole('button', { name: 'Play Song 3 radio' })
+    expect(mocks.getQuickPick).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(mocks.recordQuickPickImpressions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not render or record a discovery item without a playable song', async () => {
+    const response = grid()
+    response.items[3] = { ...response.items[3], song: null }
+    mocks.getQuickPick.mockResolvedValue(response)
+    render(<QuickPick />)
+    await screen.findByRole('button', { name: 'Play Song 4 radio' })
+    expect(screen.getAllByRole('button')).toHaveLength(8)
+    expect(mocks.recordQuickPickImpressions).toHaveBeenCalledWith(
+      'view-1',
+      response.items.slice(4).map((item) => item.itemKey),
     )
-    expect(mocks.recordQuickPickImpressions).not.toHaveBeenCalled()
   })
 })

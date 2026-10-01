@@ -2,6 +2,8 @@ import React from 'react'
 import { act, render } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { createStore } from 'redux'
+import { Router } from 'react-router-dom'
+import { createMemoryHistory } from 'history'
 import themes from '../themes'
 import Layout from './Layout'
 
@@ -27,13 +29,18 @@ vi.mock('./Menu', () => ({ default: () => null }))
 vi.mock('./AppBar', () => ({ default: () => null }))
 vi.mock('./Notification', () => ({ default: () => null }))
 
-const renderLayout = (queue = []) => {
+const renderLayout = (
+  queue = [],
+  history = createMemoryHistory({ initialEntries: ['/song'] }),
+) => {
   const store = createStore((state = { player: { queue } }, action) =>
     action.type === 'TEST/QUEUE' ? { player: { queue: action.queue } } : state,
   )
   render(
     <Provider store={store}>
-      <Layout />
+      <Router history={history}>
+        <Layout />
+      </Router>
     </Provider>,
   )
   return store
@@ -103,5 +110,59 @@ describe('sidebar layout integration', () => {
   it('initializes libraries independently of the removed selector', () => {
     renderLayout()
     expect(mocks.libraries).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Quick Pick layout integration', () => {
+  it.each(Object.entries(themes))(
+    'uses the navigation black in %s and restores the theme when leaving the page',
+    (name, selectedTheme) => {
+      mocks.theme = selectedTheme
+      const history = createMemoryHistory({ initialEntries: ['/quick-pick'] })
+      renderLayout([], history)
+      const theme = lastTheme()
+      expect(theme.overrides.RaLayout.root.background).toBe(
+        '#0d0d0d !important',
+      )
+      expect(theme.overrides.RaLayout.content.background).toBe(
+        '#0d0d0d !important',
+      )
+      expect(theme.overrides.RaLayout.contentWithSidebar.background).toBe(
+        '#0d0d0d !important',
+      )
+      expect(theme.overrides.RaLayout.content.padding).toBe('0 !important')
+      expect(theme.palette).toBe(selectedTheme.palette)
+      expect(theme.overrides.RaAppBar).toBe(selectedTheme.overrides?.RaAppBar)
+      act(() => history.push('/playlist/pl-1/show'))
+      expect(lastTheme().overrides.RaLayout).toBe(
+        selectedTheme.overrides?.RaLayout,
+      )
+    },
+  )
+
+  it('preserves the player and safe-area spacing on the redesigned page', () => {
+    const history = createMemoryHistory({ initialEntries: ['/quick-pick'] })
+    const store = renderLayout([], history)
+    const node = document.createElement('div')
+    node.className = mocks.layout.mock.lastCall[0].className
+    document.body.appendChild(node)
+    expect(getComputedStyle(node).paddingBottom).toBe('0px')
+    act(
+      () =>
+        void store.dispatch({ type: 'TEST/QUEUE', queue: [{ id: 'song-1' }] }),
+    )
+    node.className = mocks.layout.mock.lastCall[0].className
+    // jsdom rearranges env() inside calc(); assert the reserved space and inset.
+    expect(getComputedStyle(node).paddingBottom).toContain('80px')
+    expect(getComputedStyle(node).paddingBottom).toContain(
+      'safe-area-inset-bottom',
+    )
+    expect(lastTheme().overrides.RaLayout.root.background).toBe(
+      '#0d0d0d !important',
+    )
+    act(() => void store.dispatch({ type: 'TEST/QUEUE', queue: [] }))
+    node.className = mocks.layout.mock.lastCall[0].className
+    expect(getComputedStyle(node).paddingBottom).toBe('0px')
+    node.remove()
   })
 })

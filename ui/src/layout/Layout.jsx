@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { Layout as RALayout, toggleSidebar } from 'react-admin'
 import { makeStyles } from '@material-ui/core/styles'
 import { HotKeys } from 'react-hotkeys'
+import { useLocation } from 'react-router-dom'
 import Menu from './Menu'
 import AppBar from './AppBar'
 import Notification from './Notification'
@@ -24,6 +25,8 @@ const useStyles = makeStyles({
 
 const Layout = (props) => {
   const currentTheme = useCurrentTheme()
+  const { pathname } = useLocation()
+  const isQuickPick = pathname === '/quick-pick'
   const queue = useSelector((state) => state.player?.queue)
   const hasPlayer = (queue?.length || 0) > 0
   const classes = useStyles({ addPadding: hasPlayer })
@@ -38,6 +41,7 @@ const Layout = (props) => {
     const mobile = '@media (max-width:599.95px)'
     const dynamicViewport = '@supports (height: 100dvh)'
     const existingSidebar = currentTheme.overrides?.RaSidebar || {}
+    const existingLayout = currentTheme.overrides?.RaLayout || {}
 
     return {
       ...currentTheme,
@@ -48,6 +52,29 @@ const Layout = (props) => {
       },
       overrides: {
         ...currentTheme.overrides,
+        ...(isQuickPick && {
+          RaLayout: {
+            ...existingLayout,
+            root: {
+              ...existingLayout.root,
+              background: `${sidebarColors.background} !important`,
+              color: sidebarColors.text,
+              minWidth: 0,
+            },
+            contentWithSidebar: {
+              ...existingLayout.contentWithSidebar,
+              background: `${sidebarColors.background} !important`,
+              gap: 0,
+            },
+            content: {
+              ...existingLayout.content,
+              background: `${sidebarColors.background} !important`,
+              padding: '0 !important',
+              minWidth: 0,
+              borderRadius: 0,
+            },
+          },
+        }),
         RaSidebar: {
           ...existingSidebar,
           root: {
@@ -84,7 +111,7 @@ const Layout = (props) => {
         },
       },
     }
-  }, [currentTheme, hasPlayer])
+  }, [currentTheme, hasPlayer, isQuickPick])
 
   const keyHandlers = {
     TOGGLE_MENU: useCallback(() => dispatch(toggleSidebar()), [dispatch]),
