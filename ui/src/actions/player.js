@@ -24,6 +24,7 @@ export const requestSearchPlay = (song) => ({
   data: {
     requestId: uuidv4(),
     sourceId: song.id,
+    source: song.source || 'catalog',
     localMediaFileId: song.localMediaFileId,
     title: song.title,
     artist: song.artistName,

@@ -279,3 +279,90 @@ describe('Quick Pick layout integration', () => {
     node.remove()
   })
 })
+
+describe('Search layout integration', () => {
+  it.each(Object.entries(themes))(
+    'uses the navigation black in %s while keeping search detail routes themed',
+    (name, selectedTheme) => {
+      mocks.theme = selectedTheme
+      const history = createMemoryHistory({ initialEntries: ['/search'] })
+      renderLayout([], history)
+      const theme = lastTheme()
+      expect(theme.overrides.RaLayout.root.background).toBe(
+        '#0d0d0d !important',
+      )
+      expect(theme.overrides.RaLayout.content.background).toBe(
+        '#0d0d0d !important',
+      )
+      expect(theme.overrides.RaLayout.contentWithSidebar.background).toBe(
+        '#0d0d0d !important',
+      )
+      expect(theme.overrides.RaLayout.content.padding).toBe('0 !important')
+      expect(theme.palette).toBe(selectedTheme.palette)
+      expect(theme.overrides.RaAppBar).toBe(selectedTheme.overrides?.RaAppBar)
+
+      act(() => history.push('/search?q=artist'))
+      expect(lastTheme().overrides.RaLayout.root.background).toBe(
+        '#0d0d0d !important',
+      )
+
+      for (const path of [
+        '/search/artist/artist-1',
+        '/search/album/album-1',
+        '/playlist/pl-1/show',
+      ]) {
+        act(() => history.push(path))
+        expect(lastTheme().overrides.RaLayout).toBe(
+          selectedTheme.overrides?.RaLayout,
+        )
+        expect(lastTheme().palette).toBe(selectedTheme.palette)
+      }
+    },
+  )
+
+  it.each([1024, 390])(
+    'preserves player and safe-area spacing on /search at %spx',
+    (width) => {
+      installMatchMedia(width)
+      const history = createMemoryHistory({ initialEntries: ['/search'] })
+      const store = renderLayout([], history)
+      const paddingBottom = () => {
+        const node = document.createElement('div')
+        node.className = mocks.layout.mock.lastCall[0].className
+        document.body.appendChild(node)
+        const value = getComputedStyle(node).paddingBottom
+        node.remove()
+        return value
+      }
+
+      const withoutPlayer = paddingBottom()
+      if (width <= 959) {
+        expect(withoutPlayer).toContain('64px')
+        expect(withoutPlayer).toContain('safe-area-inset-bottom')
+      } else {
+        expect(withoutPlayer).toBe('0px')
+      }
+      act(
+        () =>
+          void store.dispatch({
+            type: 'TEST/QUEUE',
+            queue: [{ id: 'song-1' }],
+          }),
+      )
+      const withPlayer = paddingBottom()
+      expect(withPlayer).toContain(width <= 959 ? '144px' : '80px')
+      expect(withPlayer).toContain('safe-area-inset-bottom')
+      expect(lastTheme().overrides.RaLayout.root.background).toBe(
+        '#0d0d0d !important',
+      )
+      act(() => void store.dispatch({ type: 'TEST/QUEUE', queue: [] }))
+      const restored = paddingBottom()
+      if (width <= 959) {
+        expect(restored).toContain('64px')
+        expect(restored).toContain('safe-area-inset-bottom')
+      } else {
+        expect(restored).toBe('0px')
+      }
+    },
+  )
+})

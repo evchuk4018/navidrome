@@ -35,7 +35,7 @@ const Layout = (props) => {
   const currentTheme = useCurrentTheme()
   const compact = useMediaQuery(COMPACT_NAVIGATION_QUERY, { noSsr: true })
   const { pathname } = useLocation()
-  const isQuickPick = pathname === '/quick-pick'
+  const isDiscoveryPage = pathname === '/quick-pick' || pathname === '/search'
   const queue = useSelector((state) => state.player?.queue)
   const hasPlayer = (queue?.length || 0) > 0
   const classes = useStyles({ addPadding: hasPlayer, compact })
@@ -61,12 +61,12 @@ const Layout = (props) => {
       },
       overrides: {
         ...currentTheme.overrides,
-        ...((isQuickPick || compact) && {
+        ...((isDiscoveryPage || compact) && {
           RaLayout: {
             ...existingLayout,
             root: {
               ...existingLayout.root,
-              ...(isQuickPick && {
+              ...(isDiscoveryPage && {
                 background: `${sidebarColors.background} !important`,
                 color: sidebarColors.text,
               }),
@@ -74,14 +74,14 @@ const Layout = (props) => {
             },
             contentWithSidebar: {
               ...existingLayout.contentWithSidebar,
-              ...(isQuickPick && {
+              ...(isDiscoveryPage && {
                 background: `${sidebarColors.background} !important`,
               }),
               gap: 0,
             },
             content: {
               ...existingLayout.content,
-              ...(isQuickPick && {
+              ...(isDiscoveryPage && {
                 background: `${sidebarColors.background} !important`,
                 padding: '0 !important',
                 borderRadius: 0,
@@ -132,7 +132,7 @@ const Layout = (props) => {
         },
       },
     }
-  }, [currentTheme, hasPlayer, isQuickPick, compact])
+  }, [currentTheme, hasPlayer, isDiscoveryPage, compact])
 
   const keyHandlers = {
     TOGGLE_MENU: useCallback(() => {
