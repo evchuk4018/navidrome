@@ -38,6 +38,26 @@ describe('<MiniPlayer />', () => {
     ).toBeInTheDocument()
   })
 
+  it('uses the shared modern pink surface and accent colors', () => {
+    render(
+      <MiniPlayer
+        track={track}
+        audioInstance={{ paused: true }}
+        onExpand={vi.fn()}
+      />,
+    )
+
+    const player = screen.getByTestId('mini-player')
+    expect(player).toHaveStyle({
+      backgroundColor: '#171017',
+      color: '#f5f5f5',
+      borderTop: '1px solid #242424',
+    })
+
+    const progress = screen.getByTestId('mini-player-progress')
+    expect(progress).toHaveStyle({ backgroundColor: '#ff2a7f' })
+  })
+
   it('shows the radio planning status while finding a next song', () => {
     render(
       <MiniPlayer

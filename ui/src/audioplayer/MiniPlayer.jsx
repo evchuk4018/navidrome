@@ -12,6 +12,7 @@ import {
   BOTTOM_NAVIGATION_SPACE,
   COMPACT_NAVIGATION_MEDIA,
 } from '../layout/navigation'
+import { sidebarColors } from '../layout/sidebarStyles'
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -26,10 +27,10 @@ const useStyles = makeStyles((theme) => ({
     height: 'calc(72px + env(safe-area-inset-bottom, 0px))',
     padding: theme.spacing(1),
     paddingBottom: 'calc(8px + env(safe-area-inset-bottom, 0px))',
-    color: theme.palette.text.primary,
-    backgroundColor: theme.palette.background.paper,
-    borderTop: `1px solid ${theme.palette.divider}`,
-    boxShadow: '0 -2px 12px rgba(0, 0, 0, 0.18)',
+    color: sidebarColors.text,
+    backgroundColor: '#171017',
+    borderTop: `1px solid ${sidebarColors.divider}`,
+    boxShadow: '0 -8px 24px rgba(0, 0, 0, 0.28)',
     touchAction: 'pan-y',
     '@media (max-width: 480px)': {
       height: 'calc(68px + env(safe-area-inset-bottom, 0px))',
@@ -65,9 +66,10 @@ const useStyles = makeStyles((theme) => ({
     width: 52,
     height: 52,
     overflow: 'hidden',
-    color: theme.palette.text.secondary,
-    backgroundColor: theme.palette.action.hover,
-    borderRadius: theme.shape.borderRadius,
+    color: sidebarColors.secondary,
+    backgroundColor: sidebarColors.selection,
+    border: `1px solid ${sidebarColors.divider}`,
+    borderRadius: 12,
   },
   artworkImage: {
     width: '100%',
@@ -91,7 +93,7 @@ const useStyles = makeStyles((theme) => ({
     display: 'block',
     marginTop: 2,
     overflow: 'hidden',
-    color: theme.palette.text.secondary,
+    color: sidebarColors.secondary,
     fontSize: '0.78rem',
     lineHeight: 1.25,
     textOverflow: 'ellipsis',
@@ -101,7 +103,7 @@ const useStyles = makeStyles((theme) => ({
     display: 'block',
     marginTop: 2,
     overflow: 'hidden',
-    color: theme.palette.primary.main,
+    color: sidebarColors.activeText,
     fontSize: '0.72rem',
     fontStyle: 'italic',
     textOverflow: 'ellipsis',
@@ -120,16 +122,17 @@ const useStyles = makeStyles((theme) => ({
     width: 42,
     height: 42,
     padding: 0,
-    color: 'inherit',
+    color: sidebarColors.navigation,
     background: 'transparent',
     border: 0,
     borderRadius: '50%',
     cursor: 'pointer',
     '&:hover': {
-      backgroundColor: theme.palette.action.hover,
+      backgroundColor: sidebarColors.selection,
+      color: sidebarColors.activeText,
     },
     '&:focus-visible': {
-      outline: `2px solid ${theme.palette.primary.main}`,
+      outline: `2px solid ${sidebarColors.accent}`,
       outlineOffset: 2,
     },
     '&:disabled': {
@@ -138,7 +141,8 @@ const useStyles = makeStyles((theme) => ({
     },
   },
   toggle: {
-    backgroundColor: theme.palette.action.hover,
+    backgroundColor: sidebarColors.selection,
+    color: `${sidebarColors.activeText} !important`,
   },
   icon: {
     fontSize: 28,
@@ -150,12 +154,12 @@ const useStyles = makeStyles((theme) => ({
     left: 0,
     height: 2,
     overflow: 'hidden',
-    backgroundColor: theme.palette.action.disabledBackground,
+    backgroundColor: sidebarColors.divider,
     pointerEvents: 'none',
   },
   progress: {
     height: '100%',
-    backgroundColor: theme.palette.primary.main,
+    backgroundColor: sidebarColors.accent,
     transition: 'width 150ms linear',
   },
   duration: {

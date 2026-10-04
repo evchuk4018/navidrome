@@ -3,12 +3,13 @@ import {
   BOTTOM_NAVIGATION_SPACE,
   COMPACT_NAVIGATION_MEDIA,
 } from '../layout/navigation'
+import { sidebarColors } from '../layout/sidebarStyles'
 
 const useStyle = makeStyles(
-  (theme) => ({
+  () => ({
     audioTitle: {
       textDecoration: 'none',
-      color: theme.palette.primary.dark,
+      color: `${sidebarColors.activeText} !important`,
     },
     songTitle: {
       fontWeight: 'bold',
@@ -23,7 +24,7 @@ const useStyle = makeStyles(
     radioPlanning: {
       display: 'block',
       marginTop: '2px',
-      color: theme.palette.text.secondary,
+      color: `${sidebarColors.secondary} !important`,
       fontSize: 'smaller',
       fontStyle: 'italic',
     },
@@ -44,6 +45,97 @@ const useStyle = makeStyles(
           zIndex: 1001,
         },
         '& .react-jinke-music-player-mobile': { zIndex: 1200 },
+      },
+      // The dependency renders the queue and expanded mobile player as
+      // sibling fixed layers. Keep the queue above the full player so it is
+      // usable on phones, where both layers cover the viewport.
+      '&& .audio-lists-panel': {
+        // Sit above the expanded player (1200) while leaving Material UI's
+        // modal layer (1300) available for dialogs opened from the queue.
+        zIndex: 1250,
+        color: `${sidebarColors.text} !important`,
+        backgroundColor: `${sidebarColors.background} !important`,
+        border: `1px solid ${sidebarColors.divider}`,
+        boxShadow: '0 12px 32px rgba(0, 0, 0, .35)',
+        '&.audio-lists-panel-mobile': {
+          borderRadius: 0,
+        },
+        '& .audio-lists-panel-content .audio-item:nth-child(odd)': {
+          backgroundColor: '#21111a !important',
+        },
+        '& .audio-lists-panel-header': {
+          color: `${sidebarColors.text} !important`,
+          backgroundColor: '#21111a !important',
+          borderBottom: `1px solid ${sidebarColors.divider}`,
+          textShadow: 'none',
+          '& svg': {
+            color: `${sidebarColors.navigation} !important`,
+          },
+          '& .audio-lists-panel-header-actions > *:hover svg': {
+            color: `${sidebarColors.activeText} !important`,
+          },
+        },
+        '& .audio-lists-panel-content .audio-item': {
+          color: `${sidebarColors.text} !important`,
+          backgroundColor: '#171017 !important',
+          borderBottom: `1px solid ${sidebarColors.divider}`,
+          '& svg': {
+            color: `${sidebarColors.navigation} !important`,
+          },
+          '& .player-singer': {
+            color: `${sidebarColors.secondary} !important`,
+          },
+          '&:hover, &:active': {
+            backgroundColor: `${sidebarColors.selection} !important`,
+            '& svg': {
+              color: `${sidebarColors.activeText} !important`,
+            },
+          },
+          '&.playing': {
+            color: `${sidebarColors.activeText} !important`,
+            backgroundColor: `${sidebarColors.selection} !important`,
+            '& svg': { color: `${sidebarColors.accent} !important` },
+            '& .player-singer': {
+              color: `${sidebarColors.activeText} !important`,
+            },
+          },
+        },
+        '&.audio-lists-panel-mobile .audio-lists-panel-content': {
+          paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        },
+      },
+      // The source-owned mini player and the dependency's expanded player
+      // share the same pink surface and controls on compact screens.
+      '& .react-jinke-music-player-mobile': {
+        zIndex: 1200,
+        color: `${sidebarColors.text} !important`,
+        backgroundColor: `${sidebarColors.background} !important`,
+        '& .react-jinke-music-player-mobile-header-right': {
+          color: `${sidebarColors.navigation} !important`,
+        },
+        '& .react-jinke-music-player-mobile-singer-name': {
+          color: `${sidebarColors.secondary} !important`,
+          '&::before, &::after': {
+            backgroundColor: `${sidebarColors.divider} !important`,
+          },
+        },
+        '& .react-jinke-music-player-mobile-progress .current-time, & .react-jinke-music-player-mobile-progress .duration':
+          {
+            color: `${sidebarColors.secondary} !important`,
+          },
+        '& .react-jinke-music-player-mobile-progress .rc-slider-rail': {
+          backgroundColor: `${sidebarColors.divider} !important`,
+        },
+        '& .react-jinke-music-player-mobile-progress .rc-slider-handle, & .react-jinke-music-player-mobile-progress .rc-slider-track':
+          {
+            backgroundColor: `${sidebarColors.accent} !important`,
+          },
+        '& .react-jinke-music-player-mobile-operation svg': {
+          color: `${sidebarColors.navigation} !important`,
+        },
+        '& .react-jinke-music-player-mobile-operation .item:hover svg': {
+          color: `${sidebarColors.activeText} !important`,
+        },
       },
       // The dependency's mini mode is a draggable circular controller. The
       // source-owned MiniPlayer renders the collapsed UI instead; the
