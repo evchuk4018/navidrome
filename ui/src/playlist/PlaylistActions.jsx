@@ -32,9 +32,21 @@ import { formatBytes } from '../utils'
 import config from '../config'
 import { ToggleFieldsMenu } from '../common'
 
-const useStyles = makeStyles({
-  toolbar: { display: 'flex', justifyContent: 'space-between', width: '100%' },
-})
+const useStyles = makeStyles((theme) => ({
+  toolbar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    width: '100%',
+    minWidth: 0,
+    flexWrap: 'wrap',
+    gap: theme.spacing(0.5),
+    '& > div': {
+      display: 'flex',
+      minWidth: 0,
+      flexWrap: 'wrap',
+    },
+  },
+}))
 
 const PlaylistActions = ({ className, ids, data, record, ...rest }) => {
   const dispatch = useDispatch()
@@ -165,7 +177,9 @@ const PlaylistActions = ({ className, ids, data, record, ...rest }) => {
             <QueueMusicIcon />
           </Button>
         </div>
-        <div>{isNotSmall && <ToggleFieldsMenu resource="playlistTrack" />}</div>
+        <div>
+          {isNotSmall && <ToggleFieldsMenu resource="playlistTrack" modern />}
+        </div>
       </div>
     </TopToolbar>
   )

@@ -27,14 +27,27 @@ import config from '../config'
 import { playSimilar } from './playbackActions.js'
 import { formatBytes } from '../utils'
 import { useRedirect } from 'react-admin'
+import { sidebarColors } from '../layout/sidebarStyles'
 
 const useStyles = makeStyles({
   noWrap: {
     whiteSpace: 'nowrap',
   },
+  modernMenu: {
+    color: `${sidebarColors.text} !important`,
+    backgroundColor: '#171017',
+    border: `1px solid ${sidebarColors.divider}`,
+    borderRadius: 12,
+  },
+  modernMenuItem: {
+    color: `${sidebarColors.text} !important`,
+    '&:hover, &.Mui-selected': {
+      backgroundColor: `${sidebarColors.selection} !important`,
+    },
+  },
 })
 
-const MoreButton = ({ record, onClick, info }) => {
+const MoreButton = ({ record, onClick, info, ...rest }) => {
   const handleClick = record.missing
     ? (e) => {
         info.action(record)
@@ -42,7 +55,7 @@ const MoreButton = ({ record, onClick, info }) => {
       }
     : onClick
   return (
-    <IconButton onClick={handleClick} size={'small'}>
+    <IconButton onClick={handleClick} size={'small'} {...rest}>
       {record?.missing ? (
         <MdQuestionMark fontSize={'large'} />
       ) : (
@@ -58,6 +71,7 @@ export const SongContextMenu = ({
   showLove,
   onAddToPlaylist,
   className,
+  modern,
 }) => {
   const classes = useStyles()
   const dispatch = useDispatch()
@@ -244,13 +258,20 @@ export const SongContextMenu = ({
         record={record}
         resource={resource}
         visible={config.enableFavourites && showLove && present}
+        aria-label={translate('resources.song.fields.starred')}
       />
-      <MoreButton record={record} onClick={handleClick} info={options.info} />
+      <MoreButton
+        record={record}
+        onClick={handleClick}
+        info={options.info}
+        aria-label={translate('ra.action.open_menu')}
+      />
       <Menu
         id={'menu' + record.id}
         anchorEl={anchorEl}
         open={open}
         onClose={handleMainMenuClose}
+        classes={modern ? { paper: classes.modernMenu } : undefined}
       >
         {Object.keys(options).map((key) => {
           const showInPlaylistDisabled =
@@ -266,6 +287,7 @@ export const SongContextMenu = ({
                     : handleItemClick
                 }
                 disabled={showInPlaylistDisabled}
+                className={modern ? classes.modernMenuItem : undefined}
                 style={
                   showInPlaylistDisabled ? { pointerEvents: 'auto' } : undefined
                 }
@@ -280,6 +302,7 @@ export const SongContextMenu = ({
         anchorEl={playlistAnchorEl}
         open={Boolean(playlistAnchorEl)}
         onClose={handlePlaylistClose}
+        classes={modern ? { paper: classes.modernMenu } : undefined}
         anchorOrigin={{
           vertical: 'top',
           horizontal: 'right',
@@ -290,7 +313,11 @@ export const SongContextMenu = ({
         }}
       >
         {playlists.map((p) => (
-          <MenuItem key={p.id} onClick={(e) => handlePlaylistClick(p.id, e)}>
+          <MenuItem
+            key={p.id}
+            className={modern ? classes.modernMenuItem : undefined}
+            onClick={(e) => handlePlaylistClick(p.id, e)}
+          >
             {p.name}
           </MenuItem>
         ))}
@@ -304,6 +331,7 @@ SongContextMenu.propTypes = {
   record: PropTypes.object.isRequired,
   onAddToPlaylist: PropTypes.func,
   showLove: PropTypes.bool,
+  modern: PropTypes.bool,
 }
 
 SongContextMenu.defaultProps = {

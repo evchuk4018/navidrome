@@ -25,6 +25,8 @@ type dbPlaylist struct {
 	Rules          sql.NullString `structs:"-"`
 }
 
+const likedSongsFirstSort = "liked_songs_first"
+
 func (p *dbPlaylist) PostScan() error {
 	if p.Rules.String != "" {
 		return json.Unmarshal([]byte(p.Rules.String), &p.Playlist.Rules)
@@ -57,6 +59,10 @@ func NewPlaylistRepository(ctx context.Context, db dbx.Builder) model.PlaylistRe
 	})
 	r.setSortMappings(map[string]string{
 		"owner_name": "owner_name",
+		// This is an opt-in sentinel. It is kept in the whitelist so the native
+		// REST API accepts the sort, then expanded by selectPlaylist and
+		// GetAllIDs with request-scoped parameters.
+		likedSongsFirstSort: likedSongsFirstSort,
 	})
 	return r
 }
@@ -207,8 +213,12 @@ func (r *playlistRepository) GetAll(options ...model.QueryOptions) (model.Playli
 func (r *playlistRepository) GetAllIDs(options ...model.QueryOptions) ([]string, error) {
 	// Joins a projection of user, not the table: its name/created_at columns would make an ORDER BY
 	// on the playlist's own ambiguous.
-	sq := r.newSelect(options...).Columns("playlist.id", "user.user_name as owner_name").
+	queryOptions, likedSongsFirst := r.playlistQueryOptions(options...)
+	sq := r.newSelect(queryOptions).Columns("playlist.id", "user.user_name as owner_name").
 		Join("(select id, user_name from user) user on user.id = owner_id").Where(r.userFilter())
+	if likedSongsFirst {
+		sq = r.orderLikedSongsFirst(sq)
+	}
 	if filtersNeedAnnotation(sq) {
 		sq = r.withAnnotation(sq, "playlist.id")
 	}
@@ -250,9 +260,37 @@ func (r *playlistRepository) GetPlaylists(mediaFileId string) (model.Playlists, 
 }
 
 func (r *playlistRepository) selectPlaylist(options ...model.QueryOptions) SelectBuilder {
-	sel := r.newSelect(options...).Join("user on user.id = owner_id").
+	queryOptions, likedSongsFirst := r.playlistQueryOptions(options...)
+	sel := r.newSelect(queryOptions).Join("user on user.id = owner_id").
 		Columns(r.tableName+".*", "user.user_name as owner_name")
+	if likedSongsFirst {
+		sel = r.orderLikedSongsFirst(sel)
+	}
 	return r.withAnnotation(sel, r.tableName+".id")
+}
+
+// playlistQueryOptions removes the playlist-only sort sentinel before the
+// generic SQL repository sees it. The generic repository must continue to
+// handle every ordinary sort exactly as before; the sentinel is expanded with
+// request-scoped parameters by orderLikedSongsFirst instead.
+func (r *playlistRepository) playlistQueryOptions(options ...model.QueryOptions) (model.QueryOptions, bool) {
+	if len(options) == 0 {
+		return model.QueryOptions{}, false
+	}
+	queryOptions := options[0]
+	if queryOptions.Sort != likedSongsFirstSort {
+		return queryOptions, false
+	}
+	queryOptions.Sort = ""
+	return queryOptions, true
+}
+
+func (r *playlistRepository) orderLikedSongsFirst(query SelectBuilder) SelectBuilder {
+	return query.OrderByClause(
+		"(CASE WHEN playlist.owner_id = ? AND lower(trim(playlist.name)) = ? AND (playlist.rules IS NULL OR playlist.rules = '') THEN 0 ELSE 1 END) ASC, playlist.name ASC, playlist.id ASC",
+		loggedUser(r.ctx).ID,
+		model.LikedMusicPlaylistName,
+	)
 }
 
 func (r *playlistRepository) updateTracks(id string, tracks model.MediaFiles) error {

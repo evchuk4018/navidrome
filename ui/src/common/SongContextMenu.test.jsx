@@ -80,6 +80,25 @@ describe('SongContextMenu', () => {
     expect(window.location.hash).toBe('#/playlist/pl1/show')
   })
 
+  it('labels love and more controls for keyboard users', () => {
+    render(
+      <TestContext>
+        <SongContextMenu record={{ id: 'song1', size: 1 }} resource="song" />
+      </TestContext>,
+    )
+
+    expect(
+      screen.getByRole('button', {
+        name: /resources\.song\.fields\.starred|favourite/i,
+      }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', {
+        name: /ra\.action\.open_menu|open menu/i,
+      }),
+    ).toBeInTheDocument()
+  })
+
   it('stops event propagation when playlist submenu is closed', async () => {
     const mockOnClick = vi.fn()
     render(

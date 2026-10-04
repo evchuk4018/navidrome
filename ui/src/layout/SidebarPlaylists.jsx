@@ -12,6 +12,7 @@ import {
 import { useDrop } from 'react-dnd'
 import { Artwork } from '../common/Artwork'
 import { OverflowTooltip } from '../common/OverflowTooltip'
+import { PLAYLIST_DEFAULT_SORT, sortPlaylists } from '../common/playlistOrder'
 import { canChangeTracks } from '../common/playlistUtils'
 import { useRefreshOnEvents } from '../common/useRefreshOnEvents'
 import { DraggableTypes } from '../consts'
@@ -137,6 +138,7 @@ const SidebarPlaylist = ({ playlist, onRefresh }) => {
 
 const SidebarPlaylists = ({ visibleCount }) => {
   const locale = useLocale()
+  const ownerId = localStorage.getItem('userId') || ''
   const playlistData = useSelector(
     (state) => state.admin.resources.playlist?.data,
   )
@@ -145,7 +147,7 @@ const SidebarPlaylists = ({ visibleCount }) => {
     resource: 'playlist',
     payload: {
       pagination: { page: 1, perPage: config.maxSidebarPlaylists },
-      sort: { field: 'name', order: 'ASC' },
+      sort: PLAYLIST_DEFAULT_SORT,
       filter: {},
     },
   })
@@ -154,17 +156,15 @@ const SidebarPlaylists = ({ visibleCount }) => {
 
   const playlists = useMemo(() => {
     if (!loaded || error || !data) return []
-    const collator = new Intl.Collator(locale, { sensitivity: 'base' })
     // The capped query decides membership; the resource store supplies local edits.
-    return Object.values(data)
-      .map((playlist) => playlistData?.[playlist.id] || playlist)
-      .sort(
-        (a, b) =>
-          collator.compare(a.name, b.name) ||
-          String(a.id).localeCompare(String(b.id)),
-      )
-      .slice(0, Math.max(0, visibleCount))
-  }, [data, loaded, error, playlistData, locale, visibleCount])
+    return sortPlaylists(
+      Object.values(data).map(
+        (playlist) => playlistData?.[playlist.id] || playlist,
+      ),
+      locale,
+      ownerId,
+    ).slice(0, Math.max(0, visibleCount))
+  }, [data, loaded, error, playlistData, locale, ownerId, visibleCount])
 
   return playlists.map((playlist) => (
     <SidebarPlaylist

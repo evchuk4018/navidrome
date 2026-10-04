@@ -14,6 +14,7 @@ import {
 } from 'react-admin'
 import {
   TableCell,
+  TableContainer,
   TableRow,
   Typography,
   useMediaQuery,
@@ -337,15 +338,17 @@ const SongDatagridBody = ({
 
 export const SongDatagrid = ({
   contextAlwaysVisible,
+  scrollable,
   showDiscSubtitles,
+  className,
   ...rest
 }) => {
   const classes = useStyles()
-  return (
+  const datagrid = (
     <Datagrid
-      className={classes.headerStyle}
-      isRowSelectable={(r) => !r?.missing}
       {...rest}
+      className={clsx(classes.headerStyle, className)}
+      isRowSelectable={(r) => !r?.missing}
       body={
         <SongDatagridBody
           contextAlwaysVisible={contextAlwaysVisible}
@@ -354,10 +357,12 @@ export const SongDatagrid = ({
       }
     />
   )
+  return scrollable ? <TableContainer>{datagrid}</TableContainer> : datagrid
 }
 
 SongDatagrid.propTypes = {
   contextAlwaysVisible: PropTypes.bool,
+  scrollable: PropTypes.bool,
   showDiscSubtitles: PropTypes.bool,
   classes: PropTypes.object,
 }

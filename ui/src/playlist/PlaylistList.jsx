@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react'
+import PropTypes from 'prop-types'
 import {
   Datagrid,
   DateField,
@@ -15,8 +16,10 @@ import {
   useRecordContext,
   BulkDeleteButton,
   usePermissions,
+  useTranslate,
 } from 'react-admin'
 import Switch from '@material-ui/core/Switch'
+import TableContainer from '@material-ui/core/TableContainer'
 import { makeStyles } from '@material-ui/core/styles'
 import { useMediaQuery } from '@material-ui/core'
 import {
@@ -33,12 +36,41 @@ import FavoriteIcon from '@material-ui/icons/Favorite'
 import config from '../config'
 import PlaylistListActions from './PlaylistListActions'
 import ChangePublicStatusButton from './ChangePublicStatusButton'
+import { pinkPageStyles, PinkPageTheme } from '../common/pinkPageStyles'
+import { PLAYLIST_DEFAULT_SORT } from '../common/playlistOrder'
 
 const useStyles = makeStyles((theme) => ({
+  ...pinkPageStyles(theme),
   button: {
     color: theme.palette.type === 'dark' ? 'white' : undefined,
   },
+  grid: {
+    '& .MuiTableCell-root:first-child': {
+      width: 64,
+      paddingLeft: theme.spacing(1.5),
+      paddingRight: theme.spacing(1.5),
+    },
+  },
+  tableScroll: {
+    width: '100%',
+    overflowX: 'auto',
+  },
 }))
+
+const ScrollablePlaylistDatagrid = ({
+  tableClassName,
+  gridClassName,
+  ...datagridProps
+}) => (
+  <TableContainer className={tableClassName}>
+    <Datagrid {...datagridProps} className={gridClassName} />
+  </TableContainer>
+)
+
+ScrollablePlaylistDatagrid.propTypes = {
+  tableClassName: PropTypes.string,
+  gridClassName: PropTypes.string,
+}
 
 const PlaylistFilter = (props) => {
   const { permissions } = usePermissions()
@@ -151,12 +183,21 @@ const PlaylistListBulkActions = (props) => {
 
 // Datagrid reads `source`/`sortable`/`label` off this element for the column
 // header; only record/resource are forwarded so they never leak onto the button.
-export const PlaylistLove = ({ record, className }) => (
-  <LoveButton record={record} resource={'playlist'} className={className} />
-)
+export const PlaylistLove = ({ record, className }) => {
+  const translate = useTranslate()
+  return (
+    <LoveButton
+      record={record}
+      resource={'playlist'}
+      className={className}
+      aria-label={translate('resources.playlist.fields.starred')}
+    />
+  )
+}
 PlaylistLove.defaultProps = { source: 'starred', sortable: false }
 
 const PlaylistList = (props) => {
+  const classes = useStyles()
   const isXsmall = useMediaQuery((theme) => theme.breakpoints.down('xs'))
   const isDesktop = useMediaQuery((theme) => theme.breakpoints.up('md'))
   useResourceRefresh('playlist')
@@ -188,23 +229,31 @@ const PlaylistList = (props) => {
   })
 
   return (
-    <List
-      {...props}
-      exporter={false}
-      sort={{ field: 'name', order: 'ASC' }}
-      filters={<PlaylistFilter />}
-      actions={<PlaylistListActions />}
-      bulkActionButtons={!isXsmall && <PlaylistListBulkActions />}
-    >
-      <Datagrid rowClick="show" isRowSelectable={(r) => isWritable(r?.ownerId)}>
-        <ArtworkAvatar source="id" variant="square" />
-        <TextField source="name" />
-        {columns}
-        <Writable>
-          <EditButton />
-        </Writable>
-      </Datagrid>
-    </List>
+    <PinkPageTheme>
+      <List
+        {...props}
+        exporter={false}
+        className={classes.root}
+        sort={PLAYLIST_DEFAULT_SORT}
+        filters={<PlaylistFilter />}
+        actions={<PlaylistListActions />}
+        bulkActionButtons={!isXsmall && <PlaylistListBulkActions />}
+      >
+        <ScrollablePlaylistDatagrid
+          tableClassName={classes.tableScroll}
+          gridClassName={classes.grid}
+          rowClick="show"
+          isRowSelectable={(r) => isWritable(r?.ownerId)}
+        >
+          <ArtworkAvatar source="id" variant="square" />
+          <TextField source="name" />
+          {columns}
+          <Writable>
+            <EditButton />
+          </Writable>
+        </ScrollablePlaylistDatagrid>
+      </List>
+    </PinkPageTheme>
   )
 }
 

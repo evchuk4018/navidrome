@@ -34,7 +34,7 @@ vi.mock('../common/Artwork', () => ({
 const playlists = [
   { id: 'pl-z', name: 'Zulu', ownerId: 'user-1' },
   { id: 'pl-other', name: 'Other user', ownerId: 'user-2', public: true },
-  { id: 'pl-liked', name: 'Liked Songs', ownerId: 'user-1' },
+  { id: 'pl-liked', name: 'Liked Music', ownerId: 'user-1' },
   { id: 'pl-a', name: 'Alpha', ownerId: 'user-1', rules: { expression: {} } },
 ]
 
@@ -81,7 +81,7 @@ afterEach(cleanup)
 
 describe('QuickPickPlaylists', () => {
   it.each(['regular', 'admin'])(
-    'lists only owned playlists alphabetically for a %s user',
+    'lists only owned playlists with the liked playlist first for a %s user',
     async (role) => {
       localStorage.setItem('role', role)
       renderPlaylists()
@@ -94,8 +94,8 @@ describe('QuickPickPlaylists', () => {
       expect(
         screen.getAllByRole('link').map((link) => link.getAttribute('href')),
       ).toEqual([
-        '/playlist/pl-a/show',
         '/playlist/pl-liked/show',
+        '/playlist/pl-a/show',
         '/playlist/pl-z/show',
       ])
       expect(screen.getAllByText('Playlist')).toHaveLength(3)
@@ -107,7 +107,7 @@ describe('QuickPickPlaylists', () => {
 
   it('opens the selected playlist page from the whole row', async () => {
     const { history } = renderPlaylists()
-    fireEvent.click(await screen.findByRole('link', { name: 'Liked Songs' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Liked Music' }))
     expect(history.location.pathname).toBe('/playlist/pl-liked/show')
   })
 
@@ -242,6 +242,43 @@ describe('QuickPickPlaylists', () => {
     expect(
       screen.queryByRole('link', { name: 'New playlist' }),
     ).not.toBeInTheDocument()
+    expect(mocks.dataProvider.getList).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the cached ordering after a locale change and remount', async () => {
+    const localeSensitivePlaylists = [
+      { id: 'pl-alpha', name: 'Alpha', ownerId: 'user-1' },
+      { id: 'pl-swedish', name: 'Älskade', ownerId: 'user-1' },
+      { id: 'pl-zulu', name: 'Zulu', ownerId: 'user-1' },
+    ]
+    mocks.dataProvider.getList.mockResolvedValue({
+      data: localeSensitivePlaylists,
+    })
+
+    const expectedHrefs = [
+      '/playlist/pl-alpha/show',
+      '/playlist/pl-swedish/show',
+      '/playlist/pl-zulu/show',
+    ]
+    const first = renderPlaylists()
+    await screen.findByRole('link', { name: 'Alpha' })
+    expect(
+      screen.getAllByRole('link').map((link) => link.getAttribute('href')),
+    ).toEqual(expectedHrefs)
+
+    mocks.locale = 'sv'
+    first.rerenderList()
+    await vi.waitFor(() =>
+      expect(
+        screen.getAllByRole('link').map((link) => link.getAttribute('href')),
+      ).toEqual(expectedHrefs),
+    )
+
+    first.unmount()
+    renderPlaylists()
+    expect(
+      screen.getAllByRole('link').map((link) => link.getAttribute('href')),
+    ).toEqual(expectedHrefs)
     expect(mocks.dataProvider.getList).toHaveBeenCalledOnce()
   })
 

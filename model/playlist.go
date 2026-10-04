@@ -11,6 +11,10 @@ import (
 	"github.com/navidrome/navidrome/model/criteria"
 )
 
+// LikedMusicPlaylistName is the reserved name of the per-user automatic
+// playlist that is kept in sync with song favourites.
+const LikedMusicPlaylistName = "liked music"
+
 type Playlist struct {
 	Annotations `structs:"-"`
 	ItemImage   `structs:"-"`

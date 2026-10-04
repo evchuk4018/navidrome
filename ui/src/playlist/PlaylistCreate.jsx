@@ -10,7 +10,19 @@ import {
   useNotify,
   useRedirect,
 } from 'react-admin'
+import { makeStyles } from '@material-ui/core/styles'
 import { Title } from '../common'
+import { pinkPageStyles, PinkPageTheme } from '../common/pinkPageStyles'
+
+const useStyles = makeStyles((theme) => ({
+  ...pinkPageStyles(theme),
+  form: {
+    width: '100%',
+    maxWidth: 760,
+    margin: '0 auto',
+    boxSizing: 'border-box',
+  },
+}))
 
 const PlaylistCreate = (props) => {
   const { basePath } = props
@@ -18,6 +30,7 @@ const PlaylistCreate = (props) => {
   const notify = useNotify()
   const redirect = useRedirect()
   const translate = useTranslate()
+  const classes = useStyles()
   const resourceName = translate('resources.playlist.name', { smart_count: 1 })
   const title = translate('ra.page.create', {
     name: `${resourceName}`,
@@ -30,13 +43,25 @@ const PlaylistCreate = (props) => {
   }
 
   return (
-    <Create title={<Title subTitle={title} />} {...props} onSuccess={onSuccess}>
-      <SimpleForm redirect="list" variant={'outlined'}>
-        <TextInput source="name" validate={required()} />
-        <TextInput multiline source="comment" />
-        <BooleanInput source="public" initialValue={true} />
-      </SimpleForm>
-    </Create>
+    <PinkPageTheme>
+      <div className={classes.root}>
+        <Create
+          title={<Title subTitle={title} />}
+          {...props}
+          onSuccess={onSuccess}
+        >
+          <SimpleForm
+            className={classes.form}
+            redirect="list"
+            variant={'outlined'}
+          >
+            <TextInput source="name" validate={required()} />
+            <TextInput multiline source="comment" />
+            <BooleanInput source="public" initialValue={true} />
+          </SimpleForm>
+        </Create>
+      </div>
+    </PinkPageTheme>
   )
 }
 

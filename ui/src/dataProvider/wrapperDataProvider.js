@@ -1,8 +1,29 @@
 import jsonServerProvider from 'ra-data-json-server'
 import httpClient from './httpClient'
 import { REST_URL } from '../consts'
+import { PLAYLIST_DEFAULT_SORT_FIELD } from '../common/playlistOrder'
 
 const dataProvider = jsonServerProvider(REST_URL, httpClient)
+
+const isActiveFilterValue = (value) =>
+  value !== undefined &&
+  value !== null &&
+  value !== '' &&
+  !(Array.isArray(value) && value.length === 0)
+
+const normalizePlaylistSort = (params) => {
+  if (params?.sort?.field !== PLAYLIST_DEFAULT_SORT_FIELD) return params
+
+  const hasActiveFilter = Object.values(params.filter || {}).some(
+    isActiveFilterValue,
+  )
+  if (!hasActiveFilter) return params
+
+  return {
+    ...params,
+    sort: { ...params.sort, field: 'name' },
+  }
+}
 
 const isAdmin = () => {
   const role = localStorage.getItem('role')
@@ -149,7 +170,9 @@ const updateUser = async (params) => {
 const wrapperDataProvider = {
   ...dataProvider,
   getList: (resource, params) => {
-    const [r, p] = mapResource(resource, params)
+    const playlistParams =
+      resource === 'playlist' ? normalizePlaylistSort(params) : params
+    const [r, p] = mapResource(resource, playlistParams)
     return dataProvider.getList(r, p)
   },
   getOne: (resource, params) => {

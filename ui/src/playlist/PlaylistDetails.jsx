@@ -15,46 +15,56 @@ import {
 } from '../common'
 import subsonic from '../subsonic'
 import { Artwork } from '../common/Artwork'
+import { sidebarColors } from '../common/pinkPageStyles'
 
 const useStyles = makeStyles(
   (theme) => ({
     root: {
-      [theme.breakpoints.down('xs')]: {
-        padding: '0.7em',
-        minWidth: '20em',
-      },
-      [theme.breakpoints.up('sm')]: {
-        padding: '1em',
-        minWidth: '32em',
-      },
+      width: '100%',
+      minWidth: 0,
+      marginBottom: theme.spacing(2),
+      overflow: 'hidden',
+      backgroundColor: '#171017',
+      backgroundImage: 'none',
+      border: `1px solid ${sidebarColors.divider}`,
+      borderRadius: 20,
+      color: sidebarColors.text,
+      boxShadow: '0 12px 32px rgba(0, 0, 0, .24)',
     },
     cardContents: {
       display: 'flex',
+      alignItems: 'stretch',
+      minWidth: 0,
+      gap: theme.spacing(1),
+      [theme.breakpoints.down('xs')]: {
+        gap: 0,
+      },
     },
     details: {
       display: 'flex',
       flexDirection: 'column',
+      flex: '1 1 auto',
+      minWidth: 0,
     },
     content: {
       flex: '2 0 auto',
+      minWidth: 0,
+      padding: theme.spacing(2.5),
+      '&:last-child': { paddingBottom: theme.spacing(2.5) },
     },
     coverParent: {
+      width: 'clamp(96px, 24vw, 220px)',
+      height: 'clamp(96px, 24vw, 220px)',
+      minWidth: 'clamp(96px, 24vw, 220px)',
+      alignSelf: 'center',
+      margin: theme.spacing(2),
       [theme.breakpoints.down('xs')]: {
-        height: '8em',
-        width: '8em',
-        minWidth: '8em',
+        width: 'clamp(76px, 27vw, 128px)',
+        height: 'clamp(76px, 27vw, 128px)',
+        minWidth: 'clamp(76px, 27vw, 128px)',
+        margin: theme.spacing(1.5),
       },
-      [theme.breakpoints.up('sm')]: {
-        height: '10em',
-        width: '10em',
-        minWidth: '10em',
-      },
-      [theme.breakpoints.up('lg')]: {
-        height: '15em',
-        width: '15em',
-        minWidth: '15em',
-      },
-      backgroundColor: 'transparent',
+      backgroundColor: sidebarColors.divider,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -68,12 +78,16 @@ const useStyles = makeStyles(
       height: '100%',
       backgroundColor: 'transparent',
       transition: 'opacity 0.3s ease-in-out',
+      borderRadius: 12,
     },
     title: {
       overflow: 'hidden',
       textOverflow: 'ellipsis',
       wordBreak: 'break-word',
       minWidth: 0,
+      color: `${sidebarColors.text} !important`,
+      fontWeight: 700,
+      lineHeight: 1.15,
     },
     titleRow: {
       display: 'flex',
@@ -84,8 +98,10 @@ const useStyles = makeStyles(
       flexShrink: 0,
     },
     stats: {
-      marginTop: '1em',
-      marginBottom: '0.5em',
+      marginTop: theme.spacing(1.5),
+      marginBottom: theme.spacing(0.5),
+      color: `${sidebarColors.secondary} !important`,
+      lineHeight: 1.5,
     },
   }),
   {
@@ -138,7 +154,7 @@ const PlaylistDetails = (props) => {
                 record={record}
                 resource={'playlist'}
                 size={isDesktop ? 'default' : 'small'}
-                aria-label="love"
+                aria-label={translate('resources.playlist.fields.starred')}
                 color="primary"
               />
             </div>

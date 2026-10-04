@@ -215,6 +215,7 @@
       },
       "actions": {
         "selectPlaylist": "Select a playlist:",
+        "defaultOrder": "Default order",
         "addNewPlaylist": "Create \"%{name}\"",
         "export": "Export",
         "saveQueue": "Save Queue to Playlist",

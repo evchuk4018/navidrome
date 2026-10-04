@@ -152,7 +152,7 @@ beforeEach(() => {
 })
 
 describe('playlist preview', () => {
-  it('combines owned and shared playlists alphabetically without changing saved preferences', () => {
+  it('combines owned and shared playlists in the default order without changing saved preferences', () => {
     const { store } = renderPreview()
     expect(
       screen.getAllByRole('link').map((link) => link.getAttribute('href')),
@@ -166,12 +166,36 @@ describe('playlist preview', () => {
       resource: 'playlist',
       payload: {
         pagination: { page: 1, perPage: 100 },
-        sort: { field: 'name', order: 'ASC' },
+        sort: { field: 'liked_songs_first', order: 'ASC' },
         filter: {},
       },
     })
     expect(store.getState().settings.sidebarPlaylistsOnlyFavourites).toBe(true)
     expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('keeps the current user’s liked playlist inside the visible cap', () => {
+    mocks.query.mockReturnValue({
+      data: {
+        ...playlists,
+        'pl-liked': {
+          id: 'pl-liked',
+          name: '  LiKeD MuSiC  ',
+          ownerId: 'user-1',
+          songCount: 12,
+        },
+      },
+      loaded: true,
+      refetch: mocks.refetch,
+    })
+
+    renderPreview({ visibleCount: 1 })
+
+    expect(screen.getAllByRole('link')).toHaveLength(1)
+    expect(screen.getByRole('link')).toHaveAttribute(
+      'href',
+      '/playlist/pl-liked/show',
+    )
   })
 
   it('renders localized zero, singular, and thousands counts', () => {

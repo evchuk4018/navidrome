@@ -33,7 +33,7 @@ export const SongListActions = ({
           filterValues,
           context: 'button',
         })}
-      {isNotSmall && <ToggleFieldsMenu resource="song" />}
+      {isNotSmall && <ToggleFieldsMenu resource="song" modern />}
     </TopToolbar>
   )
 }

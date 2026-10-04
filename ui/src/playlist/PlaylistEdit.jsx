@@ -11,7 +11,19 @@ import {
   ReferenceInput,
   SelectInput,
 } from 'react-admin'
+import { makeStyles } from '@material-ui/core/styles'
 import { isWritable, Title } from '../common'
+import { pinkPageStyles, PinkPageTheme } from '../common/pinkPageStyles'
+
+const useStyles = makeStyles((theme) => ({
+  ...pinkPageStyles(theme),
+  form: {
+    width: '100%',
+    maxWidth: 760,
+    margin: '0 auto',
+    boxSizing: 'border-box',
+  },
+}))
 
 const SyncFragment = ({ formData, variant, ...rest }) => {
   return (
@@ -31,8 +43,14 @@ const PlaylistTitle = ({ record }) => {
 const PlaylistEditForm = (props) => {
   const { record } = props
   const { permissions } = usePermissions()
+  const classes = useStyles()
   return (
-    <SimpleForm redirect="list" variant={'outlined'} {...props}>
+    <SimpleForm
+      className={classes.form}
+      redirect="list"
+      variant={'outlined'}
+      {...props}
+    >
       <TextInput source="name" validate={required()} />
       <TextInput
         multiline
@@ -66,10 +84,17 @@ const PlaylistEditForm = (props) => {
   )
 }
 
-const PlaylistEdit = (props) => (
-  <Edit title={<PlaylistTitle />} actions={false} {...props}>
-    <PlaylistEditForm {...props} />
-  </Edit>
-)
+const PlaylistEdit = (props) => {
+  const classes = useStyles()
+  return (
+    <PinkPageTheme>
+      <div className={classes.root}>
+        <Edit title={<PlaylistTitle />} actions={false} {...props}>
+          <PlaylistEditForm {...props} />
+        </Edit>
+      </div>
+    </PinkPageTheme>
+  )
+}
 
 export default PlaylistEdit

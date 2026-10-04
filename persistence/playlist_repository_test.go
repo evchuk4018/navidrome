@@ -7,6 +7,7 @@ import (
 	"github.com/deluan/rest"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
+	"github.com/navidrome/navidrome/model/criteria"
 	"github.com/navidrome/navidrome/model/request"
 	"github.com/navidrome/navidrome/utils/slice"
 	. "github.com/onsi/ginkgo/v2"
@@ -35,6 +36,104 @@ var _ = Describe("PlaylistRepository", func() {
 			want, err := repo.GetAll(opts)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(collectCursor(repo.GetCursor(opts))).To(Equal([]model.Playlist(want)))
+		})
+
+		It("keeps the current user's ordinary liked playlist first across records, IDs, cursors, and pages", func() {
+			liked := model.Playlist{Name: "  LiKeD MuSiC  ", OwnerID: "userid"}
+			foreign := model.Playlist{Name: "LIKED MUSIC", OwnerID: "2222", Public: true}
+			smart := model.Playlist{
+				Name:    model.LikedMusicPlaylistName,
+				OwnerID: "userid",
+				Rules: &criteria.Criteria{Expression: criteria.All{
+					criteria.Contains{"title": "love"},
+				}},
+			}
+			alpha := model.Playlist{Name: "Alpha", OwnerID: "userid"}
+			zulu := model.Playlist{Name: "Zulu", OwnerID: "userid"}
+			for _, playlist := range []*model.Playlist{&liked, &foreign, &smart, &alpha, &zulu} {
+				Expect(repo.Put(playlist)).To(Succeed())
+				DeferCleanup(func(id string) func() {
+					return func() { _ = repo.Delete(id) }
+				}(playlist.ID))
+			}
+
+			all, err := repo.GetAll(model.QueryOptions{Sort: likedSongsFirstSort, Order: "ASC"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(all[0].ID).To(Equal(liked.ID))
+
+			ids, err := repo.GetAllIDs(model.QueryOptions{Sort: likedSongsFirstSort, Order: "ASC"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ids).To(Equal(slice.Map(all, func(p model.Playlist) string { return p.ID })))
+			Expect(collectCursor(repo.GetCursor(model.QueryOptions{Sort: likedSongsFirstSort, Order: "ASC"}))).
+				To(Equal([]model.Playlist(all)))
+
+			seen := map[string]bool{}
+			for offset := 0; ; offset += 2 {
+				page, err := repo.GetAll(model.QueryOptions{
+					Sort:   likedSongsFirstSort,
+					Order:  "ASC",
+					Max:    2,
+					Offset: offset,
+				})
+				Expect(err).ToNot(HaveOccurred())
+				if len(page) == 0 {
+					break
+				}
+				for _, playlist := range page {
+					Expect(seen[playlist.ID]).To(BeFalse(), "playlist %q appeared on more than one page", playlist.ID)
+					seen[playlist.ID] = true
+				}
+			}
+			Expect(seen).To(HaveLen(len(all)))
+		})
+	})
+
+	Describe("liked playlist sort REST options", func() {
+		It("accepts the opt-in sort and preserves the count", func() {
+			liked := model.Playlist{Name: model.LikedMusicPlaylistName, OwnerID: "userid"}
+			Expect(repo.Put(&liked)).To(Succeed())
+			DeferCleanup(func() { _ = repo.Delete(liked.ID) })
+
+			resourceRepo := repo.(model.ResourceRepository)
+			result, err := resourceRepo.ReadAll(rest.QueryOptions{
+				Sort:  likedSongsFirstSort,
+				Order: "ASC",
+				Max:   1,
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(result.(model.Playlists)).To(HaveLen(1))
+			Expect(result.(model.Playlists)[0].ID).To(Equal(liked.ID))
+
+			ordinaryNameOrder, err := repo.GetAll(model.QueryOptions{Sort: "name", Order: "ASC"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ordinaryNameOrder[0].ID).To(Equal(plsBest.ID))
+
+			count, err := resourceRepo.Count(rest.QueryOptions{Sort: likedSongsFirstSort, Order: "ASC"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(count).To(Equal(int64(3)))
+		})
+
+		It("does not promote a foreign or smart same-name playlist when the owner has none", func() {
+			foreign := model.Playlist{Name: model.LikedMusicPlaylistName, OwnerID: "2222", Public: true}
+			smart := model.Playlist{
+				Name:    model.LikedMusicPlaylistName,
+				OwnerID: "userid",
+				Rules: &criteria.Criteria{Expression: criteria.All{
+					criteria.Contains{"title": "love"},
+				}},
+			}
+			for _, playlist := range []*model.Playlist{&foreign, &smart} {
+				Expect(repo.Put(playlist)).To(Succeed())
+				DeferCleanup(func(id string) func() {
+					return func() { _ = repo.Delete(id) }
+				}(playlist.ID))
+			}
+
+			ordered, err := repo.GetAll(model.QueryOptions{Sort: likedSongsFirstSort, Order: "ASC"})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ordered[0].ID).To(Equal(plsBest.ID))
+			Expect(ordered[0].ID).ToNot(Equal(foreign.ID))
+			Expect(ordered[0].ID).ToNot(Equal(smart.ID))
 		})
 	})
 

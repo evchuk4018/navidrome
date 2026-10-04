@@ -38,8 +38,14 @@ import { AlbumLinkField } from './AlbumLinkField'
 import { SongBulkActions, QualityInfo, useSelectedFields } from '../common'
 import config from '../config'
 import ExpandInfoDialog from '../dialogs/ExpandInfoDialog'
+import {
+  pinkPageStyles,
+  PinkPageTheme,
+  sidebarColors,
+} from '../common/pinkPageStyles'
 
-const useStyles = makeStyles({
+const useStyles = makeStyles((theme) => ({
+  ...pinkPageStyles(theme),
   contextHeader: {
     marginLeft: '3px',
     marginTop: '-2px',
@@ -49,23 +55,65 @@ const useStyles = makeStyles({
     '&:hover': {
       '& $contextMenu': {
         visibility: 'visible',
+        opacity: 1,
+        pointerEvents: 'auto',
       },
       '& $ratingField': {
         visibility: 'visible',
+        opacity: 1,
+        pointerEvents: 'auto',
+      },
+    },
+    '&:focus-within': {
+      '& $contextMenu, & $ratingField': {
+        visibility: 'visible',
+        opacity: 1,
+        pointerEvents: 'auto',
+      },
+    },
+    '@media (any-pointer: coarse), (max-width: 600px)': {
+      '& $contextMenu, & $ratingField': {
+        visibility: 'visible',
+        opacity: 1,
+        pointerEvents: 'auto',
       },
     },
   },
   contextMenu: {
-    visibility: 'hidden',
+    visibility: 'visible',
+    opacity: 0,
+    pointerEvents: 'none',
   },
   ratingField: {
-    visibility: 'hidden',
+    visibility: 'visible',
+    opacity: 0,
+    pointerEvents: 'none',
   },
   chip: {
     margin: 0,
     height: '24px',
   },
-})
+  simpleList: {
+    padding: 0,
+    '& .MuiListItem-root': {
+      marginBottom: theme.spacing(1),
+      border: `1px solid ${sidebarColors.divider}`,
+      borderRadius: 14,
+      backgroundColor: '#171017',
+      color: sidebarColors.text,
+      '&:hover, &:focus-visible': {
+        backgroundColor: `${sidebarColors.selection} !important`,
+      },
+      '&:focus-visible': {
+        outline: `2px solid ${sidebarColors.accent}`,
+        outlineOffset: -2,
+      },
+    },
+  },
+  grid: {
+    minWidth: 0,
+  },
+}))
 
 const SongFilter = (props) => {
   const classes = useStyles()
@@ -209,9 +257,10 @@ const SongList = (props) => {
   })
 
   return (
-    <>
+    <PinkPageTheme>
       <List
         {...props}
+        className={classes.root}
         sort={{ field: 'title', order: 'ASC' }}
         exporter={false}
         bulkActionButtons={<SongBulkActions />}
@@ -224,19 +273,26 @@ const SongList = (props) => {
         )}
       >
         {isXsmall ? (
-          <SongSimpleList />
+          <SongSimpleList showArtwork modern className={classes.simpleList} />
         ) : (
           <SongDatagrid
             rowClick={handleRowClick}
             contextAlwaysVisible={!isDesktop}
+            scrollable
+            className={classes.grid}
             classes={{ row: classes.row }}
           >
-            <SongTitleField source="title" showTrackNumbers={false} />
+            <SongTitleField
+              source="title"
+              showTrackNumbers={false}
+              showArtwork
+            />
             {columns}
             <SongContextMenu
               source={'starred_at'}
               sortByOrder={'DESC'}
               sortable={config.enableFavourites}
+              modern
               className={classes.contextMenu}
               label={
                 config.enableFavourites && (
@@ -251,7 +307,7 @@ const SongList = (props) => {
         )}
       </List>
       <ExpandInfoDialog content={<SongInfo />} />
-    </>
+    </PinkPageTheme>
   )
 }
 

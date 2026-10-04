@@ -10,7 +10,10 @@ import (
 	"github.com/navidrome/navidrome/model/request"
 )
 
-const LikedMusicPlaylistName = "liked music"
+// LikedMusicPlaylistName remains available from the playlists package for
+// callers that work with the synchronization service. The canonical value is
+// owned by the model so persistence and core use the same identity.
+const LikedMusicPlaylistName = model.LikedMusicPlaylistName
 
 // SyncLikedMusic keeps the current user's automatic liked-music playlist in sync with
 // a song's starred annotation. The caller should provide the datastore from its active

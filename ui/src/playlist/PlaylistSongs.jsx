@@ -34,20 +34,31 @@ import { playTracks } from '../actions'
 import PlaylistSongBulkActions from './PlaylistSongBulkActions'
 import ExpandInfoDialog from '../dialogs/ExpandInfoDialog'
 import config from '../config'
+import { sidebarColors } from '../common/pinkPageStyles'
 
 const useStyles = makeStyles(
   (theme) => ({
     root: {},
     main: {
       display: 'flex',
+      minWidth: 0,
     },
     content: {
       marginTop: 0,
       transition: theme.transitions.create('margin-top'),
       position: 'relative',
       flex: '1 1 auto',
+      minWidth: 0,
+      overflow: 'hidden',
+      backgroundColor: '#171017',
+      backgroundImage: 'none',
+      border: `1px solid ${sidebarColors.divider}`,
+      borderRadius: 16,
+      color: sidebarColors.text,
+      boxShadow: '0 12px 32px rgba(0, 0, 0, .2)',
       [theme.breakpoints.down('xs')]: {
         boxShadow: 'none',
+        borderRadius: 12,
       },
     },
     bulkActionsDisplayed: {
@@ -63,25 +74,48 @@ const useStyles = makeStyles(
     noResults: { padding: 20 },
     toolbar: {
       justifyContent: 'flex-start',
+      flexWrap: 'wrap',
     },
     row: {
       '&:hover': {
         '& $contextMenu': {
           visibility: 'visible',
+          opacity: 1,
+          pointerEvents: 'auto',
         },
         '& $ratingField': {
           visibility: 'visible',
+          opacity: 1,
+          pointerEvents: 'auto',
+        },
+      },
+      '&:focus-within': {
+        '& $contextMenu, & $ratingField': {
+          visibility: 'visible',
+          opacity: 1,
+          pointerEvents: 'auto',
+        },
+      },
+      '@media (any-pointer: coarse), (max-width: 600px)': {
+        '& $contextMenu, & $ratingField': {
+          visibility: 'visible',
+          opacity: 1,
+          pointerEvents: 'auto',
         },
       },
     },
     contextMenu: {
-      visibility: (props) => (props.isDesktop ? 'hidden' : 'visible'),
+      visibility: 'visible',
+      opacity: (props) => (props.isDesktop ? 0 : 1),
+      pointerEvents: (props) => (props.isDesktop ? 'none' : 'auto'),
     },
     ratingField: {
-      visibility: 'hidden',
+      visibility: 'visible',
+      opacity: 0,
+      pointerEvents: 'none',
     },
   }),
-  { name: 'RaList' },
+  { name: 'NDPlaylistSongs' },
 )
 
 const ReorderableList = ({ readOnly, children, ...rest }) => {
@@ -148,7 +182,9 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
   const toggleableFields = useMemo(() => {
     return {
       trackNumber: isDesktop && <TextField source="id" label={'#'} />,
-      title: <SongTitleField source="title" showTrackNumbers={false} />,
+      title: (
+        <SongTitleField source="title" showTrackNumbers={false} showArtwork />
+      ),
       album: isDesktop && <AlbumLinkField source="album" />,
       artist: isDesktop && <ArtistLinkField source="artist" />,
       albumArtist: isDesktop && <ArtistLinkField source="albumArtist" />,
@@ -232,12 +268,14 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
               {...listContext}
               hasBulkActions={!readOnly}
               contextAlwaysVisible={!isDesktop}
+              scrollable
               classes={{ row: classes.row }}
             >
               {columns}
               <SongContextMenu
                 onAddToPlaylist={onAddToPlaylist}
                 showLove={true}
+                modern
                 className={classes.contextMenu}
               />
             </SongDatagrid>

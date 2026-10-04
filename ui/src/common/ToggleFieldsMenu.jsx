@@ -9,6 +9,7 @@ import Checkbox from '@material-ui/core/Checkbox'
 import { useDispatch, useSelector } from 'react-redux'
 import { useTranslate } from 'react-admin'
 import { setToggleableFields } from '../actions'
+import { sidebarColors } from '../layout/sidebarStyles'
 
 const useStyles = makeStyles({
   menuIcon: {
@@ -25,12 +26,29 @@ const useStyles = makeStyles({
   title: {
     margin: '1rem',
   },
+  modernMenu: {
+    width: '24ch',
+    color: `${sidebarColors.text} !important`,
+    backgroundColor: '#171017',
+    border: `1px solid ${sidebarColors.divider}`,
+    borderRadius: 12,
+  },
+  modernMenuItem: {
+    color: `${sidebarColors.text} !important`,
+    '&:hover, &.Mui-selected': {
+      backgroundColor: `${sidebarColors.selection} !important`,
+    },
+  },
+  modernTitle: {
+    color: `${sidebarColors.secondary} !important`,
+  },
 })
 
 export const ToggleFieldsMenu = ({
   resource,
   topbarComponent: TopBarComponent,
   hideColumns,
+  modern,
 }) => {
   const [anchorEl, setAnchorEl] = useState(null)
   const dispatch = useDispatch()
@@ -65,7 +83,7 @@ export const ToggleFieldsMenu = ({
   return (
     <div className={classes.menuIcon}>
       <IconButton
-        aria-label="more"
+        aria-label={translate('ra.action.open_menu')}
         aria-controls="long-menu"
         aria-haspopup="true"
         onClick={handleOpen}
@@ -79,19 +97,25 @@ export const ToggleFieldsMenu = ({
         open={open}
         onClose={handleClose}
         classes={{
-          paper: classes.menu,
+          paper: modern ? classes.modernMenu : classes.menu,
         }}
       >
         {TopBarComponent && <TopBarComponent />}
         {!hideColumns && toggleableColumns ? (
           <div>
-            <Typography className={classes.title}>
+            <Typography
+              className={modern ? classes.modernTitle : classes.title}
+            >
               {translate('ra.toggleFieldsMenu.columnsToDisplay')}
             </Typography>
             <div className={classes.columns}>
               {Object.entries(toggleableColumns).map(([key, val]) =>
                 !omittedColumns.includes(key) ? (
-                  <MenuItem key={key} onClick={() => handleClick(key)}>
+                  <MenuItem
+                    key={key}
+                    className={modern ? classes.modernMenuItem : undefined}
+                    onClick={() => handleClick(key)}
+                  >
                     <Checkbox checked={val} />
                     {translate(`resources.${resource}.fields.${key}`)}
                   </MenuItem>
@@ -109,4 +133,5 @@ ToggleFieldsMenu.propTypes = {
   resource: PropTypes.string.isRequired,
   topbarComponent: PropTypes.elementType,
   hideColumns: PropTypes.bool,
+  modern: PropTypes.bool,
 }

@@ -17,11 +17,13 @@ import {
   getStoredPerPage,
   useResourceRefresh,
 } from '../common'
+import { pinkPageStyles, PinkPageTheme } from '../common/pinkPageStyles'
 
 const playlistTrackPerPageOptions = [100, 250, 500]
 
 const useStyles = makeStyles(
   (theme) => ({
+    ...pinkPageStyles(theme),
     playlistActions: {
       width: '100%',
     },
@@ -38,41 +40,43 @@ const PlaylistShowLayout = (props) => {
   useResourceRefresh('playlistTrack', 'song')
 
   return (
-    <>
-      {record && <RaTitle title={<Title subTitle={record.name} />} />}
-      {record && <PlaylistDetails {...context} />}
-      {record && (
-        <ReferenceManyField
-          {...context}
-          addLabel={false}
-          reference="playlistTrack"
-          target="playlist_id"
-          sort={{ field: 'id', order: 'ASC' }}
-          perPage={getStoredPerPage(
-            'playlistTrack',
-            playlistTrackPerPageOptions,
-          )}
-          filter={{ playlist_id: props.id }}
-        >
-          <PlaylistSongs
-            {...props}
-            readOnly={!canChangeTracks(record)}
-            title={<Title subTitle={record.name} />}
-            actions={
-              <PlaylistActions
-                className={classes.playlistActions}
-                record={record}
-              />
-            }
-            resource={'playlistTrack'}
-            exporter={false}
-            pagination={
-              <Pagination rowsPerPageOptions={playlistTrackPerPageOptions} />
-            }
-          />
-        </ReferenceManyField>
-      )}
-    </>
+    <PinkPageTheme>
+      <div className={classes.root}>
+        {record && <RaTitle title={<Title subTitle={record.name} />} />}
+        {record && <PlaylistDetails {...context} />}
+        {record && (
+          <ReferenceManyField
+            {...context}
+            addLabel={false}
+            reference="playlistTrack"
+            target="playlist_id"
+            sort={{ field: 'id', order: 'ASC' }}
+            perPage={getStoredPerPage(
+              'playlistTrack',
+              playlistTrackPerPageOptions,
+            )}
+            filter={{ playlist_id: props.id }}
+          >
+            <PlaylistSongs
+              {...props}
+              readOnly={!canChangeTracks(record)}
+              title={<Title subTitle={record.name} />}
+              actions={
+                <PlaylistActions
+                  className={classes.playlistActions}
+                  record={record}
+                />
+              }
+              resource={'playlistTrack'}
+              exporter={false}
+              pagination={
+                <Pagination rowsPerPageOptions={playlistTrackPerPageOptions} />
+              }
+            />
+          </ReferenceManyField>
+        )}
+      </div>
+    </PinkPageTheme>
   )
 }
 

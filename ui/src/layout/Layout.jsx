@@ -36,6 +36,12 @@ const Layout = (props) => {
   const compact = useMediaQuery(COMPACT_NAVIGATION_QUERY, { noSsr: true })
   const { pathname } = useLocation()
   const isDiscoveryPage = pathname === '/quick-pick' || pathname === '/search'
+  const isLibraryPage =
+    pathname === '/song' ||
+    pathname.startsWith('/song/') ||
+    pathname === '/playlist' ||
+    pathname.startsWith('/playlist/')
+  const isPinkPage = isDiscoveryPage || isLibraryPage
   const queue = useSelector((state) => state.player?.queue)
   const hasPlayer = (queue?.length || 0) > 0
   const classes = useStyles({ addPadding: hasPlayer, compact })
@@ -61,12 +67,12 @@ const Layout = (props) => {
       },
       overrides: {
         ...currentTheme.overrides,
-        ...((isDiscoveryPage || compact) && {
+        ...((isPinkPage || compact) && {
           RaLayout: {
             ...existingLayout,
             root: {
               ...existingLayout.root,
-              ...(isDiscoveryPage && {
+              ...(isPinkPage && {
                 background: `${sidebarColors.background} !important`,
                 color: sidebarColors.text,
               }),
@@ -74,14 +80,14 @@ const Layout = (props) => {
             },
             contentWithSidebar: {
               ...existingLayout.contentWithSidebar,
-              ...(isDiscoveryPage && {
+              ...(isPinkPage && {
                 background: `${sidebarColors.background} !important`,
               }),
               gap: 0,
             },
             content: {
               ...existingLayout.content,
-              ...(isDiscoveryPage && {
+              ...(isPinkPage && {
                 background: `${sidebarColors.background} !important`,
                 padding: '0 !important',
                 borderRadius: 0,
@@ -132,7 +138,7 @@ const Layout = (props) => {
         },
       },
     }
-  }, [currentTheme, hasPlayer, isDiscoveryPage, compact])
+  }, [currentTheme, hasPlayer, isPinkPage, compact])
 
   const keyHandlers = {
     TOGGLE_MENU: useCallback(() => {

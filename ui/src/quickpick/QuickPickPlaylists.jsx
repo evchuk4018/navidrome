@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button,
   CircularProgress,
@@ -9,6 +9,7 @@ import { useDataProvider, useLocale, useTranslate } from 'react-admin'
 import { Link } from 'react-router-dom'
 import MusicNoteOutlinedIcon from '@material-ui/icons/MusicNoteOutlined'
 import { Artwork } from '../common/Artwork'
+import { sortPlaylists } from '../common/playlistOrder'
 import { sidebarColors } from '../layout/sidebarStyles'
 import {
   getQuickPickCacheEntry,
@@ -110,6 +111,17 @@ const QuickPickPlaylists = () => {
   const translate = useTranslate()
   const dataProvider = useDataProvider()
   const identity = userId()
+
+  const orderOwnedPlaylists = useCallback(
+    (records) =>
+      sortPlaylists(
+        records.filter((playlist) => playlist.ownerId === identity),
+        locale,
+        identity,
+      ),
+    [identity, locale],
+  )
+
   const [playlistState, setPlaylistState] = useState(() =>
     initialPlaylistState(identity),
   )
@@ -154,14 +166,7 @@ const QuickPickPlaylists = () => {
           const records = Array.isArray(result?.data)
             ? result.data
             : Object.values(result?.data || {})
-          const collator = new Intl.Collator(locale, { sensitivity: 'base' })
-          return records
-            .filter((playlist) => playlist.ownerId === identity)
-            .sort(
-              (a, b) =>
-                collator.compare(a.name, b.name) ||
-                String(a.id).localeCompare(String(b.id)),
-            )
+          return orderOwnedPlaylists(records)
         })
 
     loadQuickPickSection(identity, 'playlists', load, { retry })
@@ -187,7 +192,7 @@ const QuickPickPlaylists = () => {
     return () => {
       alive = false
     }
-  }, [dataProvider, identity, locale, retryVersion])
+  }, [dataProvider, identity, locale, orderOwnedPlaylists, retryVersion])
 
   if (!identity) return null
 

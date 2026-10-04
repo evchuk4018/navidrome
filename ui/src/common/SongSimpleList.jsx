@@ -11,6 +11,7 @@ import { DurationField, SongContextMenu, RatingField } from './index'
 import { setTrack } from '../actions'
 import { useDispatch } from 'react-redux'
 import config from '../config'
+import { Artwork } from './Artwork'
 
 const useStyles = makeStyles(
   {
@@ -23,7 +24,8 @@ const useStyles = makeStyles(
     },
     title: {
       paddingRight: '10px',
-      width: '80%',
+      width: '100%',
+      minWidth: 0,
     },
     secondary: {
       marginTop: '-3px',
@@ -46,6 +48,12 @@ const useStyles = makeStyles(
     rightIcon: {
       top: '26px',
     },
+    artwork: {
+      width: '48px',
+      height: '48px',
+      borderRadius: '7px',
+      backgroundColor: '#242424',
+    },
   },
   { name: 'RaSongSimpleList' },
 )
@@ -60,6 +68,8 @@ export const SongSimpleList = ({
   loading,
   onToggleItem,
   selectedIds,
+  showArtwork,
+  modern,
   total,
   ...rest
 }) => {
@@ -73,6 +83,17 @@ export const SongSimpleList = ({
             data[id] && (
               <span key={id} onClick={() => dispatch(setTrack(data[id]))}>
                 <ListItem className={classes.listItem} button={true}>
+                  {showArtwork && (
+                    <ListItemIcon>
+                      <Artwork
+                        record={data[id]}
+                        size={96}
+                        square
+                        className={classes.artwork}
+                        title=""
+                      />
+                    </ListItemIcon>
+                  )}
                   <ListItemText
                     primary={
                       <div className={classes.title}>{data[id].title}</div>
@@ -103,7 +124,11 @@ export const SongSimpleList = ({
                   />
                   <ListItemSecondaryAction className={classes.rightIcon}>
                     <ListItemIcon>
-                      <SongContextMenu record={data[id]} visible={true} />
+                      <SongContextMenu
+                        record={data[id]}
+                        visible={true}
+                        modern={modern}
+                      />
                     </ListItemIcon>
                   </ListItemSecondaryAction>
                 </ListItem>
@@ -124,9 +149,12 @@ SongSimpleList.propTypes = {
   ids: PropTypes.array,
   onToggleItem: PropTypes.func,
   selectedIds: PropTypes.arrayOf(PropTypes.any).isRequired,
+  showArtwork: PropTypes.bool,
+  modern: PropTypes.bool,
 }
 
 SongSimpleList.defaultProps = {
   hasBulkActions: false,
   selectedIds: [],
+  showArtwork: false,
 }

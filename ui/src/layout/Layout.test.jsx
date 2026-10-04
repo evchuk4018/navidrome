@@ -153,7 +153,9 @@ describe('compact navigation layout', () => {
     act(() => resize(960))
     expect(screen.getByTestId('sidebar')).toBeInTheDocument()
     expect(screen.queryByTestId('bottom-navigation')).not.toBeInTheDocument()
-    expect(lastTheme().overrides.RaLayout).toBe(mocks.theme.overrides?.RaLayout)
+    expect(lastTheme().overrides.RaLayout.root.background).toBe(
+      '#0d0d0d !important',
+    )
     act(() => mocks.handlers.TOGGLE_MENU())
     expect(mocks.dispatch).toHaveBeenCalledOnce()
     act(() => resize(390))
@@ -247,9 +249,10 @@ describe('Quick Pick layout integration', () => {
       expect(theme.palette).toBe(selectedTheme.palette)
       expect(theme.overrides.RaAppBar).toBe(selectedTheme.overrides?.RaAppBar)
       act(() => history.push('/playlist/pl-1/show'))
-      expect(lastTheme().overrides.RaLayout).toBe(
-        selectedTheme.overrides?.RaLayout,
+      expect(lastTheme().overrides.RaLayout.root.background).toBe(
+        '#0d0d0d !important',
       )
+      expect(lastTheme().palette).toBe(selectedTheme.palette)
     },
   )
 
@@ -312,9 +315,15 @@ describe('Search layout integration', () => {
         '/playlist/pl-1/show',
       ]) {
         act(() => history.push(path))
-        expect(lastTheme().overrides.RaLayout).toBe(
-          selectedTheme.overrides?.RaLayout,
-        )
+        if (path.startsWith('/playlist')) {
+          expect(lastTheme().overrides.RaLayout.root.background).toBe(
+            '#0d0d0d !important',
+          )
+        } else {
+          expect(lastTheme().overrides.RaLayout).toBe(
+            selectedTheme.overrides?.RaLayout,
+          )
+        }
         expect(lastTheme().palette).toBe(selectedTheme.palette)
       }
     },
@@ -363,6 +372,73 @@ describe('Search layout integration', () => {
       } else {
         expect(restored).toBe('0px')
       }
+    },
+  )
+})
+
+describe('Songs and playlist layout integration', () => {
+  it.each(Object.entries(themes))(
+    'scopes the pink page surface to Songs and Playlists in %s',
+    (name, selectedTheme) => {
+      mocks.theme = selectedTheme
+      const history = createMemoryHistory({ initialEntries: ['/song'] })
+      renderLayout([], history)
+
+      const expectPinkSurface = () => {
+        expect(lastTheme().overrides.RaLayout.root.background).toBe(
+          '#0d0d0d !important',
+        )
+        expect(lastTheme().overrides.RaLayout.content.padding).toBe(
+          '0 !important',
+        )
+        expect(lastTheme().palette).toBe(selectedTheme.palette)
+        expect(lastTheme().overrides.RaAppBar).toBe(
+          selectedTheme.overrides?.RaAppBar,
+        )
+      }
+
+      expectPinkSurface()
+      for (const path of [
+        '/playlist',
+        '/playlist/create',
+        '/playlist/pl-1/edit',
+        '/playlist/pl-1/show',
+      ]) {
+        act(() => history.push(path))
+        expectPinkSurface()
+      }
+
+      act(() => history.push('/artist'))
+      expect(lastTheme().overrides.RaLayout).toBe(
+        selectedTheme.overrides?.RaLayout,
+      )
+      expect(lastTheme().palette).toBe(selectedTheme.palette)
+    },
+  )
+
+  it.each([1024, 390])(
+    'keeps the Songs route responsive at %spx while retaining the pink surface',
+    (width) => {
+      installMatchMedia(width)
+      const history = createMemoryHistory({ initialEntries: ['/song'] })
+      const store = renderLayout([], history)
+      expect(lastTheme().overrides.RaLayout.root.background).toBe(
+        '#0d0d0d !important',
+      )
+      act(
+        () =>
+          void store.dispatch({
+            type: 'TEST/QUEUE',
+            queue: [{ id: 'song-1' }],
+          }),
+      )
+      const node = document.createElement('div')
+      node.className = mocks.layout.mock.lastCall[0].className
+      document.body.appendChild(node)
+      const padding = getComputedStyle(node).paddingBottom
+      expect(padding).toContain(width <= 959 ? '144px' : '80px')
+      expect(padding).toContain('safe-area-inset-bottom')
+      node.remove()
     },
   )
 })
