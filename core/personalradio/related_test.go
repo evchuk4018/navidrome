@@ -2,6 +2,7 @@ package personalradio
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/navidrome/navidrome/core/agents"
@@ -77,7 +78,7 @@ func TestRelatedRadioUsesInstantMixSongsAndIgnoresGenericGenres(t *testing.T) {
 }
 
 func TestRelatedRadioIgnoresVideoCategoriesButKeepsRealGenres(t *testing.T) {
-	for _, category := range []string{"Music", "People & Blogs", "Entertainment", "Gaming", "Travel & Events"} {
+	for _, category := range []string{"Music", "People & Blogs", "Entertainment", "Gaming", "Travel & Events", "How to & Style", "Film & Animation"} {
 		seed := &model.MediaFile{ID: "seed", Artist: "Demi Lovato", Genres: model.Genres{{Name: category}}}
 		candidate := model.MediaFile{ID: "candidate", Artist: "Radiohead", Genres: model.Genres{{Name: category}}}
 		if tier := relatedLocalTier(seed, candidate); tier != 0 {
@@ -227,6 +228,125 @@ func TestRelatedRadioRepeatedRefillsReuseRelatedPool(t *testing.T) {
 			repo.items[i].Status = model.RadioItemPlayed
 			repo.items[i].PlaybackOutcome = model.RadioPlaybackCompleted
 		}
+	}
+}
+
+func TestRelatedRadioFillsBufferAcrossRefillsAndReplaysEligibleRapFamily(t *testing.T) {
+	files := model.MediaFiles{
+		{ID: "seed", Title: "90mh", Artist: "TREFUEGO", Genre: "Chill Rap"},
+		{ID: "close-1", Title: "miss me", Artist: "TREFUEGO", Genre: "Hip-Hop"},
+		{ID: "close-2", Title: "another close song", Artist: "TREFUEGO", Genre: "Rap"},
+	}
+	genres := []string{"Trap", "Pop Rap", "Emo Rap", "Hip hop", "Rap", "Chill Rap", "Trap", "Pop Rap", "Emo Rap", "Hip-Hop", "Trap", "Pop Rap", "Emo Rap", "Hip hop", "Rap", "Chill Rap", "Trap", "Pop Rap", "Emo Rap", "Hip-Hop"}
+	for i, genre := range genres {
+		files = append(files, model.MediaFile{
+			ID: fmt.Sprintf("family-%02d", i+1), Title: fmt.Sprintf("Family %02d", i+1),
+			Artist: fmt.Sprintf("Rap Artist %02d", i+1), Genre: genre,
+		})
+	}
+	files = append(files, model.MediaFile{ID: "unrelated", Title: "Rock Track", Artist: "Rock Artist", Genre: "Rock"})
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(files)
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	repo := &fakePersonalRadioRepository{items: []model.PersonalRadioItem{{
+		ID: "seed-item", SessionID: "session", Position: 0, ItemType: model.RadioItemSeed,
+		Status: model.RadioItemReady, MediaFileID: "seed", Song: mediaRepo.Data["seed"],
+	}}}
+	closeFiles := model.MediaFiles{*mediaRepo.Data["close-1"], *mediaRepo.Data["close-2"]}
+	svc := &service{
+		ds: ds, repo: repo, agents: &relatedSimilarityProvider{}, matcher: matcher.New(ds),
+		relatedSongs:   &relatedInstantMixProvider{files: closeFiles},
+		planningStatus: map[string]string{}, planning: map[string]bool{},
+	}
+	session := model.PersonalRadioSession{ID: "session", UserID: "user", Mode: model.RadioModeRelated}
+	seed := mediaRepo.Data["seed"]
+	markPlayed := func(start int) {
+		for i := start; i < len(repo.items); i++ {
+			repo.items[i].Status = model.RadioItemPlayed
+			repo.items[i].PlaybackOutcome = model.RadioPlaybackCompleted
+		}
+	}
+
+	if err := svc.planWithContext(context.Background(), session, radioContextFromSeed(seed)); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != 11 {
+		t.Fatalf("first refill queued %d items, want seed plus ten", len(repo.items))
+	}
+	closeFirst := map[string]bool{repo.items[1].MediaFileID: true, repo.items[2].MediaFileID: true}
+	if !closeFirst["close-1"] || !closeFirst["close-2"] {
+		t.Fatalf("first refill did not keep close candidates first: %#v", repo.items[1:3])
+	}
+	for _, item := range repo.items[1:] {
+		if item.MediaFileID == "unrelated" {
+			t.Fatal("unrelated rock track entered first refill")
+		}
+	}
+	markPlayed(1)
+
+	if err := svc.planWithContext(context.Background(), session, radioContextFromSeed(seed)); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != 21 {
+		t.Fatalf("second refill queued %d items, want ten more family tracks", len(repo.items))
+	}
+	for _, item := range repo.items[11:] {
+		if item.MediaFileID == "unrelated" {
+			t.Fatal("unrelated rock track entered second refill")
+		}
+	}
+	markPlayed(11)
+
+	if err := svc.planWithContext(context.Background(), session, radioContextFromSeed(seed)); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != 31 {
+		t.Fatalf("third refill queued %d items, want two fresh tracks plus eight eligible replays", len(repo.items))
+	}
+	for _, item := range repo.items[21:] {
+		if item.MediaFileID == "unrelated" {
+			t.Fatal("unrelated rock track entered third refill")
+		}
+	}
+	freshThird := map[string]bool{}
+	priorIDs := map[string]bool{}
+	for _, item := range repo.items[1:21] {
+		priorIDs[item.MediaFileID] = true
+	}
+	for _, item := range repo.items[21:23] {
+		if priorIDs[item.MediaFileID] {
+			t.Fatalf("third refill did not put fresh tracks before replay: %q", item.MediaFileID)
+		}
+		freshThird[item.MediaFileID] = true
+	}
+	if len(freshThird) != 2 {
+		t.Fatalf("third refill did not begin with two fresh tracks: %#v", repo.items[21:23])
+	}
+	for _, item := range repo.items[23:] {
+		if freshThird[item.MediaFileID] {
+			t.Fatalf("third refill replayed a fresh track: %q", item.MediaFileID)
+		}
+	}
+	markPlayed(21)
+
+	if err := svc.planWithContext(context.Background(), session, radioContextFromSeed(seed)); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != 41 {
+		t.Fatalf("fourth refill queued %d items, want ten eligible replays", len(repo.items))
+	}
+	seen := map[string]bool{}
+	for _, item := range repo.items[31:] {
+		if item.MediaFileID == "unrelated" {
+			t.Fatal("unrelated rock track entered replay refill")
+		}
+		if seen[item.MediaFileID] {
+			t.Fatalf("replay refill duplicated %q", item.MediaFileID)
+		}
+		seen[item.MediaFileID] = true
+	}
+	if len(seen) != 10 {
+		t.Fatalf("replay refill contained %d unique tracks, want ten", len(seen))
 	}
 }
 

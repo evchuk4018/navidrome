@@ -24,11 +24,16 @@ const (
 var uninformativeRelatedGenres = map[string]bool{
 	"music": true, "people and blogs": true, "entertainment": true,
 	"travel and events": true, "gaming": true, "howto and style": true,
+	"how to and style":   true,
 	"film and animation": true, "education": true, "comedy": true,
 	"news and politics": true, "science and technology": true,
 	"sports": true, "autos and vehicles": true, "pets and animals": true,
 	"nonprofits and activism": true, "shows": true, "movies": true,
-	"trailers": true,
+	"trailers": true, "video": true, "youtube": true, "podcast": true,
+	"audio": true, "audiobook": true, "blog": true, "blogs": true,
+	"slowed": true, "slowed reverb": true, "slowed and reverb": true,
+	"sped up": true, "speed up": true, "super slowed": true,
+	"ultra slowed": true,
 }
 
 // YouTube's auto-generated artist channels append " - Topic" to the artist

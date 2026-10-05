@@ -649,15 +649,48 @@ func (s *service) resolveRecordingBySearch(ctx context.Context, job *model.Music
 			continue
 		}
 		if artist == "" || normalizeSearchTitle(song.ArtistName) == artist {
-			return song, nil
+			return s.resolveSearchMatch(ctx, song), nil
 		}
 	}
 	for _, song := range songs {
 		if searchTitleMatch(title, song.Title) {
-			return song, nil
+			return s.resolveSearchMatch(ctx, song), nil
 		}
 	}
 	return model.ExternalTrack{}, model.ErrNotFound
+}
+
+// resolveSearchMatch refreshes only the selected search result through the
+// catalog's canonical recording lookup. Search results are intentionally
+// cheap and may omit typed genre metadata; a failed refresh remains
+// non-fatal, preserving the best metadata returned by the search itself.
+func (s *service) resolveSearchMatch(ctx context.Context, matched model.ExternalTrack) model.ExternalTrack {
+	if strings.TrimSpace(matched.ID) == "" {
+		logMissingSearchGenre(ctx, matched)
+		return matched
+	}
+	resolved, err := s.catalog.Recording(ctx, matched.ID)
+	if err != nil {
+		if strings.TrimSpace(matched.Genre) == "" {
+			logMissingSearchGenre(ctx, matched)
+		} else {
+			log.Warn(ctx, "Music download selected recording lookup failed; using search metadata",
+				"recordingID", matched.ID, "title", matched.Title, "artist", matched.ArtistName, "error", err)
+		}
+		return matched
+	}
+	if strings.TrimSpace(resolved.Genre) != "" {
+		matched.Genre = resolved.Genre
+	}
+	if strings.TrimSpace(matched.Genre) == "" {
+		logMissingSearchGenre(ctx, matched)
+	}
+	return matched
+}
+
+func logMissingSearchGenre(ctx context.Context, track model.ExternalTrack) {
+	log.Warn(ctx, "Music download search result has no supported musical genre metadata",
+		"recordingID", track.ID, "title", track.Title, "artist", track.ArtistName)
 }
 
 func normalizeSearchTitle(value string) string {

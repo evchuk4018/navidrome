@@ -30,6 +30,58 @@ repository or compile Navidrome.
 - `deploy/navidrome-update.service` and `deploy/navidrome-update.timer` provide
   the systemd update job.
 
+## Reviewed genre proposals
+
+`deploy/repair_music_genres.py` accepts source-backed, per-file proposals during
+the read-only discovery pass. The proposal file must use version 1 and include
+the current media-file identity and SHA-256 for every entry:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "media_file_id": "media-file-id",
+      "genres": ["Hip-Hop", "Trap"],
+      "sources": ["https://example.org/track-catalog-entry"],
+      "evidence_note": "The track catalog entry identifies the recording as hip-hop and trap.",
+      "expected": {
+        "path": "Artist/Album/Track.mp3",
+        "title": "Track",
+        "artist": "Artist",
+        "file_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  ]
+}
+```
+
+Run a dry-run with the proposal file and review the generated manifest:
+
+```sh
+python3 deploy/repair_music_genres.py \
+  --dry-run --db /path/to/navidrome.db --music-root /path/to/music \
+  --reviewed-genres reviewed-genres.json --manifest genre-repair-manifest.json
+```
+
+The loader rejects duplicate or unknown media-file IDs, stale title/artist/path
+identity, changed file hashes, video categories, and edit/format labels such as
+`slowed`, `guitar remix`, and `edit audio`. It accepts one or two musical genre
+strings and one or more HTTPS or HTTP source URLs. A reviewed proposal takes
+precedence over automatic artist evidence only for a blank or video-category
+tag; an existing musical genre remains unchanged. Sources, the evidence note,
+and reviewed provenance are copied into the dry-run manifest.
+
+The proposal file is an override map, not an inventory selector. When a run is
+based on a frozen file list, filter the current `load_tracks(...)` snapshot to
+that list before calling `make_manifest(...)`; this keeps automatic evidence
+lookups and candidates inside the intended audit scope.
+
+After reviewing the manifest, use the existing `--apply --yes` workflow. The
+same manifest remains resumable after an interrupted apply, and the existing
+`--rollback --yes` workflow restores its backups. Beets synchronization is
+unchanged because this input affects only dry-run candidate selection.
+
 ## GHCR visibility and authentication
 
 The intended package visibility is public. GitHub Container Registry creates a

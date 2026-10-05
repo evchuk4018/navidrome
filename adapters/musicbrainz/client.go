@@ -32,6 +32,26 @@ const (
 	maxCacheEntries      = 512
 )
 
+var uninformativeMusicBrainzGenres = map[string]struct{}{
+	"music": {}, "people and blogs": {}, "entertainment": {}, "gaming": {},
+	"travel and events": {}, "comedy": {}, "education": {},
+	"film and animation": {}, "howto and style": {}, "how to and style": {},
+	"pets and animals": {}, "news and politics": {}, "science and technology": {},
+	"sports": {}, "autos and vehicles": {}, "nonprofits and activism": {},
+	"shows": {}, "movies": {}, "trailers": {}, "video": {}, "youtube": {},
+	"podcast": {}, "audio": {}, "audiobook": {}, "blog": {}, "blogs": {},
+	"educational": {}, "slowed": {}, "slowed reverb": {}, "slowed and reverb": {},
+	"sped up": {}, "speed up": {}, "super slowed": {}, "ultra slowed": {},
+	"remix": {}, "edit": {}, "edit audio": {}, "guitar remix": {},
+	"cover": {}, "guitar cover": {},
+}
+
+var musicBrainzRenditionGenreLabels = []string{
+	"edit", "edit audio", "guitar remix", "remix", "slowed", "slowed reverb",
+	"slowed + reverb", "slowed and reverb", "sped up", "speed up", "super slowed",
+	"ultra slowed", "cover", "guitar cover",
+}
+
 type httpDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -209,14 +229,14 @@ func (c *Client) Artist(ctx context.Context, artistID string) (model.ExternalArt
 	}
 
 	var artist mbArtist
-	if err := c.get(ctx, "/artist/"+artistID, values("inc", "tags"), &artist); err != nil {
+	if err := c.get(ctx, "/artist/"+artistID, values("inc", "tags genres"), &artist); err != nil {
 		return model.ExternalArtistDetails{}, fmt.Errorf("get artist: %w", err)
 	}
 	params := url.Values{}
 	params.Set("artist", artistID)
 	params.Set("fmt", "json")
 	params.Set("limit", "100")
-	params.Set("inc", "artist-credits tags")
+	params.Set("inc", "artist-credits tags genres")
 	var groups mbReleaseGroupBrowseResponse
 	if err := c.get(ctx, "/release-group", params, &groups); err != nil {
 		return model.ExternalArtistDetails{}, fmt.Errorf("get artist albums: %w", err)
@@ -244,7 +264,7 @@ func (c *Client) Album(ctx context.Context, albumID string) (model.ExternalAlbum
 	}
 
 	var group mbReleaseGroup
-	if err := c.get(ctx, "/release-group/"+albumID, values("inc", "releases artist-credits"), &group); err != nil {
+	if err := c.get(ctx, "/release-group/"+albumID, values("inc", "releases artist-credits genres"), &group); err != nil {
 		return model.ExternalAlbumDetails{}, fmt.Errorf("get album: %w", err)
 	}
 	if len(group.Releases) == 0 {
@@ -256,7 +276,7 @@ func (c *Client) Album(ctx context.Context, albumID string) (model.ExternalAlbum
 
 	releaseID := selectedReleaseID(group.Releases)
 	var release mbRelease
-	if err := c.get(ctx, "/release/"+releaseID, values("inc", "recordings artist-credits"), &release); err != nil {
+	if err := c.get(ctx, "/release/"+releaseID, values("inc", "recordings artist-credits genres"), &release); err != nil {
 		return model.ExternalAlbumDetails{}, fmt.Errorf("get album tracks: %w", err)
 	}
 
@@ -267,10 +287,15 @@ func (c *Client) Album(ctx context.Context, albumID string) (model.ExternalAlbum
 	tracks := make([]model.ExternalTrack, 0)
 	for _, medium := range release.Media {
 		for _, track := range medium.Tracks {
-			external := externalTrack(track.Recording)
+			external := externalRecording(track.Recording)
 			external.AlbumID = group.ID
 			external.AlbumTitle = group.Title
 			external.ArtistName = firstNonEmpty(external.ArtistName, album.ArtistName)
+			primaryArtistID := artistCreditID(track.Recording.ArtistCredit)
+			if strings.TrimSpace(track.Recording.ID) == "" {
+				primaryArtistID = artistCreditID(group.ArtistCredit)
+			}
+			c.resolveTrackGenre(ctx, &external, track.Recording, group.Genres, true, primaryArtistID)
 			external.ArtworkURLs = httpsArtworkURLs(coverArtReleaseURL(release.ID), coverArtURL(group.ID))
 			external.ImageURL = firstArtwork(external.ArtworkURLs)
 			external.ReleaseDate = firstNonEmpty(group.FirstReleaseDate, release.Date)
@@ -289,10 +314,12 @@ func (c *Client) Recording(ctx context.Context, recordingID string) (model.Exter
 		return model.ExternalTrack{}, err
 	}
 	var recording mbRecording
-	if err := c.get(ctx, "/recording/"+recordingID, values("inc", "releases artist-credits tags"), &recording); err != nil {
+	if err := c.get(ctx, "/recording/"+recordingID, values("inc", "releases release-groups artist-credits tags genres"), &recording); err != nil {
 		return model.ExternalTrack{}, fmt.Errorf("get recording: %w", err)
 	}
-	return externalTrack(recording), nil
+	track := externalTrack(recording)
+	c.resolveTrackGenre(ctx, &track, recording, nil, false, artistCreditID(recording.ArtistCredit))
+	return track, nil
 }
 
 // SearchSongs searches the recording catalog and returns the matches ordered
@@ -605,7 +632,7 @@ func recordingQueryValuesWithSeeds(query string, fuzzy bool, seeds []lastfm.Sear
 		}
 	}
 	params := queryValues(strings.Join(clauses, " OR "))
-	params.Set("inc", "tags artist-credits releases isrcs")
+	params.Set("inc", "tags artist-credits releases release-groups isrcs")
 	params.Set("limit", fmt.Sprintf("%d", recordingSearchLimit))
 	return params
 }
@@ -794,6 +821,115 @@ func selectedReleaseID(releases []mbReleaseSummary) string {
 	return ordered[0].ID
 }
 
+// supportedMusicBrainzGenre chooses one stable, positive-vote musical genre.
+// MusicBrainz exposes folksonomy tags separately from its typed genres; only
+// the latter are safe to persist as library metadata. Generic video labels,
+// format markers, and other non-musical tags are deliberately ignored.
+func supportedMusicBrainzGenre(genres []mbGenre) string {
+	candidates := make([]mbGenre, 0, len(genres))
+	for _, genre := range genres {
+		name := strings.TrimSpace(genre.Name)
+		if genre.Count <= 0 || !isSupportedMusicBrainzGenre(name) {
+			continue
+		}
+		candidates = append(candidates, mbGenre{Name: name, Count: genre.Count})
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Count != candidates[j].Count {
+			return candidates[i].Count > candidates[j].Count
+		}
+		left, right := normalizeMusicBrainzGenre(candidates[i].Name), normalizeMusicBrainzGenre(candidates[j].Name)
+		if left != right {
+			return left < right
+		}
+		return candidates[i].Name < candidates[j].Name
+	})
+	return candidates[0].Name
+}
+
+func primaryArtistGenres(credits []mbArtistCredit) string {
+	if len(credits) == 0 {
+		return ""
+	}
+	return supportedMusicBrainzGenre(credits[0].Artist.Genres)
+}
+
+// resolveTrackGenre fills a track's genre from the most specific verified
+// MusicBrainz source available. Release-group genres are fetched separately
+// for recording lookups because the recording response only identifies its
+// releases; it does not reliably embed the selected group's genres. A lookup
+// failure is deliberately non-fatal so downloading and importing the track
+// still succeeds with an empty genre.
+func (c *Client) resolveTrackGenre(ctx context.Context, track *model.ExternalTrack, recording mbRecording, groupGenres []mbGenre, groupResolved bool, primaryArtistID string) {
+	if track == nil || track.Genre != "" {
+		return
+	}
+	if groupResolved {
+		track.Genre = supportedMusicBrainzGenre(groupGenres)
+	} else if track.AlbumID != "" {
+		var group mbReleaseGroup
+		if err := c.get(ctx, "/release-group/"+track.AlbumID, values("inc", "genres"), &group); err != nil {
+			log.Warn(ctx, "MusicBrainz release-group genre lookup failed; continuing with artist fallback",
+				"releaseGroupID", track.AlbumID, "recordingID", recording.ID, err)
+		} else {
+			track.Genre = supportedMusicBrainzGenre(group.Genres)
+		}
+	}
+	if track.Genre == "" {
+		track.Genre = primaryArtistGenres(recording.ArtistCredit)
+	}
+	if track.Genre == "" {
+		if primaryArtistID == "" {
+			primaryArtistID = track.ArtistID
+		}
+		if primaryArtistID != "" {
+			var artist mbArtist
+			if err := c.get(ctx, "/artist/"+primaryArtistID, values("inc", "genres"), &artist); err != nil {
+				log.Warn(ctx, "MusicBrainz artist genre lookup failed; importing without genre",
+					"artistID", primaryArtistID, "recordingID", recording.ID, err)
+			} else {
+				track.Genre = supportedMusicBrainzGenre(artist.Genres)
+			}
+		}
+	}
+	if track.Genre == "" {
+		log.Warn(ctx, "MusicBrainz recording has no supported musical genre metadata",
+			"recordingID", recording.ID, "title", track.Title, "artist", track.ArtistName)
+	}
+}
+
+func isSupportedMusicBrainzGenre(value string) bool {
+	original := strings.ToLower(strings.TrimSpace(value))
+	if original == "" || len(original) > 80 || strings.Contains(original, "http://") || strings.Contains(original, "https://") {
+		return false
+	}
+	normalized := normalizeMusicBrainzGenre(original)
+	if normalized == "" {
+		return false
+	}
+	_, excluded := uninformativeMusicBrainzGenres[normalized]
+	if excluded {
+		return false
+	}
+	padded := " " + normalized + " "
+	for _, label := range musicBrainzRenditionGenreLabels {
+		label = normalizeMusicBrainzGenre(label)
+		if strings.Contains(padded, " "+label+" ") {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeMusicBrainzGenre(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("&", " and ", "+", " and ", "/", " ", "-", " ", "_", " ").Replace(value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
 func externalRecording(recording mbRecording) model.ExternalTrack {
 	return model.ExternalTrack{
 		ID:            recording.ID,
@@ -801,7 +937,7 @@ func externalRecording(recording mbRecording) model.ExternalTrack {
 		ArtistID:      artistCreditID(recording.ArtistCredit),
 		ArtistName:    artistCreditName(recording.ArtistCredit),
 		Duration:      recording.Length / 1000,
-		Genre:         firstTag(recording.Tags),
+		Genre:         supportedMusicBrainzGenre(recording.Genres),
 		ISRCs:         append([]string(nil), recording.ISRCs...),
 		Video:         recording.Video,
 		ProviderScore: float64(recording.Score) / 100,
@@ -815,6 +951,9 @@ func externalTrack(recording mbRecording) model.ExternalTrack {
 	for _, release := range releases {
 		if release.ReleaseGroup.ID == "" {
 			continue
+		}
+		if track.Genre == "" {
+			track.Genre = supportedMusicBrainzGenre(release.ReleaseGroup.Genres)
 		}
 		track.AlbumID = release.ReleaseGroup.ID
 		track.AlbumTitle = firstNonEmpty(release.ReleaseGroup.Title, release.Title)
@@ -965,6 +1104,11 @@ type mbTag struct {
 	Score int    `json:"score"`
 }
 
+type mbGenre struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
 type mbAlias struct {
 	Name string `json:"name"`
 }
@@ -977,6 +1121,7 @@ type mbArtist struct {
 	Disambiguation string    `json:"disambiguation"`
 	Type           string    `json:"type"`
 	Tags           []mbTag   `json:"tags"`
+	Genres         []mbGenre `json:"genres"`
 	Aliases        []mbAlias `json:"aliases"`
 	Score          int       `json:"score"`
 }
@@ -994,6 +1139,7 @@ type mbReleaseGroup struct {
 	ReleaseCount     int                `json:"release-count"`
 	ArtistCredit     []mbArtistCredit   `json:"artist-credit"`
 	Tags             []mbTag            `json:"tags"`
+	Genres           []mbGenre          `json:"genres"`
 	Releases         []mbReleaseSummary `json:"releases"`
 	SecondaryTypes   []string           `json:"secondary-types"`
 	Score            int                `json:"score"`
@@ -1029,6 +1175,7 @@ type mbRecording struct {
 	Length       int                  `json:"length"`
 	ArtistCredit []mbArtistCredit     `json:"artist-credit"`
 	Tags         []mbTag              `json:"tags"`
+	Genres       []mbGenre            `json:"genres"`
 	Releases     []mbRecordingRelease `json:"releases"`
 	ISRCs        []string             `json:"isrcs"`
 	Video        bool                 `json:"video"`

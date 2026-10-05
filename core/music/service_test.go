@@ -14,10 +14,12 @@ import (
 )
 
 type fakeCatalog struct {
-	track      model.ExternalTrack
-	trackErr   error
-	songSearch []model.ExternalTrack
-	search     model.ExternalMusicSearch
+	track          model.ExternalTrack
+	trackErr       error
+	recordingByID  map[string]model.ExternalTrack
+	recordingCalls *[]string
+	songSearch     []model.ExternalTrack
+	search         model.ExternalMusicSearch
 }
 
 func (f fakeCatalog) Search(context.Context, string) (model.ExternalMusicSearch, error) {
@@ -32,7 +34,13 @@ func (f fakeCatalog) Album(context.Context, string) (model.ExternalAlbumDetails,
 	return model.ExternalAlbumDetails{}, nil
 }
 
-func (f fakeCatalog) Recording(context.Context, string) (model.ExternalTrack, error) {
+func (f fakeCatalog) Recording(_ context.Context, recordingID string) (model.ExternalTrack, error) {
+	if f.recordingCalls != nil {
+		*f.recordingCalls = append(*f.recordingCalls, recordingID)
+	}
+	if track, ok := f.recordingByID[recordingID]; ok {
+		return track, nil
+	}
 	if f.trackErr != nil {
 		return model.ExternalTrack{}, f.trackErr
 	}
@@ -287,12 +295,19 @@ func TestProcessSongFallsBackToCatalogSearchWhenRecordingMissing(t *testing.T) {
 	conf.Server.CacheFolder = conf.NewDir(t.TempDir())
 
 	tagger := &fakeTagger{}
+	var recordingCalls []string
 	service := New(
 		fakeCatalog{
-			trackErr: model.ErrNotFound,
+			trackErr:       model.ErrNotFound,
+			recordingCalls: &recordingCalls,
+			recordingByID: map[string]model.ExternalTrack{
+				"recording-resolved": {
+					Genre: "Rock",
+				},
+			},
 			songSearch: []model.ExternalTrack{
 				{ID: "recording-junk", Title: "Unrelated", ArtistName: "Someone Else"},
-				{ID: "recording-resolved", Title: "Song", ArtistName: "Artist", AlbumTitle: "Album"},
+				{ID: "recording-resolved", Title: "Song", ArtistName: "Artist", AlbumTitle: "Album", AlbumID: "album-search", Duration: 201, Year: 2021},
 			},
 		},
 		fakeDownloader{},
@@ -316,6 +331,54 @@ func TestProcessSongFallsBackToCatalogSearchWhenRecordingMissing(t *testing.T) {
 	}
 	if tagger.metadata.ID != "recording-resolved" {
 		t.Fatalf("expected the search result to be tagged, got %#v", tagger.metadata)
+	}
+	if tagger.metadata.Genre != "Rock" {
+		t.Fatalf("expected selected recording lookup metadata to win, got %#v", tagger.metadata)
+	}
+	if tagger.metadata.AlbumID != "album-search" || tagger.metadata.Duration != 201 || tagger.metadata.Year != 2021 {
+		t.Fatalf("expected search metadata to survive partial selected lookup, got %#v", tagger.metadata)
+	}
+	if len(recordingCalls) != 2 || recordingCalls[0] != "recording-gone" || recordingCalls[1] != "recording-resolved" {
+		t.Fatalf("expected only the original and selected recording lookups, got %v", recordingCalls)
+	}
+}
+
+func TestProcessSongSearchFallbackRetainsMetadataWhenSelectedLookupFails(t *testing.T) {
+	old := conf.SnapshotConfig()
+	defer old()
+	conf.Server.CacheFolder = conf.NewDir(t.TempDir())
+
+	tagger := &fakeTagger{}
+	var recordingCalls []string
+	service := New(
+		fakeCatalog{
+			trackErr:       model.ErrNotFound,
+			recordingCalls: &recordingCalls,
+			songSearch: []model.ExternalTrack{
+				{ID: "recording-resolved", Title: "Song", ArtistName: "Artist", AlbumTitle: "Album", Genre: "Hip-Hop"},
+			},
+		},
+		fakeDownloader{},
+		tagger,
+		&fakeJobs{},
+		nil,
+	).(*service)
+	job := &model.MusicDownloadJob{
+		ID:       "job-1",
+		Kind:     model.MusicDownloadSong,
+		SourceID: "recording-gone",
+		Title:    "Song",
+		Artist:   "Artist",
+		Status:   model.MusicDownloadRunning,
+	}
+	if err := service.processDownload(context.Background(), job); err != nil {
+		t.Fatalf("processDownload returned error: %v", err)
+	}
+	if tagger.metadata.Genre != "Hip-Hop" {
+		t.Fatalf("expected search metadata to survive selected lookup failure, got %#v", tagger.metadata)
+	}
+	if len(recordingCalls) != 2 || recordingCalls[0] != "recording-gone" || recordingCalls[1] != "recording-resolved" {
+		t.Fatalf("expected selected lookup after the original failure, got %v", recordingCalls)
 	}
 }
 

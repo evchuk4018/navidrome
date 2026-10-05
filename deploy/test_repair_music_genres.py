@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("repair_music_genres.py")
@@ -23,6 +24,47 @@ SPEC = importlib.util.spec_from_file_location("repair_music_genres", SCRIPT)
 assert SPEC and SPEC.loader
 repair = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(repair)
+
+
+def _id3v2_end(data: bytes) -> int:
+    if len(data) < 10 or data[:3] != b"ID3":
+        return 0
+    size = 0
+    for byte in data[6:10]:
+        size = (size << 7) | (byte & 0x7F)
+    return 10 + size + (10 if data[5] & 0x10 else 0)
+
+
+def _id3v1_footer(data: bytes) -> bytes:
+    if len(data) >= 128 and data[-128:-125] == b"TAG":
+        return data[-128:]
+    return b""
+
+
+def _mpeg_payload(data: bytes) -> bytes:
+    footer = _id3v1_footer(data)
+    end = _id3v2_end(data)
+    return data[end:-128] if footer else data[end:]
+
+
+def _id3v1_field(value: str) -> bytes:
+    return value.encode("latin-1", "replace")[:30].ljust(30, b"\x00")
+
+
+def _append_id3v1_footer(path: Path) -> None:
+    footer = b"".join(
+        (
+            b"TAG",
+            _id3v1_field("Historical V1 Title"),
+            _id3v1_field("Historical V1 Artist"),
+            _id3v1_field("Historical V1 Album"),
+            b"1999",
+            _id3v1_field("Historical V1 Comment"),
+            bytes((255,)),
+        )
+    )
+    with path.open("ab") as handle:
+        handle.write(footer)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required for the audio fixture")
@@ -157,6 +199,43 @@ class GenreRepairFixtureTest(unittest.TestCase):
         self.assertEqual(repair.file_state(self.path)["native_tags_sha256"], before["native_tags_sha256"])
         self.assertEqual(str(ID3(self.path).get("TCON")), "Music")
 
+    def test_replace_preserves_id3v1_history_with_long_unicode_v2_tags(self) -> None:
+        from mutagen.id3 import COMM, ID3, TALB, TIT2, TPE1
+
+        tags = ID3(self.path)
+        tags.delall("TIT2")
+        tags.delall("TPE1")
+        tags.delall("TALB")
+        tags.delall("COMM")
+        tags.add(
+            TIT2(
+                encoding=3,
+                text="A deliberately long Unicode v2 title — これは新しいタイトルです",
+            )
+        )
+        tags.add(
+            TPE1(
+                encoding=3,
+                text="A deliberately long Unicode v2 artist — артист исполнителя",
+            )
+        )
+        tags.add(TALB(encoding=3, text="A long v2 album — アルバム"))
+        tags.add(COMM(encoding=3, lang="eng", desc="", text="A new v2 comment — комментарий"))
+        tags.save(self.path)
+        _append_id3v1_footer(self.path)
+
+        before_bytes = self.path.read_bytes()
+        before_footer = _id3v1_footer(before_bytes)
+        self.assertTrue(before_footer)
+        repair.replace_genres(self.path, ["Rock"])
+        after_bytes = self.path.read_bytes()
+        after_footer = _id3v1_footer(after_bytes)
+        self.assertTrue(after_footer)
+        self.assertEqual(_mpeg_payload(before_bytes), _mpeg_payload(after_bytes))
+        self.assertEqual(before_footer[:127], after_footer[:127])
+        self.assertEqual([str(frame) for frame in ID3(self.path).getall("TCON")], ["Rock"])
+        self.assertEqual(after_footer[127], 17)
+
     def test_failed_apply_rollback_preserves_later_user_edit(self) -> None:
         from mutagen.id3 import ID3, TCON
 
@@ -241,8 +320,277 @@ class GenreRepairFixtureTest(unittest.TestCase):
             repair.rollback_manifest(manifest_path, self.db, True, False)
         self.assertEqual(repair.sha256_file(self.path), edited_hash)
 
+    def test_interrupted_apply_resumes_and_rolls_back(self) -> None:
+        second = self.root / "Probe Artist" / "resume.mp3"
+        shutil.copy2(self.path, second)
+        with sqlite3.connect(self.db) as connection:
+            connection.execute(
+                "INSERT INTO media_file VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "media-resume",
+                    "library-1",
+                    "Probe Artist/resume.mp3",
+                    "Probe Song",
+                    "Probe Artist",
+                    "recording-resume",
+                    0,
+                    json.dumps({"genre": [{"id": "genre-music", "value": "Music"}]}),
+                ),
+            )
+            connection.commit()
+
+        before_first = repair.file_state(self.path)
+        before_second = repair.file_state(second)
+
+        def candidate(
+            media_id: str, path: Path, before: dict[str, object], recording_id: str
+        ) -> dict[str, object]:
+            return {
+                "media_file_id": media_id,
+                "library_id": "library-1",
+                "library_path": str(self.root),
+                "relative_path": str(path.relative_to(self.root)),
+                "path": str(path.resolve()),
+                "title": "Probe Song",
+                "artist": "Probe Artist",
+                "mbz_recording_id": recording_id,
+                "db_genres": ["Music"],
+                "file_genres": ["Music"],
+                "genre_class": "video-category-only",
+                "status": "candidate",
+                "replacement_genres": ["pop"],
+                "pre_file": before,
+            }
+
+        manifest_path = Path(self.temp.name) / "resume-manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "version": repair.MANIFEST_VERSION,
+                    "mode": "dry-run",
+                    "db_path": str(self.db.resolve()),
+                    "music_root": "",
+                    "entries": [
+                        candidate("media-1", self.path, before_first, "recording-1"),
+                        candidate("media-resume", second, before_second, "recording-resume"),
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        backup_dir = Path(self.temp.name) / "resume-backup"
+        real_replace = repair.replace_genres
+        calls = 0
+
+        def interrupt_on_second(path: Path, replacement: list[str]) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("simulated interruption")
+            return real_replace(path, replacement)
+
+        with mock.patch.object(repair, "replace_genres", side_effect=interrupt_on_second):
+            with self.assertRaises(RuntimeError):
+                repair.apply_manifest(manifest_path, self.db, backup_dir, True)
+
+        failed = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(failed["apply"]["status"], "failed")
+        self.assertTrue(failed["entries"][0].get("post_file"))
+        self.assertFalse(failed["entries"][1].get("post_file"))
+
+        repair.apply_manifest(manifest_path, self.db, backup_dir, True)
+        applied = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(applied["mode"], "applied")
+        self.assertEqual(applied["apply"]["status"], "complete")
+        self.assertTrue(all(entry.get("post_file") for entry in applied["entries"]))
+
+        repair.rollback_manifest(manifest_path, self.db, True, False)
+        rolled_back = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(rolled_back["mode"], "rolled-back")
+        self.assertEqual(repair.file_state(self.path)["sha256"], before_first["sha256"])
+        self.assertEqual(repair.file_state(second)["sha256"], before_second["sha256"])
+
 
 class GenreGroupingTest(unittest.TestCase):
+    def _review_fixture(
+        self,
+        temporary: str,
+        *,
+        media_id: str = "media-1",
+        genres: list[str] | None = None,
+        mbid: str = "",
+    ) -> tuple[Path, list[dict[str, object]], dict[str, object]]:
+        root = Path(temporary)
+        path = root / "probe.mp3"
+        path.write_bytes(b"probe")
+        file_genres = list(genres or ["Music"])
+        state: dict[str, object] = {
+            "sha256": "a" * 64,
+            "size": 5,
+            "mtime_ns": 1,
+            "mode": 0o644,
+            "genres": file_genres,
+            "native_tags_sha256": "unchanged",
+        }
+        tracks: list[dict[str, object]] = [
+            {
+                "id": media_id,
+                "library_id": "library-1",
+                "library_path": str(root),
+                "path": "probe.mp3",
+                "absolute_path": str(path.resolve()),
+                "title": "Probe Song",
+                "artist": "Probe Artist",
+                "mbz_recording_id": mbid,
+                "missing": 0,
+                "path_error": "",
+                "tags": json.dumps({"genre": [{"value": value} for value in file_genres]}),
+                "db_genres": file_genres,
+            }
+        ]
+        return root, tracks, state
+
+    def _review_input(self, tracks: list[dict[str, object]], genres: list[str] | None = None) -> dict[str, object]:
+        track = tracks[0]
+        return {
+            "version": 1,
+            "entries": [
+                {
+                    "media_file_id": track["id"],
+                    "genres": list(genres or ["pop"]),
+                    "sources": ["https://example.test/review/probe"],
+                    "evidence_note": "Exact track evidence from the reviewed source.",
+                    "expected": {
+                        "path": track["path"],
+                        "title": track["title"],
+                        "artist": track["artist"],
+                        "file_sha256": "a" * 64,
+                    },
+                }
+            ],
+        }
+
+    def test_reviewed_no_mbid_candidate_skips_automatic_artist_lookup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="navidrome-reviewed-no-mbid-") as temporary:
+            root, tracks, state = self._review_fixture(temporary, mbid="")
+            review_path = root / "reviewed.json"
+            review_path.write_text(json.dumps(self._review_input(tracks)), encoding="utf-8")
+
+            class NoLookupClient:
+                base_url = "test"
+                user_agent = "test"
+                cache_dir = root
+                request_count = 0
+
+                def fetch(self, *args: object, **kwargs: object) -> object:
+                    raise AssertionError("reviewed no-MBID candidate must not trigger MusicBrainz")
+
+            with mock.patch.object(repair, "file_state", return_value=state):
+                reviewed = repair.load_reviewed_genres(review_path, tracks, root, 2)
+                manifest = repair.make_manifest(
+                    root / "navidrome.db",
+                    tracks,
+                    NoLookupClient(),
+                    root / "manifest.json",
+                    root,
+                    1,
+                    2,
+                    False,
+                    reviewed,
+                    review_path,
+                )
+            entry = manifest["entries"][0]
+            self.assertEqual(entry["status"], "candidate")
+            self.assertEqual(entry["replacement_genres"], ["pop"])
+            self.assertEqual(entry["source"]["provenance"], "reviewed per-file proposal")
+            self.assertEqual(entry["source"]["sources"], ["https://example.test/review/probe"])
+            self.assertEqual(
+                entry["source"]["evidence_note"],
+                "Exact track evidence from the reviewed source.",
+            )
+            self.assertEqual(manifest["reviewed_genres"]["entry_count"], 1)
+            self.assertEqual(manifest["groups"], {})
+            self.assertEqual(manifest["audit"]["reviewed_candidates"], 1)
+
+    def test_reviewed_duplicate_and_unknown_ids_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="navidrome-reviewed-ids-") as temporary:
+            root, tracks, state = self._review_fixture(temporary)
+            with mock.patch.object(repair, "file_state", return_value=state):
+                duplicate = self._review_input(tracks)
+                duplicate["entries"].append(dict(duplicate["entries"][0]))
+                duplicate_path = root / "duplicate.json"
+                duplicate_path.write_text(json.dumps(duplicate), encoding="utf-8")
+                with self.assertRaisesRegex(repair.RepairError, "duplicate reviewed genre"):
+                    repair.load_reviewed_genres(duplicate_path, tracks, root, 2)
+
+                unknown = self._review_input(tracks)
+                unknown["entries"][0]["media_file_id"] = "does-not-exist"
+                unknown_path = root / "unknown.json"
+                unknown_path.write_text(json.dumps(unknown), encoding="utf-8")
+                with self.assertRaisesRegex(repair.RepairError, "unknown reviewed genre"):
+                    repair.load_reviewed_genres(unknown_path, tracks, root, 2)
+
+    def test_reviewed_identity_and_hash_mismatch_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="navidrome-reviewed-fingerprint-") as temporary:
+            root, tracks, state = self._review_fixture(temporary)
+            for field, value, message in (
+                ("path", "other.mp3", "expected path"),
+                ("title", "Changed title", "expected title"),
+                ("artist", "Changed artist", "expected artist"),
+                ("file_sha256", "b" * 64, "expected file hash"),
+            ):
+                proposal = self._review_input(tracks)
+                proposal["entries"][0]["expected"][field] = value
+                review_path = root / f"{field}.json"
+                review_path.write_text(json.dumps(proposal), encoding="utf-8")
+                with mock.patch.object(repair, "file_state", return_value=state):
+                    with self.assertRaisesRegex(repair.RepairError, message):
+                        repair.load_reviewed_genres(review_path, tracks, root, 2)
+
+    def test_reviewed_genre_validation_rejects_categories_and_format_labels(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="navidrome-reviewed-genres-") as temporary:
+            root, tracks, state = self._review_fixture(temporary)
+            for value in ("Music", "People & Blogs", "slowed", "guitar remix", "edit audio", "https://genre.test"):
+                proposal = self._review_input(tracks, [value])
+                review_path = root / f"{repair.normalize_genre(value).replace(' ', '-')}.json"
+                review_path.write_text(json.dumps(proposal), encoding="utf-8")
+                with mock.patch.object(repair, "file_state", return_value=state):
+                    with self.assertRaisesRegex(repair.RepairError, "non-musical genre"):
+                        repair.load_reviewed_genres(review_path, tracks, root, 2)
+
+    def test_reviewed_proposal_preserves_existing_musical_genres(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="navidrome-reviewed-preserve-") as temporary:
+            root, tracks, state = self._review_fixture(temporary, genres=["jazz"])
+            review_path = root / "reviewed.json"
+            review_path.write_text(json.dumps(self._review_input(tracks, ["pop"])), encoding="utf-8")
+
+            class NoLookupClient:
+                base_url = "test"
+                user_agent = "test"
+                cache_dir = root
+                request_count = 0
+
+            with mock.patch.object(repair, "file_state", return_value=state):
+                reviewed = repair.load_reviewed_genres(review_path, tracks, root, 2)
+                manifest = repair.make_manifest(
+                    root / "navidrome.db",
+                    tracks,
+                    NoLookupClient(),
+                    root / "manifest.json",
+                    root,
+                    1,
+                    2,
+                    False,
+                    reviewed,
+                    review_path,
+                )
+            entry = manifest["entries"][0]
+            self.assertEqual(entry["status"], "skip-existing-genre")
+            self.assertNotIn("replacement_genres", entry)
+            self.assertFalse(entry["reviewed"]["applied"])
+            self.assertEqual(entry["file_genres"], ["jazz"])
+
     def test_blank_recording_id_joins_verified_artist_group(self) -> None:
         with tempfile.TemporaryDirectory(prefix="navidrome-genre-group-test-") as temporary:
             root = Path(temporary)

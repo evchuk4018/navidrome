@@ -34,6 +34,7 @@ func TestImportCreatesConfigAndSetsMetadata(t *testing.T) {
 		Title:      "Song",
 		ArtistName: "Artist",
 		AlbumTitle: "Album",
+		Genre:      "Rap",
 		Year:       2024,
 	}, true); err != nil {
 		t.Fatalf("Import returned error: %v", err)
@@ -61,8 +62,63 @@ func TestImportCreatesConfigAndSetsMetadata(t *testing.T) {
 	if !slices.Contains(importArgs, "--quiet-fallback=asis") {
 		t.Fatalf("expected quiet fallback override, got %v", importArgs)
 	}
+	if !slices.Contains(importArgs, "genre=Rap") {
+		t.Fatalf("expected supplied musical genre metadata, got %v", importArgs)
+	}
+	if !slices.Contains(importArgs, "genres=Rap") {
+		t.Fatalf("expected standard plural Beets genre metadata, got %v", importArgs)
+	}
 	if writeArgs := runner.calls[1]; !slices.Contains(writeArgs, "write") || !slices.Contains(writeArgs, "mb_trackid:recording-1") {
 		t.Fatalf("expected tag write by recording ID, got %v", writeArgs)
+	}
+}
+
+func TestImportClearsVideoCategoryGenre(t *testing.T) {
+	runner := &recordingRunner{}
+	client := NewWithRunner("beet", runner, "/music", filepath.Join(t.TempDir(), "beets.yaml"), "/data/beets.db")
+	if err := client.Import(context.Background(), []string{"/tmp/track.mp3"}, model.ExternalTrack{
+		ID: "recording-1", Genre: "People & Blogs",
+	}, true); err != nil {
+		t.Fatalf("Import returned error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected import and tag write calls, got %v", runner.calls)
+	}
+	if !slices.Contains(runner.calls[0], "genre= ") || !slices.Contains(runner.calls[0], "genres= ") {
+		t.Fatalf("expected both Beets genre fields to be cleared with the accepted blank value, got %v", runner.calls[0])
+	}
+	if slices.Contains(runner.calls[0], "genre=People & Blogs") {
+		t.Fatalf("video category was persisted, got %v", runner.calls[0])
+	}
+}
+
+func TestIsSupportedBeetsGenreRejectsCategoriesAndURLs(t *testing.T) {
+	for _, genre := range []string{
+		"Music", "People & Blogs", "https://example.test/genre", "Slowed & Reverb",
+		"slowed + reverb", "Hip-Hop Remix", "guitar remix", "edit audio",
+	} {
+		if isSupportedBeetsGenre(genre) {
+			t.Fatalf("isSupportedBeetsGenre(%q) = true, want false", genre)
+		}
+	}
+	if !isSupportedBeetsGenre("Hip-Hop") {
+		t.Fatal("isSupportedBeetsGenre(Hip-Hop) = false, want true")
+	}
+}
+
+func TestImportClearsGenreWhenCatalogEvidenceIsEmpty(t *testing.T) {
+	runner := &recordingRunner{}
+	client := NewWithRunner("beet", runner, "/music", filepath.Join(t.TempDir(), "beets.yaml"), "/data/beets.db")
+	if err := client.Import(context.Background(), []string{"/tmp/track.mp3"}, model.ExternalTrack{
+		ID: "recording-1",
+	}, true); err != nil {
+		t.Fatalf("Import returned error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected import and tag write calls, got %v", runner.calls)
+	}
+	if !slices.Contains(runner.calls[0], "genre= ") || !slices.Contains(runner.calls[0], "genres= ") {
+		t.Fatalf("expected missing genre evidence to clear both Beets fields, got %v", runner.calls[0])
 	}
 }
 

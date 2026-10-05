@@ -13,6 +13,9 @@ This utility deliberately separates discovery from mutation:
   not write Navidrome's database; run a scanner after reviewing the result.
 * ``--rollback`` restores files from the per-file backups after checking that
   the current file is still the one produced by the apply operation.
+* ``--reviewed-genres`` supplies source-backed, per-file proposals to a
+  ``--dry-run``. The proposals are checked against the current media-file
+  identity and SHA-256 before MusicBrainz discovery starts.
 
 The genre evidence is intentionally conservative. A library artist group is
 eligible only when a representative recording has exactly one MusicBrainz
@@ -48,7 +51,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 
 MANIFEST_VERSION = 1
@@ -107,6 +110,28 @@ GENERIC_NON_GENRES = frozenset(
         "video",
     }
 )
+
+# A reviewed proposal may carry the source file's edit/format label in its
+# title, but those labels are not musical genres. Keep this list separate
+# from the existing MusicBrainz filters so the reviewed-input contract is
+# explicit and cannot accidentally broaden automatic artist fallback.
+FORMAT_LABELS = frozenset(
+    {
+        "edit",
+        "edit audio",
+        "guitar remix",
+        "remix",
+        "slowed",
+        "slowed reverb",
+        "slowed + reverb",
+        "slowed and reverb",
+        "sped up",
+        "speed up",
+        "super slowed",
+        "ultra slowed",
+    }
+)
+
 
 class RepairError(RuntimeError):
     """A user-actionable repair refusal or validation failure."""
@@ -169,6 +194,7 @@ def normalize_genre(value: str) -> str:
 
 NORMALIZED_VIDEO_CATEGORY_GENRES = frozenset(normalize_genre(item) for item in VIDEO_CATEGORY_GENRES)
 NORMALIZED_GENERIC_NON_GENRES = frozenset(normalize_genre(item) for item in GENERIC_NON_GENRES)
+NORMALIZED_FORMAT_LABELS = frozenset(normalize_genre(item) for item in FORMAT_LABELS)
 
 
 def clean_values(value: Any) -> list[str]:
@@ -222,6 +248,34 @@ def is_supported_genre(value: str, minimum_votes: int) -> bool:
     if "http://" in normalized or "https://" in normalized or len(normalized) > 80:
         return False
     return minimum_votes > 0
+
+
+def is_reviewed_genre(value: str) -> bool:
+    """Return whether a human-reviewed value is a musical genre label.
+
+    Reviewed values are intentionally stricter than the existing
+    MusicBrainz folksonomy filter. They must be plain, bounded strings and
+    may not be a video category, generic metadata label, or edit/format
+    marker such as ``slowed`` or ``guitar remix``.
+    """
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    normalized = normalize_genre(value)
+    if not normalized or len(normalized) > 80:
+        return False
+    if normalized in NORMALIZED_VIDEO_CATEGORY_GENRES:
+        return False
+    if normalized in NORMALIZED_GENERIC_NON_GENRES:
+        return False
+    if normalized in NORMALIZED_FORMAT_LABELS:
+        return False
+    if any(label in normalized for label in NORMALIZED_FORMAT_LABELS):
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc or "http://" in normalized or "https://" in normalized:
+        return False
+    return True
 
 
 def genre_values_from_json(raw: Any) -> list[str]:
@@ -436,6 +490,140 @@ def load_tracks(db_path: Path, music_root: Path | None) -> list[dict[str, Any]]:
     return tracks
 
 
+def _reviewed_url(value: Any, index: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RepairError(f"reviewed genre entry {index} has a non-string source URL")
+    value = value.strip()
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RepairError(f"reviewed genre entry {index} has an unsafe source URL: {value!r}")
+    return value
+
+
+def load_reviewed_genres(
+    path: Path,
+    tracks: list[dict[str, Any]],
+    music_root: Path | None,
+    maximum_genres: int,
+) -> dict[str, dict[str, Any]]:
+    """Load and validate per-file genre proposals before any MB lookups.
+
+    The input is deliberately validated against the current read-only
+    Navidrome snapshot and the current audio-file hash. This means a review
+    cannot silently drift onto a moved, replaced, or differently identified
+    file between inventory and dry-run. The returned values contain only the
+    reviewed proposal and provenance needed by the manifest; the caller still
+    decides whether the file's current genre class permits a replacement.
+    """
+    raw = load_json(path)
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        raise RepairError(f"reviewed genres must be a version 1 object: {path}")
+    raw_entries = raw.get("entries")
+    if not isinstance(raw_entries, list):
+        raise RepairError(f"reviewed genres entries must be a list: {path}")
+
+    tracks_by_id: dict[str, dict[str, Any]] = {}
+    for track in tracks:
+        media_id = str(track.get("id") or "").strip()
+        if media_id:
+            tracks_by_id[media_id] = track
+
+    reviewed: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(raw_entries, start=1):
+        if not isinstance(item, dict):
+            raise RepairError(f"reviewed genre entry {index} must be an object")
+        raw_media_id = item.get("media_file_id")
+        if not isinstance(raw_media_id, str) or not raw_media_id.strip():
+            raise RepairError(
+                f"reviewed genre entry {index} media_file_id must be a non-empty string"
+            )
+        media_id = raw_media_id.strip()
+        if media_id in reviewed:
+            raise RepairError(f"duplicate reviewed genre media_file_id: {media_id}")
+        track = tracks_by_id.get(media_id)
+        if track is None:
+            raise RepairError(f"unknown reviewed genre media_file_id: {media_id}")
+
+        genres = item.get("genres")
+        if not isinstance(genres, list) or not 1 <= len(genres) <= 2:
+            raise RepairError(
+                f"reviewed genre entry {media_id} must contain one or two genre strings"
+            )
+        if len(genres) > maximum_genres:
+            raise RepairError(
+                f"reviewed genre entry {media_id} exceeds --maximum-genres={maximum_genres}"
+            )
+        cleaned_genres: list[str] = []
+        for genre in genres:
+            if not isinstance(genre, str) or not genre.strip() or not is_reviewed_genre(genre):
+                raise RepairError(
+                    f"reviewed genre entry {media_id} contains a non-musical genre: {genre!r}"
+                )
+            cleaned_genres.append(genre.strip())
+        cleaned_genres = unique_values(cleaned_genres)
+        if not 1 <= len(cleaned_genres) <= 2:
+            raise RepairError(f"reviewed genre entry {media_id} has duplicate or empty genres")
+
+        sources = item.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise RepairError(f"reviewed genre entry {media_id} must include source URLs")
+        cleaned_sources: list[str] = []
+        for source in sources:
+            cleaned_sources.append(_reviewed_url(source, index))
+        evidence_note = item.get("evidence_note")
+        if not isinstance(evidence_note, str) or not evidence_note.strip():
+            raise RepairError(f"reviewed genre entry {media_id} must include evidence_note")
+
+        expected = item.get("expected")
+        if not isinstance(expected, dict):
+            raise RepairError(f"reviewed genre entry {media_id} must include expected identity")
+        expected_path = expected.get("path")
+        expected_title = expected.get("title")
+        expected_artist = expected.get("artist")
+        expected_hash = expected.get("file_sha256")
+        if not isinstance(expected_path, str) or not expected_path.strip():
+            raise RepairError(f"reviewed genre entry {media_id} expected.path is required")
+        if not isinstance(expected_title, str) or not isinstance(expected_artist, str):
+            raise RepairError(f"reviewed genre entry {media_id} expected title/artist are required")
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+            raise RepairError(f"reviewed genre entry {media_id} expected.file_sha256 is invalid")
+
+        current_relative_path = str(track.get("path") or "")
+        current_absolute_path = str(track.get("absolute_path") or "")
+        accepted_paths = {current_relative_path}
+        if current_absolute_path:
+            accepted_paths.add(str(Path(current_absolute_path).resolve(strict=False)))
+        expected_path_text = expected_path.strip()
+        if expected_path_text not in accepted_paths:
+            raise RepairError(f"reviewed genre entry {media_id} expected path does not match current media_file")
+        if expected_title != str(track.get("title") or ""):
+            raise RepairError(f"reviewed genre entry {media_id} expected title does not match current media_file")
+        if expected_artist != str(track.get("artist") or ""):
+            raise RepairError(f"reviewed genre entry {media_id} expected artist does not match current media_file")
+        if track.get("missing") or track.get("path_error") or not current_absolute_path:
+            raise RepairError(f"reviewed genre entry {media_id} cannot fingerprint an unavailable media file")
+        current_path = Path(current_absolute_path)
+        if not current_path.exists() or current_path.is_symlink() or not current_path.is_file():
+            raise RepairError(f"reviewed genre entry {media_id} media file is unavailable")
+        current_state = file_state(current_path)
+        if current_state["sha256"].casefold() != expected_hash.casefold():
+            raise RepairError(f"reviewed genre entry {media_id} expected file hash does not match current media_file")
+
+        reviewed[media_id] = {
+            "genres": cleaned_genres,
+            "sources": cleaned_sources,
+            "evidence_note": evidence_note.strip(),
+            "provenance": "reviewed per-file proposal",
+            "expected": {
+                "path": expected_path_text,
+                "title": expected_title,
+                "artist": expected_artist,
+                "file_sha256": expected_hash.lower(),
+            },
+        }
+    return reviewed
+
+
 class SharedRateLimiter:
     """Serialize requests and persist the next permitted request time.
 
@@ -648,7 +836,17 @@ def make_manifest(
     minimum_votes: int,
     maximum_genres: int,
     resume: bool,
+    reviewed: dict[str, dict[str, Any]] | None = None,
+    reviewed_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Build a dry-run manifest for the supplied current track snapshot.
+
+    ``reviewed`` is an override map, not a row selector: callers that operate
+    on a frozen inventory should filter the result of :func:`load_tracks`
+    before calling this function. Every supplied reviewed ID is still checked
+    against that filtered snapshot by :func:`load_reviewed_genres`.
+    """
+    reviewed = reviewed or {}
     previous = load_json(manifest_path) if resume and manifest_path.exists() else None
     entries: list[dict[str, Any]] = []
     eligible_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -684,8 +882,26 @@ def make_manifest(
                 entry["pre_file"] = state
                 entry["file_genres"] = state["genres"]
                 entry["genre_class"] = classify_existing_genres(state["genres"])
+                reviewed_proposal = reviewed.get(entry["media_file_id"])
+                if reviewed_proposal is not None:
+                    entry["reviewed"] = copy.deepcopy(reviewed_proposal)
                 if entry["genre_class"] == "musical-or-unknown":
                     entry.update(status="skip-existing-genre", reason="preserve existing non-category genre")
+                    if reviewed_proposal is not None:
+                        entry["reason"] = "preserve existing non-category genre; reviewed proposal not applied"
+                        entry["reviewed"]["applied"] = False
+                elif reviewed_proposal is not None:
+                    entry.update(
+                        status="candidate",
+                        reason="replace category-only/blank genre from reviewed per-file proposal",
+                        replacement_genres=list(reviewed_proposal["genres"]),
+                        source={
+                            "sources": list(reviewed_proposal["sources"]),
+                            "evidence_note": reviewed_proposal["evidence_note"],
+                            "provenance": reviewed_proposal["provenance"],
+                        },
+                    )
+                    entry["reviewed"]["applied"] = True
                 else:
                     group = normalize_artist(entry["artist"])
                     if not group:
@@ -791,6 +1007,13 @@ def make_manifest(
         "file_preserved_musical_or_unknown": sum(
             entry["genre_class"] == "musical-or-unknown" for entry in entries
         ),
+        "reviewed_entries": len(reviewed),
+        "reviewed_candidates": sum(
+            entry.get("reviewed", {}).get("applied") is True for entry in entries
+        ),
+        "reviewed_preserved_existing_genre": sum(
+            entry.get("reviewed", {}).get("applied") is False for entry in entries
+        ),
     }
     manifest = {
         "version": MANIFEST_VERSION,
@@ -805,6 +1028,12 @@ def make_manifest(
             "maximum_genres": maximum_genres,
             "cache_dir": str(client.cache_dir.resolve()),
             "request_count": client.request_count,
+        },
+        "reviewed_genres": {
+            "path": str(reviewed_path.resolve()) if reviewed_path else "",
+            "version": 1 if reviewed_path else None,
+            "entry_count": len(reviewed),
+            "provenance": "reviewed per-file proposals" if reviewed_path else "",
         },
         "groups": groups_manifest,
         "summary": dict(counts),
@@ -841,6 +1070,45 @@ def copy_backup(source: Path, target: Path) -> None:
             temporary.unlink()
 
 
+def _read_id3v1_footer(path: Path) -> bytes | None:
+    """Return an existing ID3v1 footer, without interpreting its fields."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() < 128:
+                return None
+            handle.seek(-128, os.SEEK_END)
+            footer = handle.read(128)
+    except OSError as exc:
+        raise RepairError(f"read MP3 ID3v1 footer {path}: {exc}") from exc
+    if len(footer) == 128 and footer[:3] == b"TAG":
+        return footer
+    return None
+
+
+def _restore_id3v1_non_genre_bytes(path: Path, original_footer: bytes) -> None:
+    """Restore ID3v1 bytes except byte 127, which stores the new genre."""
+    if len(original_footer) != 128 or original_footer[:3] != b"TAG":
+        raise RepairError(f"invalid original MP3 ID3v1 footer {path}")
+    try:
+        with path.open("r+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() < 128:
+                raise RepairError(f"MP3 ID3v1 footer disappeared after write {path}")
+            handle.seek(-128, os.SEEK_END)
+            current_footer = handle.read(128)
+            if len(current_footer) != 128 or current_footer[:3] != b"TAG":
+                raise RepairError(f"MP3 ID3v1 footer disappeared after write {path}")
+            handle.seek(-128, os.SEEK_END)
+            handle.write(original_footer[:127] + current_footer[127:])
+            handle.flush()
+            os.fsync(handle.fileno())
+    except RepairError:
+        raise
+    except OSError as exc:
+        raise RepairError(f"restore MP3 ID3v1 footer {path}: {exc}") from exc
+
+
 def _write_genres_in_place(path: Path, replacement: list[str]) -> None:
     """Change only the genre frame/field on a temporary audio copy."""
     if path.suffix.casefold() == ".mp3":
@@ -848,6 +1116,7 @@ def _write_genres_in_place(path: Path, replacement: list[str]) -> None:
             from mutagen.id3 import ID3, TCON
         except ImportError as exc:
             raise RepairError("mutagen.id3 is required for MP3 genre repair") from exc
+        original_footer = _read_id3v1_footer(path)
         try:
             tags = ID3(path)
         except Exception as exc:
@@ -857,6 +1126,8 @@ def _write_genres_in_place(path: Path, replacement: list[str]) -> None:
             tags.add(TCON(encoding=3, text=replacement))
         try:
             tags.save(path)
+            if original_footer is not None:
+                _restore_id3v1_non_genre_bytes(path, original_footer)
         except Exception as exc:
             raise RepairError(f"write MP3 genre tag {path}: {exc}") from exc
         return
@@ -1285,6 +1556,12 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--self-test-ytdlp", action="store_true", help="run the temporary silent-MP3 integration test")
     parser.add_argument("--db", type=Path, default=Path("/data/navidrome.db"), help="Navidrome SQLite database")
     parser.add_argument("--manifest", type=Path, default=Path("genre-repair-manifest.json"))
+    parser.add_argument(
+        "--reviewed-genres",
+        type=Path,
+        default=None,
+        help="version 1 per-file reviewed genre proposals to apply during --dry-run",
+    )
     parser.add_argument("--music-root", type=Path, default=None, help="override library root when resolving media paths")
     parser.add_argument("--cache-dir", type=Path, default=Path("musicbrainz-genre-cache"))
     parser.add_argument("--rate-lock", type=Path, default=None, help="shared MusicBrainz rate lock file")
@@ -1312,11 +1589,21 @@ def main() -> int:
         if args.minimum_votes < 1:
             raise RepairError("--minimum-votes must be positive")
         if args.apply:
+            if args.reviewed_genres:
+                raise RepairError("--reviewed-genres is only valid with --dry-run")
             apply_manifest(args.manifest, args.db, args.backup_dir, args.yes)
             return 0
         if args.rollback:
+            if args.reviewed_genres:
+                raise RepairError("--reviewed-genres is only valid with --dry-run")
             rollback_manifest(args.manifest, args.db, args.yes, args.force)
             return 0
+        tracks = load_tracks(args.db, args.music_root)
+        reviewed = (
+            load_reviewed_genres(args.reviewed_genres, tracks, args.music_root, args.maximum_genres)
+            if args.reviewed_genres
+            else {}
+        )
         lock_path = args.rate_lock or args.cache_dir / "musicbrainz.rate.lock"
         client = MusicBrainzClient(
             args.cache_dir,
@@ -1326,7 +1613,6 @@ def main() -> int:
             args.rate_seconds,
             args.timeout,
         )
-        tracks = load_tracks(args.db, args.music_root)
         manifest = make_manifest(
             args.db.resolve(),
             tracks,
@@ -1336,6 +1622,8 @@ def main() -> int:
             args.minimum_votes,
             args.maximum_genres,
             args.resume,
+            reviewed,
+            args.reviewed_genres,
         )
         print(json.dumps(manifest["summary"], sort_keys=True))
         print(f"Dry-run manifest: {args.manifest.resolve()}")

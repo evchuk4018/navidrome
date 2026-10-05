@@ -1773,11 +1773,11 @@ func localSeedAffinity(seed *model.MediaFile, file model.MediaFile) float64 {
 
 func genreSet(file model.MediaFile) map[string]bool {
 	result := map[string]bool{}
-	if genre := strings.ToLower(strings.TrimSpace(file.Genre)); genre != "" {
+	if genre := normalizeGenre(file.Genre); genre != "" && !uninformativeRelatedGenres[genre] {
 		result[genre] = true
 	}
 	for _, genre := range file.Genres {
-		if name := strings.ToLower(strings.TrimSpace(genre.Name)); name != "" {
+		if name := normalizeGenre(genre.Name); name != "" && !uninformativeRelatedGenres[name] {
 			result[name] = true
 		}
 	}
@@ -1797,7 +1797,7 @@ func genreAffinity(seed, candidate map[string]bool) float64 {
 func genreSimilarity(a, b string) float64 {
 	a = normalizeGenre(a)
 	b = normalizeGenre(b)
-	if a == "" || b == "" {
+	if a == "" || b == "" || uninformativeRelatedGenres[a] || uninformativeRelatedGenres[b] {
 		return 0
 	}
 	if a == b {
@@ -1829,7 +1829,7 @@ func normalizeGenre(value string) string {
 
 func genreFamily(value string) string {
 	switch {
-	case strings.Contains(value, "hip hop"), value == "rap":
+	case strings.Contains(value, "hip hop"), value == "rap", value == "chill rap", value == "pop rap", value == "emo rap", value == "trap":
 		return "hip-hop"
 	case strings.Contains(value, "r and b"), strings.Contains(value, "rnb"), value == "soul":
 		return "rnb"

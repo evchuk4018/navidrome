@@ -36,6 +36,33 @@ type Client struct {
 	configErr  error
 }
 
+// Beets 2.14 stores writable genre metadata in its plural `genres` field.
+// Keep the singular field for older configurations that expose it as a
+// flexible field. Its --set parser rejects an empty value, so a single space
+// is used for an intentional blank and normalized back to an empty field by
+// Beets before tags are written.
+const beetsBlankGenre = " "
+
+var uninformativeBeetsGenres = map[string]struct{}{
+	"music": {}, "people and blogs": {}, "entertainment": {}, "gaming": {},
+	"travel and events": {}, "comedy": {}, "education": {},
+	"film and animation": {}, "howto and style": {}, "how to and style": {},
+	"pets and animals": {}, "news and politics": {}, "science and technology": {},
+	"sports": {}, "autos and vehicles": {}, "nonprofits and activism": {},
+	"shows": {}, "movies": {}, "trailers": {}, "video": {}, "youtube": {},
+	"podcast": {}, "audio": {}, "audiobook": {}, "blog": {}, "blogs": {},
+	"educational": {}, "slowed": {}, "slowed reverb": {}, "slowed and reverb": {},
+	"sped up": {}, "speed up": {}, "super slowed": {}, "ultra slowed": {},
+	"remix": {}, "edit": {}, "edit audio": {}, "guitar remix": {},
+	"cover": {}, "guitar cover": {},
+}
+
+var beetsRenditionGenreLabels = []string{
+	"edit", "edit audio", "guitar remix", "remix", "slowed", "slowed reverb",
+	"slowed + reverb", "slowed and reverb", "sped up", "speed up", "super slowed",
+	"ultra slowed", "cover", "guitar cover",
+}
+
 func New() *Client {
 	dataFolder := conf.Server.DataFolder.String()
 	if dataFolder == "" {
@@ -96,6 +123,16 @@ func (c *Client) Import(ctx context.Context, files []string, metadata model.Exte
 	appendField("artist", metadata.ArtistName)
 	appendField("albumartist", metadata.ArtistName)
 	appendField("album", metadata.AlbumTitle)
+	if genre := strings.TrimSpace(metadata.Genre); isSupportedBeetsGenre(genre) {
+		args = append(args, "--set", "genre="+genre, "--set", "genres="+genre)
+	} else {
+		// Explicitly clear source categories such as YouTube's "Music" and
+		// leave both Beets genre fields blank when catalog evidence is
+		// unavailable. Beets accepts the controlled whitespace value and
+		// normalizes it to an empty field; a literal empty value is rejected by
+		// its --set parser before import begins.
+		args = append(args, "--set", "genre="+beetsBlankGenre, "--set", "genres="+beetsBlankGenre)
+	}
 	appendField("mb_trackid", metadata.ID)
 	if metadata.Year > 0 {
 		appendField("year", strconv.Itoa(metadata.Year))
@@ -184,6 +221,32 @@ func (c *Client) ensureConfig() error {
 
 func yamlString(value string) string {
 	return strconv.Quote(value)
+}
+
+func isSupportedBeetsGenre(value string) bool {
+	original := strings.ToLower(strings.TrimSpace(value))
+	normalized := normalizeBeetsGenre(value)
+	if normalized == "" || len(normalized) > 80 || strings.Contains(original, "http://") || strings.Contains(original, "https://") {
+		return false
+	}
+	_, excluded := uninformativeBeetsGenres[normalized]
+	if excluded {
+		return false
+	}
+	padded := " " + normalized + " "
+	for _, label := range beetsRenditionGenreLabels {
+		label = normalizeBeetsGenre(label)
+		if strings.Contains(padded, " "+label+" ") {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeBeetsGenre(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("&", " and ", "+", " and ", "/", " ", "-", " ", "_", " ").Replace(value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func commandOutput(output []byte, err error) string {

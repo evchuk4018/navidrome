@@ -329,7 +329,12 @@ func TestGenreSimilarityAllowsGenreFamilies(t *testing.T) {
 	}{
 		{seed: "Pop", candidate: "Indie Pop", want: true},
 		{seed: "Hip-Hop", candidate: "Rap", want: true},
+		{seed: "Chill Rap", candidate: "Trap", want: true},
+		{seed: "Pop Rap", candidate: "Emo Rap", want: true},
+		{seed: "Hip hop", candidate: "Hip-Hop", want: true},
 		{seed: "Rock", candidate: "Metal", want: false},
+		{seed: "Chill Rap", candidate: "Rock", want: false},
+		{seed: "Music", candidate: "Music", want: false},
 	}
 	for _, test := range tests {
 		got := genreSimilarity(test.seed, test.candidate) > 0
