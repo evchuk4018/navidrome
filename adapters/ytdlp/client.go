@@ -105,6 +105,10 @@ func (c *Client) download(ctx context.Context, source string, directory string, 
 		"--audio-format", "mp3",
 		"--audio-quality", "320K",
 		"--embed-metadata",
+		// YouTube exposes its video category as the fallback genre metadata. Keep
+		// the source URL comment and other embedded metadata, but clear that
+		// category after yt-dlp has assembled the metadata arguments.
+		"--postprocessor-args", "metadata+ffmpeg_o:-metadata genre=",
 		"--parse-metadata", "%(webpage_url)s:%(meta_comment)s",
 		"--output", filepath.Join(directory, "%(id)s.%(ext)s"),
 		"--print", "after_move:filepath",

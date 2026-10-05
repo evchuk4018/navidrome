@@ -51,6 +51,9 @@ func TestDownloadBuildsSafeAudioCommand(t *testing.T) {
 			t.Fatalf("expected %q in command args %v", expected, runner.args)
 		}
 	}
+	if index := slices.Index(runner.args, "--postprocessor-args"); index < 0 || index+1 >= len(runner.args) || runner.args[index+1] != "metadata+ffmpeg_o:-metadata genre=" {
+		t.Fatalf("expected YouTube category metadata to be cleared after embedding, got %v", runner.args)
+	}
 	if !slices.Contains(runner.args, "ytsearch1:Artist - Song Album") {
 		t.Fatalf("expected source search query in command args %v", runner.args)
 	}
