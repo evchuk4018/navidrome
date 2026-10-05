@@ -12,9 +12,10 @@ import (
 )
 
 type relatedSimilarityProvider struct {
-	singleCalls []string
-	allCalls    int
-	songs       []agents.Song
+	singleCalls   []string
+	singleArtists []string
+	allCalls      int
+	songs         []agents.Song
 }
 
 type relatedInstantMixProvider struct {
@@ -86,6 +87,63 @@ func TestRelatedRadioIgnoresVideoCategoriesButKeepsRealGenres(t *testing.T) {
 	seed := &model.MediaFile{ID: "seed", Artist: "Demi Lovato", Genre: "Pop"}
 	if tier := relatedLocalTier(seed, model.MediaFile{ID: "candidate", Artist: "Katy Perry", Genre: "Pop"}); tier == 0 {
 		t.Fatal("real Pop genre was filtered")
+	}
+}
+
+func TestNormalizeRelatedArtistOnlyRemovesTrailingTopicSuffix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "TREFUEGO - Topic", want: "TREFUEGO"},
+		{input: "TREFUEGO - topic", want: "TREFUEGO"},
+		{input: "  TREFUEGO - Topic  ", want: "TREFUEGO"},
+		{input: "Topic", want: "Topic"},
+		{input: "TREFUEGO Topic", want: "TREFUEGO Topic"},
+		{input: "TREFUEGO - Topic Mix", want: "TREFUEGO - Topic Mix"},
+		{input: "TREFUEGO", want: "TREFUEGO"},
+	}
+	for _, test := range tests {
+		if got := normalizeRelatedArtist(test.input); got != test.want {
+			t.Errorf("normalizeRelatedArtist(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+}
+
+func TestRelatedRadioNormalizesYouTubeTopicArtists(t *testing.T) {
+	mediaRepo := tests.CreateMockMediaFileRepo()
+	mediaRepo.SetData(model.MediaFiles{
+		{ID: "seed", Title: "90mh - TREFUEGO (HIGH QUALITY)", Artist: "TREFUEGO - Topic"},
+		{ID: "library-match", Title: "miss me", Artist: "TREFUEGO"},
+		{ID: "unrelated", Title: "Unrelated", Artist: "Other Artist"},
+	})
+	ds := &tests.MockDataStore{MockedMediaFile: mediaRepo}
+	provider := &relatedSimilarityProvider{}
+	repo := &fakePersonalRadioRepository{items: []model.PersonalRadioItem{{
+		ID: "seed-item", SessionID: "session", Position: 0, ItemType: model.RadioItemSeed,
+		Status: model.RadioItemReady, MediaFileID: "seed", Song: mediaRepo.Data["seed"],
+	}}}
+	svc := &service{
+		ds: ds, repo: repo, agents: provider, matcher: matcher.New(ds),
+		planningStatus: map[string]string{}, planning: map[string]bool{},
+	}
+
+	session := model.PersonalRadioSession{
+		ID: "session", UserID: "user", Mode: model.RadioModeRelated,
+	}
+	if err := svc.planWithContext(context.Background(), session, radioContextFromSeed(mediaRepo.Data["seed"])); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.singleArtists) != 1 || provider.singleArtists[0] != "TREFUEGO" {
+		t.Fatalf("provider artists = %v, want [TREFUEGO]", provider.singleArtists)
+	}
+	if len(repo.items) != 2 || repo.items[1].MediaFileID != "library-match" {
+		t.Fatalf("planned queue = %#v, want the same-artist library track", repo.items)
+	}
+	for _, item := range repo.items[1:] {
+		if item.MediaFileID == "unrelated" {
+			t.Fatal("unrelated library track entered the related radio queue")
+		}
 	}
 }
 
@@ -246,8 +304,9 @@ func TestRelatedRadioFailedDownloadCanFallBackToReplay(t *testing.T) {
 	}
 }
 
-func (p *relatedSimilarityProvider) GetSimilarSongsByTrack(_ context.Context, id, _, _, _ string, _ int) ([]agents.Song, error) {
+func (p *relatedSimilarityProvider) GetSimilarSongsByTrack(_ context.Context, id, _, artist, _ string, _ int) ([]agents.Song, error) {
 	p.singleCalls = append(p.singleCalls, id)
+	p.singleArtists = append(p.singleArtists, artist)
 	return p.songs, nil
 }
 

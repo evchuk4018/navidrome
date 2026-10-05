@@ -834,7 +834,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 		var providerRecommendations []agents.Song
 		var recErr error
 		if session.Mode == model.RadioModeRelated {
-			providerRecommendations, recErr = s.agents.GetSimilarSongsByTrack(providerCtx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, providerLimit)
+			providerRecommendations, recErr = s.agents.GetSimilarSongsByTrack(providerCtx, seed.ID, seed.Title, normalizeRelatedArtist(seed.Artist), seed.MbzRecordingID, providerLimit)
 		} else {
 			providerRecommendations, recErr = s.agents.GetSimilarSongsByTrackAll(providerCtx, seed.ID, seed.Title, seed.Artist, seed.MbzRecordingID, providerLimit)
 		}
@@ -1760,7 +1760,10 @@ func localSeedAffinity(seed *model.MediaFile, file model.MediaFile) float64 {
 		return 0
 	}
 	genreMatches := genreAffinity(genreSet(*seed), genreSet(file))
-	artistMatch := strings.EqualFold(file.Artist, seed.Artist) || (file.ArtistID != "" && file.ArtistID == seed.ArtistID)
+	seedArtist := normalizeRelatedArtist(seed.Artist)
+	fileArtist := normalizeRelatedArtist(file.Artist)
+	artistMatch := (seedArtist != "" && fileArtist != "" && strings.EqualFold(fileArtist, seedArtist)) ||
+		(file.ArtistID != "" && file.ArtistID == seed.ArtistID)
 	compatibility := genreMatches * 12
 	if artistMatch {
 		compatibility += 16

@@ -80,10 +80,10 @@ func (s *service) relatedArtistSongs(ctx context.Context, seed *model.MediaFile)
 }
 
 func (s *service) fetchRelatedArtistSongs(ctx context.Context, seed *model.MediaFile) []relatedArtistSong {
-	mainArtist := agents.Artist{ID: seed.ArtistID, Name: seed.Artist, MBID: seed.MbzArtistID}
+	mainArtist := agents.Artist{ID: seed.ArtistID, Name: normalizeRelatedArtist(seed.Artist), MBID: seed.MbzArtistID}
 	if s.ds != nil && seed.ArtistID != "" {
 		if artist, err := s.ds.Artist(ctx).Get(seed.ArtistID); err == nil && artist != nil {
-			mainArtist.Name = artist.Name
+			mainArtist.Name = normalizeRelatedArtist(artist.Name)
 			mainArtist.MBID = artist.MbzArtistID
 		}
 	}

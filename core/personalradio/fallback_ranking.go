@@ -115,8 +115,10 @@ func localFallbackArtistKeys(file model.MediaFile) (map[string]bool, map[string]
 		}
 	}
 	addName := func(value string) {
-		if value = normalizeLocalFallback(value); value != "" {
-			names[value] = true
+		for _, artistName := range []string{value, normalizeRelatedArtist(value)} {
+			if artistName = normalizeLocalFallback(artistName); artistName != "" {
+				names[artistName] = true
+			}
 		}
 	}
 	addID(file.ArtistID)

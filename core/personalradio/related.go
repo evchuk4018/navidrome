@@ -3,6 +3,7 @@ package personalradio
 import (
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/model"
@@ -28,6 +29,20 @@ var uninformativeRelatedGenres = map[string]bool{
 	"sports": true, "autos and vehicles": true, "pets and animals": true,
 	"nonprofits and activism": true, "shows": true, "movies": true,
 	"trailers": true,
+}
+
+// YouTube's auto-generated artist channels append " - Topic" to the artist
+// credit. Keep that import-only suffix out of related-radio comparisons and
+// provider queries so an imported track can still match the library's normal
+// artist credit.
+func normalizeRelatedArtist(value string) string {
+	value = strings.TrimSpace(value)
+	const topicSuffix = " - topic"
+	if len(value) > len(topicSuffix) &&
+		strings.EqualFold(value[len(value)-len(topicSuffix):], topicSuffix) {
+		return strings.TrimSpace(value[:len(value)-len(topicSuffix)])
+	}
+	return value
 }
 
 func relatedGenres(file model.MediaFile) map[string]bool {
