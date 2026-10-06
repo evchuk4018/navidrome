@@ -176,6 +176,7 @@ func (s *Server) initRoutes() {
 		realIPMiddleware,
 		middleware.Recoverer,
 		middleware.Heartbeat("/ping"),
+		middleware.Heartbeat(path.Join(conf.Server.BasePath, "/ping")),
 		robotsTXT(ui.BuildAssets()),
 		serverAddressMiddleware,
 		clientUniqueIDMiddleware,
