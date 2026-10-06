@@ -140,7 +140,7 @@ export const MediaSessionCoordinator = ({ children }) => {
   const expireSleep = useCallback(() => {
     sleepBlocked.current = true
     const descriptor = registrations.current.get(activeId.current)
-    descriptor?.onSleepExpire?.()
+    registrations.current.forEach((source) => source.onSleepExpire?.())
     if (descriptor?.element) pauseAudio(descriptor.element)
   }, [])
 

@@ -45,6 +45,8 @@ export const RatingField = ({
     [rate, record.mediaFileId, record.id],
   )
 
+  if (record.source === 'hometube') return null
+
   return (
     <span
       onClick={(e) => stopPropagation(e)}

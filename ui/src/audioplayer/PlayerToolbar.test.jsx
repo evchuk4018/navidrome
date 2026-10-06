@@ -3,9 +3,14 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { useMediaQuery } from '@material-ui/core'
 import { useGetOne, useTranslate } from 'react-admin'
 import { useDispatch } from 'react-redux'
+import { httpClient } from '../dataProvider'
 import { useToggleLove } from '../common'
 import { openAddToPlaylist, openSaveQueueDialog } from '../actions'
 import PlayerToolbar from './PlayerToolbar'
+
+vi.mock('../dataProvider', () => ({
+  httpClient: vi.fn().mockResolvedValue({ json: {} }),
+}))
 
 // Mock dependencies
 vi.mock('@material-ui/core', async () => {
@@ -62,7 +67,7 @@ describe('<PlayerToolbar />', () => {
 
   describe('Desktop layout', () => {
     beforeEach(() => {
-      useMediaQuery.mockReturnValue(true) // isDesktop = true
+      useMediaQuery.mockReturnValue(false) // portrait mobile query does not match
     })
 
     it('renders desktop toolbar with all four buttons', () => {
@@ -132,7 +137,7 @@ describe('<PlayerToolbar />', () => {
 
   describe('Mobile layout', () => {
     beforeEach(() => {
-      useMediaQuery.mockReturnValue(false) // isDesktop = false
+      useMediaQuery.mockReturnValue(true) // portrait mobile query matches
     })
 
     it('renders mobile toolbar with buttons in separate list items', () => {
@@ -172,6 +177,23 @@ describe('<PlayerToolbar />', () => {
   })
 
   describe('Common behavior', () => {
+    it('uses the same toolbar and dialogs for videos, with source-aware playlist entries', () => {
+      const video = { id: 'video-1', title: 'Video', channelName: 'Channel' }
+      render(<PlayerToolbar video={video} />)
+      expect(screen.getByTestId('love-button')).toBeEnabled()
+      expect(screen.getByRole('button', { name: 'Sleep timer' })).toBeEnabled()
+      fireEvent.click(screen.getByTestId('add-to-playlist-button'))
+      expect(openAddToPlaylist).toHaveBeenCalledWith({
+        selectedIds: ['hometube:video-1'],
+        selectedEntries: [{ source: 'hometube', id: 'video-1', video }],
+      })
+      fireEvent.click(screen.getByTestId('save-queue-button'))
+      expect(openSaveQueueDialog).toHaveBeenCalled()
+      expect(useToggleLove).toHaveBeenCalledWith(
+        'hometubeVideo',
+        expect.objectContaining({ videoId: 'video-1' }),
+      )
+    })
     it('renders global hotkeys in both layouts', () => {
       // Test desktop layout
       useMediaQuery.mockReturnValue(true)

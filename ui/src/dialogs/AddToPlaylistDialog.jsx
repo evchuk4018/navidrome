@@ -23,6 +23,7 @@ import { SelectPlaylistInput } from './SelectPlaylistInput'
 import DuplicateSongDialog from './DuplicateSongDialog'
 import { httpClient } from '../dataProvider'
 import { REST_URL } from '../consts'
+import { entryIdentity } from '../audioplayer/playlistEntries'
 
 const useStyles = makeStyles({
   dialogPaper: {
@@ -39,8 +40,14 @@ const useStyles = makeStyles({
 
 export const AddToPlaylistDialog = () => {
   const classes = useStyles()
-  const { open, selectedIds, onSuccess, duplicateSong, duplicateIds } =
-    useSelector((state) => state.addToPlaylistDialog)
+  const {
+    open,
+    selectedIds,
+    selectedEntries,
+    onSuccess,
+    duplicateSong,
+    duplicateIds,
+  } = useSelector((state) => state.addToPlaylistDialog)
   const dispatch = useDispatch()
   const translate = useTranslate()
   const notify = useNotify()
@@ -64,7 +71,13 @@ export const AddToPlaylistDialog = () => {
     if (trackIds.length) {
       dataProvider
         .create('playlistTrack', {
-          data: { ids: trackIds },
+          data: selectedEntries
+            ? {
+                entries: selectedEntries.filter((entry) =>
+                  trackIds.includes(entryIdentity(entry)),
+                ),
+              }
+            : { ids: trackIds },
           filter: { playlist_id: playlistId },
         })
         .then(() => {
@@ -91,11 +104,17 @@ export const AddToPlaylistDialog = () => {
         const tracks = res.json
         if (tracks) {
           const dupSng = tracks.filter((song) =>
-            selectedIds.some((id) => id === song.mediaFileId),
+            selectedIds.some(
+              (id) =>
+                id ===
+                (selectedEntries ? entryIdentity(song) : song.mediaFileId),
+            ),
           )
 
           if (dupSng.length) {
-            const dupIds = dupSng.map((song) => song.mediaFileId)
+            const dupIds = dupSng.map((song) =>
+              selectedEntries ? entryIdentity(song) : song.mediaFileId,
+            )
             dispatch(openDuplicateSongWarning(dupIds))
           }
         }

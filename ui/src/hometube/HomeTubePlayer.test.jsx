@@ -8,6 +8,29 @@ import {
   waitFor,
 } from '@testing-library/react'
 import HomeTubePlayer from './HomeTubePlayer'
+import { Provider } from 'react-redux'
+import { createStore } from 'redux'
+vi.mock('../audioplayer/AudioTitle', () => ({
+  default: ({ audioInfo }) => <span>{audioInfo.video.title}</span>,
+}))
+vi.mock('../audioplayer/PlayerToolbar', async () => ({
+  default: (props) => (
+    <>
+      {props.extraActions}
+      <button aria-label="Sleep timer" />
+    </>
+  ),
+}))
+vi.mock('react-admin', async (importOriginal) => ({
+  ...(await importOriginal()),
+  useTranslate: () => (key) => key,
+}))
+const viewport = vi.hoisted(() => ({ mobile: false }))
+vi.mock('@material-ui/core', async (original) => ({
+  ...(await original()),
+  useMediaQuery: () => viewport.mobile,
+}))
+const testStore = createStore(() => ({ player: { mode: 'order' } }))
 
 vi.mock('../config', () => ({
   default: { homeTubeBaseURL: '/hometube' },
@@ -80,11 +103,19 @@ const renderPlayer = (overrides = {}) => {
     onDismiss: vi.fn(),
     ...overrides,
   }
-  return { ...render(<HomeTubePlayer {...props} />), props }
+  return {
+    ...render(<HomeTubePlayer {...props} />, {
+      wrapper: ({ children }) => (
+        <Provider store={testStore}>{children}</Provider>
+      ),
+    }),
+    props,
+  }
 }
 
 describe('HomeTubePlayer', () => {
   beforeEach(() => {
+    viewport.mobile = false
     // jsdom's native media methods throw. A resolving default keeps tests that
     // do not explicitly exercise autoplay focused on DOM and state behavior.
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(
@@ -113,6 +144,29 @@ describe('HomeTubePlayer', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it('preserves media elements when the exact shared view changes between portrait and landscape', () => {
+    viewport.mobile = true
+    const result = renderPlayer({
+      video: makeVideo({ hasBackgroundAudio: true }),
+    })
+    const visual = result.container.querySelector('video')
+    const audio = result.container.querySelector('audio')
+    expect(
+      result.container.querySelector('.react-jinke-music-player-mobile'),
+    ).toBeInTheDocument()
+    viewport.mobile = false
+    result.rerender(<HomeTubePlayer {...result.props} />)
+    expect(
+      result.container.querySelector('.music-player-panel'),
+    ).toBeInTheDocument()
+    expect(result.container.querySelector('video')).toBe(visual)
+    expect(result.container.querySelector('audio')).toBe(audio)
+    viewport.mobile = true
+    result.rerender(<HomeTubePlayer {...result.props} />)
+    expect(result.container.querySelector('video')).toBe(visual)
+    expect(result.container.querySelector('audio')).toBe(audio)
   })
 
   it('keeps the same audio and visual elements across expanded state changes', () => {
@@ -244,7 +298,7 @@ describe('HomeTubePlayer', () => {
     expect(screen.getByRole('button', { name: 'Play' })).not.toBeDisabled()
   })
 
-  it('uses one custom playback row, clamps rewind, and seeks the background audio', () => {
+  it('uses the music playback row, restarts with Previous, and seeks the background audio', () => {
     const result = renderPlayer({
       video: makeVideo({ hasBackgroundAudio: true }),
     })
@@ -254,15 +308,23 @@ describe('HomeTubePlayer', () => {
     expect(audio.controls).toBe(false)
     expect(screen.getAllByRole('button', { name: 'Play' })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Next' })).toHaveLength(1)
-    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Next' })).toHaveAttribute(
+      'aria-disabled',
+      'false',
+    )
     act(() => {
       audio.currentTime = 8
       audio.dispatchEvent(new Event('timeupdate'))
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Rewind 10 seconds' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }))
     expect(audio.currentTime).toBe(0)
     const slider = screen.getByRole('slider', { name: 'Video position' })
-    fireEvent.keyDown(slider, { key: 'ArrowRight', code: 'ArrowRight' })
+    fireEvent.keyDown(slider, {
+      key: 'ArrowRight',
+      code: 'ArrowRight',
+      keyCode: 39,
+      which: 39,
+    })
     expect(audio.currentTime).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Sleep timer' })).toBeEnabled()
   })
@@ -276,9 +338,9 @@ describe('HomeTubePlayer', () => {
     expect(
       screen.queryByRole('button', { name: 'Upcoming video' }),
     ).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Open autoplay queue' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
     fireEvent.click(
-      screen.getByRole('button', { name: 'Dismiss Upcoming video' }),
+      screen.getByRole('button', { name: 'Remove Upcoming video' }),
     )
     expect(props.onDismiss).toHaveBeenCalledWith('video-2')
     fireEvent.click(screen.getByRole('button', { name: 'Upcoming video' }))

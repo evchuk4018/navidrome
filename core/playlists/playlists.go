@@ -2,6 +2,7 @@ package playlists
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -30,6 +31,10 @@ type Playlists interface {
 	Delete(ctx context.Context, id string) error
 	Update(ctx context.Context, playlistID string, name *string, comment *string, public *bool, idsToAdd []string, idxToRemove []int) error
 
+	GetVideo(ctx context.Context, id string) (*model.HomeTubeVideo, error)
+	SaveVideo(ctx context.Context, video *model.HomeTubeVideo) error
+	SetVideoFavorite(ctx context.Context, id string, favorite bool) error
+	AddEntries(ctx context.Context, playlistID string, entries []model.PlaylistEntry) (int, error)
 	// Track management
 	AddTracks(ctx context.Context, playlistID string, ids []string) (int, error)
 	AddAlbums(ctx context.Context, playlistID string, albumIds []string) (int, error)
@@ -129,6 +134,9 @@ func (s *playlists) Create(ctx context.Context, playlistId string, name string, 
 			pls, err = tx.Playlist(ctx).Get(playlistId)
 			if err != nil {
 				return err
+			}
+			if pls.HasVideos {
+				return fmt.Errorf("cannot replace a mixed playlist through the music-only interface")
 			}
 			if pls.IsSmartPlaylist() {
 				return model.ErrNotAuthorized

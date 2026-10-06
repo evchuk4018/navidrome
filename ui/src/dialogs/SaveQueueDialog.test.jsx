@@ -13,13 +13,13 @@ import { describe, afterEach, it, expect, vi, beforeAll } from 'vitest'
 
 const queue = [{ trackId: 'song-1' }, { trackId: 'song-2' }]
 
-const createTestUtils = (mockDataProvider) =>
+const createTestUtils = (mockDataProvider, entries = queue) =>
   render(
     <DataProviderContext.Provider value={mockDataProvider}>
       <TestContext
         initialState={{
           saveQueueDialog: { open: true },
-          player: { queue },
+          player: { queue: entries },
           admin: { ui: { optimistic: false } },
         }}
       >
@@ -73,7 +73,12 @@ describe('SaveQueueDialog', () => {
         2,
         'playlistTrack',
         {
-          data: { ids: ['song-1', 'song-2'] },
+          data: {
+            entries: [
+              { source: 'music', id: 'song-1' },
+              { source: 'music', id: 'song-2' },
+            ],
+          },
           filter: { playlist_id: 'created-id' },
         },
       )
@@ -81,6 +86,36 @@ describe('SaveQueueDialog', () => {
     await waitFor(() => {
       expect(window.location.hash).toBe('#/playlist/created-id/show')
     })
+  })
+
+  it('saves the entire mixed queue in order, including intentional duplicates', async () => {
+    const video = { id: 'video', title: 'Video', durationSeconds: 60 }
+    const provider = {
+      create: vi.fn().mockResolvedValue({ data: { id: 'mixed' } }),
+    }
+    createTestUtils(provider, [
+      { trackId: 'song' },
+      { source: 'hometube', videoId: 'video', video },
+      { source: 'hometube', videoId: 'video', video },
+      { trackId: 'last' },
+    ])
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Mixed' },
+    })
+    fireEvent.click(screen.getByTestId('save-queue-save'))
+    await waitFor(() =>
+      expect(provider.create).toHaveBeenNthCalledWith(2, 'playlistTrack', {
+        data: {
+          entries: [
+            { source: 'music', id: 'song' },
+            { source: 'hometube', id: 'video', video },
+            { source: 'hometube', id: 'video', video },
+            { source: 'music', id: 'last' },
+          ],
+        },
+        filter: { playlist_id: 'mixed' },
+      }),
+    )
   })
 
   it('disables save button when name is empty', () => {

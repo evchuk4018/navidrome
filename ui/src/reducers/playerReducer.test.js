@@ -16,6 +16,19 @@ import {
 } from '../actions'
 
 describe('playerReducer', () => {
+  it('retains mode and volume when the shared queue is cleared', () => {
+    const state = {
+      queue: [{ uuid: 'video' }],
+      mode: 'shufflePlay',
+      volume: 0.4,
+      musicIntent: 7,
+    }
+    const cleared = playerReducer(state, { type: 'PLAYER_CLEAR_QUEUE' })
+    expect(cleared.queue).toEqual([])
+    expect(cleared.mode).toBe('shufflePlay')
+    expect(cleared.volume).toBe(0.4)
+    expect(cleared.musicIntent).toBe(7)
+  })
   it('keeps Search Play pending for its own seed and cancels it for newer playback', () => {
     const pending = playerReducer(
       undefined,

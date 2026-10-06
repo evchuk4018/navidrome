@@ -1,8 +1,13 @@
 import { renderHook, act } from '@testing-library/react-hooks'
 import { vi, describe, it, expect, beforeEach } from 'vitest'
 import { useToggleLove } from './useToggleLove'
+import { httpClient } from '../dataProvider'
 import subsonic from '../subsonic'
 import { useDataProvider } from 'react-admin'
+
+vi.mock('../dataProvider', () => ({
+  httpClient: vi.fn().mockResolvedValue({ json: {} }),
+}))
 
 vi.mock('../subsonic', () => ({
   default: {
@@ -27,6 +32,41 @@ describe('useToggleLove', () => {
     useDataProvider.mockReturnValue({ getOne })
     vi.clearAllMocks()
   })
+
+  it.each([false, true])(
+    'persists a per-user video favorite and refreshes its playlist row (starred: %s)',
+    async (starred) => {
+      const video = { id: 'video', title: 'Video' }
+      const record = {
+        source: 'hometube',
+        id: 'row',
+        videoId: 'video',
+        video,
+        starred,
+        playlistId: 'playlist',
+      }
+      const { result } = renderHook(() =>
+        useToggleLove('playlistTrack', record),
+      )
+      await act(async () => {
+        await result.current[0]()
+      })
+      expect(httpClient.mock.calls[0][0]).toMatch(/hometubeVideo\/video$/)
+      expect(httpClient.mock.calls[1][0]).toMatch(
+        /hometubeVideo\/video\/favorite$/,
+      )
+      expect(JSON.parse(httpClient.mock.calls[1][1].body)).toEqual({
+        starred: !starred,
+      })
+      expect(subsonic.star).not.toHaveBeenCalled()
+      expect(subsonic.unstar).not.toHaveBeenCalled()
+      expect(getOne).toHaveBeenCalledWith('hometubeVideo', { id: 'video' })
+      expect(getOne).toHaveBeenCalledWith('playlistTrack', {
+        id: 'row',
+        filter: { playlist_id: 'playlist' },
+      })
+    },
+  )
 
   it('uses mediaFileId when present', async () => {
     const record = { id: 'pt-1', mediaFileId: 'sg-1', starred: false }

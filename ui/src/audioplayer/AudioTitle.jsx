@@ -15,7 +15,10 @@ const AudioTitle = React.memo(
     const className = classes.audioTitle
     const isDesktop = useMediaQuery('(min-width:810px)')
 
-    const song = audioInfo.song
+    const video = audioInfo.video
+    const song = video
+      ? { title: video.title, artist: video.channelName }
+      : audioInfo.song
     const [, dragSongRef] = useDrag(
       () => ({
         type: DraggableTypes.SONG,
@@ -49,17 +52,19 @@ const AudioTitle = React.memo(
     const subtitle = song.tags?.['subtitle']
     const title = song.title + (subtitle ? ` (${subtitle})` : '')
 
-    const linkTo = audioInfo.isRadio
-      ? `/radio/${audioInfo.trackId}/show`
-      : song.playlistId
-        ? `/playlist/${song.playlistId}/show`
-        : `/album/${song.albumId}/show`
+    const linkTo = video
+      ? `/hometube/channels/${video.channelId}`
+      : audioInfo.isRadio
+        ? `/radio/${audioInfo.trackId}/show`
+        : song.playlistId
+          ? `/playlist/${song.playlistId}/show`
+          : `/album/${song.albumId}/show`
 
     return (
       <Link to={linkTo} className={className} ref={dragSongRef}>
         <span>
           <span className={clsx(classes.songTitle, 'songTitle')}>{title}</span>
-          {isDesktop && (
+          {isDesktop && !video && (
             <QualityInfo
               record={qi}
               className={classes.qualityInfo}
@@ -73,15 +78,22 @@ const AudioTitle = React.memo(
             <span className={classes.songInfo}>
               <span className={'songArtist'}>{song.artist}</span>
             </span>
-            <span className={clsx(classes.songInfo, classes.songAlbum)}>
-              <span className={'songAlbum'}>{song.album}</span>
-              {song.year ? ` - ${song.year}` : ''}
-            </span>
+            {!video && (
+              <span className={clsx(classes.songInfo, classes.songAlbum)}>
+                <span className={'songAlbum'}>{song.album}</span>
+                {song.year ? ` - ${song.year}` : ''}
+              </span>
+            )}
           </>
         ) : (
           <span className={classes.songInfo}>
-            <span className={'songArtist'}>{song.artist}</span> -{' '}
-            <span className={'songAlbum'}>{song.album}</span>
+            <span className={'songArtist'}>{song.artist}</span>
+            {!video && (
+              <>
+                {' '}
+                - <span className={'songAlbum'}>{song.album}</span>
+              </>
+            )}
             {song.year ? ` - ${song.year}` : ''}
           </span>
         )}

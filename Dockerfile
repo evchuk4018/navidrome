@@ -32,6 +32,7 @@ WORKDIR /app
 # Install node dependencies
 COPY ui/package.json ui/package-lock.json ./
 COPY ui/bin/ ./bin/
+COPY ui/patches/ ./patches/
 RUN npm ci
 
 # Build bundle

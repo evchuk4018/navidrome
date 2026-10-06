@@ -11,7 +11,8 @@ import {
 } from 'react-admin'
 import ReactGA from 'react-ga'
 import { GlobalHotKeys } from 'react-hotkeys'
-import ReactJkMusicPlayer from 'navidrome-music-player'
+import ReactJkMusicPlayer from 'navidrome-music-player/es/index'
+import { usePlaybackQueue } from './PlaybackQueueContext'
 import 'navidrome-music-player/assets/index.css'
 import useCurrentTheme from '../themes/useCurrentTheme'
 import config from '../config'
@@ -109,6 +110,7 @@ const Player = () => {
   const { authenticated } = useAuthState()
   const homeTubePlayback = useHomeTubePlayback()
   const coordinator = useMediaSessionCoordinator()
+  const playbackQueue = usePlaybackQueue()
   const [sleepStopped, setSleepStopped] = useState(false)
   const handleUserPlayback = useCallback(() => {
     coordinator?.allowPlayback?.()
@@ -121,11 +123,21 @@ const Player = () => {
   useEffect(() => {
     if (musicIntentRef.current === musicIntent) return
     musicIntentRef.current = musicIntent
-    if (musicIntent > 0) {
-      handleUserPlayback()
+    if (musicIntent > 0 && playbackQueue?.selected?.source !== 'hometube') {
+      if (playerState.selectionAutomatic && coordinator?.isPlaybackBlocked?.())
+        return
+      if (!playerState.selectionAutomatic) handleUserPlayback()
+      else setSleepStopped(false)
       homeTubePlayback.claimMusic()
     }
-  }, [homeTubePlayback, musicIntent, handleUserPlayback])
+  }, [
+    homeTubePlayback,
+    musicIntent,
+    handleUserPlayback,
+    playbackQueue?.selected?.source,
+    playerState.selectionAutomatic,
+    coordinator,
+  ])
 
   // Keep a ref to playerState so the mount effect can read the latest value
   // without re-triggering on every queue/position change
@@ -366,7 +378,9 @@ const Player = () => {
     const currentIdx = state.savedPlayIndex || 0
     const trackIds = state.queue
       .slice(currentIdx, currentIdx + 4)
-      .filter((item) => !item.isRadio && item.trackId)
+      .filter(
+        (item) => !item.isRadio && item.source !== 'hometube' && item.trackId,
+      )
       .map((item) => item.trackId)
 
     if (trackIds.length === 0) {
@@ -396,7 +410,7 @@ const Player = () => {
     const currentIdx = playerState.savedPlayIndex || 0
     const nextSongIds = playerState.queue
       .slice(currentIdx + 1, currentIdx + 4)
-      .filter((item) => !item.isRadio)
+      .filter((item) => !item.isRadio && item.source !== 'hometube')
       .map((item) => item.trackId)
 
     if (nextSongIds.length > 0) {
@@ -528,6 +542,24 @@ const Player = () => {
     }
   }, [playerState, audioInstance])
 
+  const registerMusicEngine = playbackQueue?.register
+  useEffect(
+    () =>
+      registerMusicEngine?.('music', {
+        element: audioInstance,
+        restart: (automatic) => {
+          if (automatic && coordinator?.isPlaybackBlocked?.()) return
+          if (!automatic) handleUserPlayback()
+          if (audioInstance) {
+            audioInstance.currentTime = 0
+            audioInstance.play()?.catch(() => {})
+          }
+        },
+        stop: () => pauseAudio(audioInstance),
+      }),
+    [audioInstance, registerMusicEngine, handleUserPlayback, coordinator],
+  )
+
   const handleModeChange = useCallback((mode) => {
     if (mode === MINI_MODE || mode === FULL_MODE) {
       setDisplayMode(mode)
@@ -589,19 +621,51 @@ const Player = () => {
     const current = playerState.current || {}
     return {
       ...defaultOptions,
-      audioLists: playerState.queue.map((item) => item),
-      playIndex: playerState.playIndex,
+      audioLists: playerState.queue
+        .filter((item) => item.source !== 'hometube')
+        .map((item) => ({ ...item, __PLAYER_KEY__: item.uuid })),
+      playIndex:
+        playbackQueue?.selected?.source === 'hometube' ||
+        playerState.playIndex == null
+          ? undefined
+          : Math.max(
+              0,
+              playerState.queue
+                .slice(0, playerState.playIndex)
+                .filter((item) => item.source !== 'hometube').length,
+            ),
+      navigation: playbackQueue
+        ? {
+            previous: playbackQueue.previous,
+            next: playbackQueue.next,
+            queue: playbackQueue.queue.map((item) => ({
+              ...item,
+              __PLAYER_KEY__: item.uuid,
+            })),
+            playId: playbackQueue.selected?.uuid,
+            select: playbackQueue.select,
+            remove: playbackQueue.remove,
+            reorder: playbackQueue.reorder,
+          }
+        : undefined,
       autoPlay:
         !sleepStopped &&
         homeTubePlayback.activeSource !== 'hometube' &&
+        playbackQueue?.selected?.source !== 'hometube' &&
         playerState.queue.length > 0 &&
         playerState.autoPlay !== false &&
-        (playerState.clear || playerState.playIndex === 0),
+        (playerState.clear || playerState.playIndex != null),
       autoPlayInitLoadPlayList:
-        !sleepStopped && homeTubePlayback.activeSource !== 'hometube',
+        !sleepStopped &&
+        homeTubePlayback.activeSource !== 'hometube' &&
+        playbackQueue?.selected?.source !== 'hometube',
       clearPriorAudioLists: playerState.clear,
       extendsContent: (
-        <PlayerToolbar id={current.trackId} isRadio={current.isRadio} />
+        <PlayerToolbar
+          id={current.trackId}
+          isRadio={current.isRadio}
+          active={homeTubePlayback.activeSource !== 'hometube'}
+        />
       ),
       defaultVolume: isMobilePlayer ? 1 : playerState.volume,
       showMediaSession: false,
@@ -612,11 +676,14 @@ const Player = () => {
     homeTubePlayback.activeSource,
     isMobilePlayer,
     sleepStopped,
+    playbackQueue,
   ])
 
   const onAudioListsChange = useCallback(
-    (_, audioLists, audioInfo) => dispatch(syncQueue(audioInfo, audioLists)),
-    [dispatch],
+    (_, audioLists, audioInfo) => {
+      if (!playbackQueue) dispatch(syncQueue(audioInfo, audioLists))
+    },
+    [dispatch, playbackQueue],
   )
 
   const onAudioProgress = useCallback(
@@ -780,7 +847,8 @@ const Player = () => {
 
   const onAudioPause = useCallback(
     (info) => {
-      dispatch(currentPlaying(info))
+      if (homeTubeSourceRef.current !== 'hometube')
+        dispatch(currentPlaying(info))
       setMiniProgress({
         currentTime: Number(info.currentTime) || 0,
         duration: Number(info.duration) || 0,
@@ -812,7 +880,8 @@ const Player = () => {
         )
         reportRadioFeedback(playback, 'completed')
       }
-      dispatch(currentPlaying(info))
+      if (!playbackQueue) dispatch(currentPlaying(info))
+      playbackQueue?.ended(info.uuid)
       setMiniProgress({
         currentTime: Number(info.currentTime) || 0,
         duration: Number(info.duration) || 0,
@@ -822,7 +891,13 @@ const Player = () => {
         // eslint-disable-next-line no-console
         .catch((e) => console.log('Keepalive error:', e))
     },
-    [dispatch, dataProvider, currentTrackId, reportRadioFeedback],
+    [
+      dispatch,
+      dataProvider,
+      currentTrackId,
+      reportRadioFeedback,
+      playbackQueue,
+    ],
   )
 
   const onCoverClick = useCallback((mode, audioLists, audioInfo) => {
@@ -843,7 +918,7 @@ const Player = () => {
       if (currentIdx >= 0) {
         const nextSongIds = playerState.queue
           .slice(currentIdx + 1, currentIdx + 4)
-          .filter((item) => !item.isRadio)
+          .filter((item) => !item.isRadio && item.source !== 'hometube')
           .map((item) => item.trackId)
         if (nextSongIds.length > 0) {
           decisionService.prefetchDecisions(nextSongIds)
@@ -864,10 +939,11 @@ const Player = () => {
       }
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
-      dispatch(clearQueue())
+      if (playbackQueue) playbackQueue.clear()
+      else dispatch(clearQueue())
       reject()
     })
-  }, [dispatch, currentTrackId])
+  }, [dispatch, currentTrackId, playbackQueue])
 
   const queuedMiniTrack =
     playerState.queue[
@@ -893,11 +969,17 @@ const Player = () => {
     () =>
       homeTubePlayback.activeSource === 'hometube'
         ? {}
-        : keyHandlers(audioInstance, playerState, handleUserPlayback),
+        : keyHandlers(
+            audioInstance,
+            playerState,
+            handleUserPlayback,
+            playbackQueue,
+          ),
     [
       audioInstance,
       playerState,
       handleUserPlayback,
+      playbackQueue,
       homeTubePlayback.activeSource,
     ],
   )
@@ -931,8 +1013,8 @@ const Player = () => {
       !!playerState.current &&
       (homeTubePlayback.activeSource === 'music' ||
         (homeTubePlayback.activeSource == null && !audioInstance.paused)),
-    onPrevious: () => audioInstance?.playPrev?.(),
-    onNext: () => audioInstance?.playNext?.(),
+    onPrevious: playbackQueue?.previous || (() => audioInstance?.playPrev?.()),
+    onNext: playbackQueue?.next || (() => audioInstance?.playNext?.()),
     onSleepExpire: () => setSleepStopped(true),
     onUserPlayback: handleUserPlayback,
   })
@@ -988,6 +1070,16 @@ const Player = () => {
         />
       )}
       <div
+        onKeyDownCapture={(event) => {
+          if (
+            (event.key === 'Enter' || event.key === ' ') &&
+            event.target.closest(
+              '.play-btn, .prev-audio, .next-audio, .audio-item',
+            ) &&
+            !event.target.closest('.player-delete')
+          )
+            handleUserPlayback()
+        }}
         onClickCapture={(event) => {
           // The dependency owns these controls; acknowledge only explicit
           // playback clicks, never timer, queue-delete or display actions.

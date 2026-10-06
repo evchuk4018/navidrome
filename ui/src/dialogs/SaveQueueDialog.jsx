@@ -15,6 +15,7 @@ import {
   TextField,
   CircularProgress,
 } from '@material-ui/core'
+import { playlistEntry } from '../audioplayer/playlistEntries'
 import { closeSaveQueueDialog } from '../actions'
 import { useHistory } from 'react-router-dom'
 
@@ -41,15 +42,15 @@ export const SaveQueueDialog = () => {
 
   const handleSave = useCallback(() => {
     setIsSaving(true)
-    const ids = queue.map((item) => item.trackId)
+    const entries = queue.map(playlistEntry)
     dataProvider
       .create('playlist', { data: { name } })
       .then((res) => {
         const playlistId = res.data.id
-        if (ids.length) {
+        if (entries.length) {
           return dataProvider
             .create('playlistTrack', {
-              data: { ids },
+              data: { entries },
               filter: { playlist_id: playlistId },
             })
             .then(() => res)

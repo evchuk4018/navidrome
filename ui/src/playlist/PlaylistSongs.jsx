@@ -3,7 +3,6 @@ import {
   BulkActionsToolbar,
   ListToolbar,
   TextField,
-  NumberField,
   useDataProvider,
   useNotify,
   useVersion,
@@ -186,7 +185,18 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
         <SongTitleField source="title" showTrackNumbers={false} showArtwork />
       ),
       album: isDesktop && <AlbumLinkField source="album" />,
-      artist: isDesktop && <ArtistLinkField source="artist" />,
+      artist: isDesktop && (
+        <FunctionField
+          source="artist"
+          render={(r) =>
+            r.source === 'hometube' ? (
+              r.video?.channelName
+            ) : (
+              <ArtistLinkField record={r} source="artist" />
+            )
+          }
+        />
+      ),
       albumArtist: isDesktop && <ArtistLinkField source="albumArtist" />,
       duration: (
         <DurationField source="duration" className={classes.draggable} />
@@ -199,14 +209,36 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
         />
       ),
       playCount: isDesktop && (
-        <NumberField source="playCount" sortByOrder={'DESC'} />
+        <FunctionField
+          source="playCount"
+          render={(r) => (r.source === 'hometube' ? '' : r.playCount)}
+          sortByOrder={'DESC'}
+        />
       ),
       playDate: isDesktop && (
         <DateField source="playDate" sortByOrder={'DESC'} showTime />
       ),
-      quality: isDesktop && <QualityInfo source="quality" sortable={false} />,
-      channels: isDesktop && <NumberField source="channels" />,
-      bpm: isDesktop && <NumberField source="bpm" />,
+      quality: isDesktop && (
+        <FunctionField
+          source="quality"
+          sortable={false}
+          render={(r) =>
+            r.source === 'hometube' ? '' : <QualityInfo record={r} />
+          }
+        />
+      ),
+      channels: isDesktop && (
+        <FunctionField
+          source="channels"
+          render={(r) => (r.source === 'hometube' ? '' : r.channels)}
+        />
+      ),
+      bpm: isDesktop && (
+        <FunctionField
+          source="bpm"
+          render={(r) => (r.source === 'hometube' ? '' : r.bpm)}
+        />
+      ),
       genre: <TextField source="genre" />,
       rating: config.enableStarRating && (
         <RatingField

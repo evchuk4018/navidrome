@@ -11,6 +11,8 @@ import { useMediaSessionCoordinator } from '../audioplayer/MediaSessionCoordinat
 import MiniPlayer from '../audioplayer/MiniPlayer'
 import { pauseAudio, playAudio } from '../audioplayer/playback'
 import config from '../config'
+import { usePlaybackQueue } from '../audioplayer/PlaybackQueueContext'
+import { currentPlaying } from '../actions'
 import HomeTubePlayer from './HomeTubePlayer'
 import { homeTubeApiPath, homeTubeRequest } from './api'
 
@@ -82,6 +84,10 @@ const HomeTubeMiniPlayer = ({
 const HomeTubePlayback = ({ children }) => {
   const enabled = Boolean(config.homeTubeBaseURL)
   const coordinator = useMediaSessionCoordinator()
+  const playbackQueue = usePlaybackQueue()
+  const managedQueueRef = useRef(false)
+  const sharedQueueRef = useRef(playbackQueue)
+  sharedQueueRef.current = playbackQueue
   const [currentVideo, setCurrentVideo] = useState(null)
   const [queue, setQueue] = useState([])
   const [status, setStatus] = useState('idle')
@@ -103,6 +109,15 @@ const HomeTubePlayback = ({ children }) => {
   currentVideoRef.current = currentVideo
   queueRef.current = queue
   expandedRef.current = expanded
+
+  const sharedDispatch = playbackQueue?.dispatch
+  useEffect(() => {
+    if (currentVideo && activeSource === 'hometube')
+      sharedDispatch?.({
+        type: 'PLAYER_HOMETUBE_METADATA',
+        video: currentVideo,
+      })
+  }, [activeSource, currentVideo, sharedDispatch])
 
   const isCurrentOperation = useCallback(
     (operation) => operationRef.current === operation,
@@ -161,8 +176,20 @@ const HomeTubePlayback = ({ children }) => {
           body: JSON.stringify({ currentVideoId: videoId }),
         })
         if (!isCurrentOperation(operation)) return []
-        const entries = Array.isArray(result?.entries) ? result.entries : []
+        const returned = Array.isArray(result?.entries) ? result.entries : []
+        const headVideo = currentVideoRef.current
+        const entries =
+          returned[0]?.video?.id === videoId
+            ? returned
+            : [{ video: headVideo }, ...returned].filter(
+                (entry) => entry.video?.id,
+              )
         setQueue(entries)
+        if (!managedQueueRef.current)
+          sharedQueueRef.current?.dispatch({
+            type: 'PLAYER_HOMETUBE_QUEUE',
+            entries,
+          })
         const head = entries[0]?.video
         if (head?.id === videoId) {
           setCurrentVideo(head)
@@ -244,7 +271,9 @@ const HomeTubePlayback = ({ children }) => {
       if (!enabled || !video?.id) return false
       if (
         options.automatic &&
-        (sleepExpiredRef.current || coordinator?.isPlaybackBlocked?.())
+        (coordinator
+          ? coordinator.isPlaybackBlocked()
+          : sleepExpiredRef.current)
       )
         return false
       if (!options.automatic) coordinator?.allowPlayback?.()
@@ -253,6 +282,49 @@ const HomeTubePlayback = ({ children }) => {
       // Explicit HomeTube selection always pauses whichever source currently
       // owns playback. Background queue responses never call this path.
       coordinator?.pauseActive?.()
+      managedQueueRef.current = !!options.managedQueue
+      if (!options.managedQueue) {
+        const entries = [{ video }]
+        setQueue(entries)
+        sharedQueueRef.current?.dispatch({
+          type: 'PLAYER_HOMETUBE_QUEUE',
+          entries,
+        })
+      }
+      if (options.managedQueue) {
+        // Select the cached item immediately, but wait for fresh readiness before
+        // playback. This also registers the pending engine for sleep expiry.
+        selectVideo(
+          { ...video, mediaStatus: 'preparing' },
+          false,
+          false,
+          options.preserveView ? expandedRef.current : true,
+        )
+        try {
+          video = {
+            ...(await requestJson(
+              `/api/videos/${encodeURIComponent(video.id)}`,
+              { cache: 'no-store' },
+            )),
+            playbackPositionSeconds: 0,
+            watchState: 'unwatched',
+          }
+        } catch (error) {
+          if (!isCurrentOperation(operation)) return false
+          selectVideo(
+            { ...video, mediaStatus: 'failed', mediaError: error.message },
+            false,
+            false,
+            true,
+          )
+          return false
+        }
+        if (
+          !isCurrentOperation(operation) ||
+          coordinator?.isPlaybackBlocked?.()
+        )
+          return false
+      }
       const selectedWasReady = isReady(video)
       selectVideo(
         video,
@@ -268,14 +340,29 @@ const HomeTubePlayback = ({ children }) => {
         method: 'POST',
       }).catch(() => {})
 
-      let entries = await refreshQueue(video.id, operation)
+      let entries = options.managedQueue
+        ? [{ video }]
+        : await refreshQueue(video.id, operation)
+      if (options.managedQueue) setQueue(entries)
       if (!isCurrentOperation(operation)) return false
       const current = entries[0]?.video || video
       if (!isReady(current)) {
         setStatus('preparing')
-        await startDownload(current, operation)
+        const downloaded = await startDownload(current, operation)
+        if (!downloaded) return false
         if (!isCurrentOperation(operation)) return false
-        entries = await refreshQueue(current.id, operation)
+        entries = options.managedQueue
+          ? [
+              {
+                video: await requestJson(
+                  `/api/videos/${encodeURIComponent(current.id)}`,
+                  { cache: 'no-store' },
+                ).catch(() => current),
+              },
+            ]
+          : await refreshQueue(current.id, operation)
+        if (options.managedQueue && isCurrentOperation(operation))
+          setQueue(entries)
       }
       if (isCurrentOperation(operation)) {
         const readyVideo = entries[0]?.video
@@ -298,11 +385,11 @@ const HomeTubePlayback = ({ children }) => {
   )
 
   const claimMusic = useCallback(() => {
-    if (activeSource === 'hometube') {
+    operationRef.current += 1
+    if (activeSource === 'hometube' || currentVideoRef.current) {
       // This is an explicit source switch. Invalidate every in-flight queue or
       // download poll before pausing HomeTube so a late response cannot start
       // it again over the newly playing music.
-      operationRef.current += 1
       element?.pause?.()
       coordinator?.pauseActive?.()
     }
@@ -339,6 +426,17 @@ const HomeTubePlayback = ({ children }) => {
       updateProgress(position, nextDuration, event !== 'timeupdate')
       const video = currentVideoRef.current
       if (!video) return
+      if (sharedQueueRef.current?.selected?.source === 'hometube') {
+        const item = sharedQueueRef.current.selected
+        sharedQueueRef.current.dispatch(
+          currentPlaying({
+            ...item,
+            currentTime: position,
+            duration: nextDuration,
+            paused: element?.paused ?? event === 'pause',
+          }),
+        )
+      }
       if (event === 'play') {
         claimHomeTube()
       } else if (event === 'pause') {
@@ -348,10 +446,20 @@ const HomeTubePlayback = ({ children }) => {
         void saveProgress(video, position, nextDuration)
       }
     },
-    [claimHomeTube, saveProgress, updateProgress],
+    [claimHomeTube, element, saveProgress, updateProgress],
   )
 
   const handleEnded = useCallback(() => {
+    if (sharedQueueRef.current) {
+      if (
+        sharedQueueRef.current.selected?.source !== 'hometube' ||
+        sharedQueueRef.current.selected?.videoId !== currentVideoRef.current?.id
+      )
+        return
+      sharedQueueRef.current.ended(sharedQueueRef.current.selected?.uuid)
+      setStatus('paused')
+      return
+    }
     const next = queueRef.current[1]?.video
     if (
       next &&
@@ -384,7 +492,10 @@ const HomeTubePlayback = ({ children }) => {
           setQueue(result.entries)
         }
       } catch {
-        if (currentVideoRef.current?.id === current.id) {
+        if (
+          !sharedQueueRef.current &&
+          currentVideoRef.current?.id === current.id
+        ) {
           await refreshQueue(current.id, operationRef.current)
         }
       }
@@ -479,6 +590,84 @@ const HomeTubePlayback = ({ children }) => {
     return () => element.removeEventListener('timeupdate', savePeriodically)
   }, [currentVideo, enabled, element, saveProgress])
 
+  // Saved queues do not have recommendation jobs to poll. Refresh their selected
+  // video until HomeTube finishes preparation, without changing queue order.
+  useEffect(() => {
+    if (
+      !managedQueueRef.current ||
+      status !== 'preparing' ||
+      sleepExpired ||
+      !currentVideo?.id
+    )
+      return undefined
+    const operation = operationRef.current
+    const id = currentVideo.id
+    const timer = window.setInterval(async () => {
+      try {
+        const fresh = await requestJson(
+          `/api/videos/${encodeURIComponent(id)}`,
+          { cache: 'no-store' },
+        )
+        if (
+          !isCurrentOperation(operation) ||
+          coordinator?.isPlaybackBlocked?.()
+        )
+          return
+        setCurrentVideo(fresh)
+        if (isReady(fresh)) {
+          setStatus('ready')
+          setAutoplayNonce((nonce) => nonce + 1)
+        } else if (fresh.mediaStatus === 'failed') setStatus('error')
+      } catch {
+        /* A later poll or explicit retry can recover. */
+      }
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [coordinator, currentVideo?.id, isCurrentOperation, sleepExpired, status])
+
+  const registerHomeTubeEngine = playbackQueue?.register
+  useEffect(
+    () =>
+      registerHomeTubeEngine?.('hometube', {
+        element,
+        select: (item, automatic) => {
+          void playVideo(item.video, {
+            managedQueue: true,
+            preserveView: activeSource === 'hometube',
+            automatic,
+          })
+        },
+        dismiss: (item) => {
+          if (!managedQueueRef.current && item?.source === 'hometube')
+            void dismissEntry(item.videoId)
+        },
+        restart: (automatic) => {
+          if (!automatic) handleSleepRearm()
+          if (!coordinator?.isPlaybackBlocked?.() && element) {
+            element.currentTime = 0
+            playAudio(element)
+          }
+        },
+        stop: () => {
+          operationRef.current += 1
+          element?.pause()
+          setCurrentVideo(null)
+          currentVideoRef.current = null
+          setQueue([])
+          setExpanded(false)
+        },
+      }),
+    [
+      element,
+      playVideo,
+      registerHomeTubeEngine,
+      dismissEntry,
+      coordinator,
+      activeSource,
+      handleSleepRearm,
+    ],
+  )
+
   const value = useMemo(
     () => ({
       enabled,
@@ -542,7 +731,11 @@ const HomeTubePlayback = ({ children }) => {
         }}
         onDismiss={dismissEntry}
         onRetry={() => {
-          if (currentVideoRef.current) void playVideo(currentVideoRef.current)
+          if (currentVideoRef.current)
+            void playVideo(currentVideoRef.current, {
+              managedQueue: managedQueueRef.current,
+              preserveView: true,
+            })
         }}
       />
       {activeSource === 'hometube' && currentVideo && !expanded && (

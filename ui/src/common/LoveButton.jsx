@@ -59,6 +59,7 @@ export const LoveButton = ({
       size={'small'}
       disabled={disabled || loading || record.missing}
       className={clsx(classes.love, className)}
+      aria-label={record.starred ? 'Remove from favorites' : 'Add to favorites'}
       title={
         isDateSet(record.starredAt)
           ? new Date(record.starredAt).toLocaleString()

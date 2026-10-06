@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDataProvider, useNotify } from 'react-admin'
 import subsonic from '../subsonic'
+import { httpClient } from '../dataProvider'
+import { REST_URL } from '../consts'
 
 export const useToggleLove = (resource, record = {}) => {
   const [loading, setLoading] = useState(false)
@@ -20,18 +22,29 @@ export const useToggleLove = (resource, record = {}) => {
     const promises = []
 
     // Always refresh the original resource
-    const params = { id: record.id }
-    if (record.playlistId) {
+    const isVideo = resource === 'hometubeVideo' || record.source === 'hometube'
+    const params = { id: isVideo ? record.videoId || record.id : record.id }
+    if (record.playlistId && !isVideo) {
       params.filter = { playlist_id: record.playlistId }
     }
-    promises.push(dataProvider.getOne(resource, params))
+    promises.push(
+      dataProvider.getOne(isVideo ? 'hometubeVideo' : resource, params),
+    )
 
+    if (isVideo && record.playlistId) {
+      promises.push(
+        dataProvider.getOne('playlistTrack', {
+          id: record.id,
+          filter: { playlist_id: record.playlistId },
+        }),
+      )
+    }
     // If we have a mediaFileId, also refresh the song
     if (record.mediaFileId) {
       promises.push(dataProvider.getOne('song', { id: record.mediaFileId }))
     }
 
-    Promise.all(promises)
+    return Promise.all(promises)
       .catch((e) => {
         // eslint-disable-next-line no-console
         console.log('Error encountered: ' + e)
@@ -41,14 +54,39 @@ export const useToggleLove = (resource, record = {}) => {
           setLoading(false)
         }
       })
-  }, [dataProvider, record.mediaFileId, record.id, record.playlistId, resource])
+  }, [
+    dataProvider,
+    record.mediaFileId,
+    record.id,
+    record.playlistId,
+    record.source,
+    record.videoId,
+    resource,
+  ])
 
   const toggleLove = () => {
-    const toggle = record.starred ? subsonic.unstar : subsonic.star
-    const id = record.mediaFileId || record.id
+    const video = resource === 'hometubeVideo' || record.source === 'hometube'
+    const toggle = video
+      ? async (id) => {
+          await httpClient(
+            `${REST_URL}/hometubeVideo/${encodeURIComponent(id)}`,
+            { method: 'PUT', body: JSON.stringify(record.video || record) },
+          )
+          return httpClient(
+            `${REST_URL}/hometubeVideo/${encodeURIComponent(id)}/favorite`,
+            {
+              method: 'PUT',
+              body: JSON.stringify({ starred: !record.starred }),
+            },
+          )
+        }
+      : record.starred
+        ? subsonic.unstar
+        : subsonic.star
+    const id = record.videoId || record.mediaFileId || record.id
 
     setLoading(true)
-    toggle(id)
+    return toggle(id)
       .then(refreshRecord)
       .catch((e) => {
         // eslint-disable-next-line no-console

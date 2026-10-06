@@ -51,7 +51,10 @@ export const SongTitleField = ({ showTrackNumbers, showArtwork, ...props }) => {
   const currentId = currentTrack.trackId
   const paused = currentTrack.paused
   const isCurrent =
-    currentId && (currentId === record.id || currentId === record.mediaFileId)
+    currentId &&
+    (currentId === record.id ||
+      currentId === record.mediaFileId ||
+      (currentTrack.source === 'hometube' && currentId === record.videoId))
 
   const subtitle = record?.tags?.['subtitle']
 

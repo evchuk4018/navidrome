@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/navidrome/navidrome/conf"
@@ -56,6 +57,12 @@ func (api *Router) getPlaylist(ctx context.Context, id string) (*responses.Subso
 		Playlist: api.buildPlaylist(ctx, *pls),
 	}
 	response.Playlist.Entry = slice.MapWithArg(pls.MediaFiles(), ctx, childFromMediaFile)
+	response.Playlist.SongCount = int32(len(response.Playlist.Entry))
+	var duration float32
+	for _, mf := range pls.MediaFiles() {
+		duration += mf.Duration
+	}
+	response.Playlist.Duration = int32(duration)
 	return response, nil
 }
 
@@ -115,6 +122,34 @@ func (api *Router) UpdatePlaylist(r *http.Request) (*responses.Subsonic, error) 
 	log.Trace(r, fmt.Sprintf("-- Adding: '%v'", songsToAdd))
 	log.Trace(r, fmt.Sprintf("-- Removing: '%v'", songIndexesToRemove))
 
+	if len(songIndexesToRemove) > 0 {
+		pls, e := api.playlists.Get(r.Context(), playlistId)
+		if e != nil {
+			return nil, e
+		}
+		if pls.HasVideos {
+			full, e := api.playlists.GetWithTracks(r.Context(), playlistId)
+			if e != nil {
+				return nil, e
+			}
+			musicPositions := make([]int, 0)
+			for _, track := range full.Tracks {
+				if track.Source != "hometube" {
+					position, err := strconv.Atoi(track.ID)
+					if err != nil {
+						return nil, err
+					}
+					musicPositions = append(musicPositions, position-1)
+				}
+			}
+			for i, index := range songIndexesToRemove {
+				if index < 0 || index >= len(musicPositions) {
+					return nil, newError(responses.ErrorGeneric, "invalid song index")
+				}
+				songIndexesToRemove[i] = musicPositions[index]
+			}
+		}
+	}
 	err = api.playlists.Update(r.Context(), playlistId, plsName, comment, public, songsToAdd, songIndexesToRemove)
 	if errors.Is(err, model.ErrNotAuthorized) {
 		return nil, newError(responses.ErrorAuthorizationFail)
@@ -132,6 +167,16 @@ func (api *Router) buildPlaylist(ctx context.Context, p model.Playlist) response
 	pls.Name = p.Name
 	pls.SongCount = int32(p.SongCount)
 	pls.Duration = int32(p.Duration)
+	if p.HasVideos {
+		if full, err := api.playlists.GetWithTracks(ctx, p.ID); err == nil {
+			music := full.MediaFiles()
+			pls.SongCount = int32(len(music))
+			pls.Duration = 0
+			for _, song := range music {
+				pls.Duration += int32(song.Duration)
+			}
+		}
+	}
 	pls.Created = p.CreatedAt
 	if p.IsSmartPlaylist() {
 		if p.EvaluatedAt != nil {

@@ -108,6 +108,11 @@ const useStyle = makeStyles(
       // share the same pink surface and controls on compact screens.
       '& .react-jinke-music-player-mobile': {
         zIndex: 1200,
+        boxSizing: 'border-box',
+        overflowY: 'auto',
+        paddingTop: 'max(20px, env(safe-area-inset-top, 0px))',
+        paddingBottom: 'max(20px, env(safe-area-inset-bottom, 0px))',
+        '& > .group': { flexShrink: 0 },
         color: `${sidebarColors.text} !important`,
         backgroundColor: `${sidebarColors.background} !important`,
         '& .react-jinke-music-player-mobile-header-right': {
@@ -137,6 +142,57 @@ const useStyle = makeStyles(
           color: `${sidebarColors.activeText} !important`,
         },
       },
+      '&.hometube-shared-player .react-jinke-music-player-mobile .react-jinke-music-player-mobile-cover':
+        {
+          aspectRatio: '16/9',
+          height: 'auto',
+          width: '85%',
+          maxWidth: 600,
+          borderRadius: 0,
+          border: 0,
+          boxShadow: 'none',
+          animation: 'none',
+          flexShrink: 0,
+        },
+      '&.hometube-shared-player .hometube-artwork': {
+        borderRadius: 0,
+        width: '100%',
+        height: '100%',
+        margin: 0,
+        flexShrink: 0,
+        animation: 'none',
+      },
+      '&.hometube-shared-player .music-player-panel .hometube-artwork': {
+        width: 'min(18vw, 112px)',
+        height: 'auto',
+        aspectRatio: '16/9',
+        marginRight: 20,
+      },
+      '& .react-jinke-music-player-mobile-operation .items': {
+        flexWrap: 'wrap',
+        rowGap: 8,
+        padding: 0,
+      },
+      '@media (max-width:810px) and (orientation:landscape)': {
+        '& .music-player-panel': {
+          height: 'auto',
+          paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        },
+        '& .music-player-panel .panel-content': {
+          flexWrap: 'wrap',
+          rowGap: 8,
+          paddingTop: 8,
+          paddingBottom: 8,
+        },
+        '& .progress-bar-content': { flex: '1 1 50%', minWidth: 0 },
+        '& .player-content': {
+          flex: '1 1 100%',
+          flexWrap: 'wrap',
+          justifyContent: 'center',
+          rowGap: 8,
+        },
+      },
+      '& [aria-disabled="true"]': { opacity: 0.35, cursor: 'default' },
       // The dependency's mini mode is a draggable circular controller. The
       // source-owned MiniPlayer renders the collapsed UI instead; the
       // dependency remains responsible for the expanded player and audio.

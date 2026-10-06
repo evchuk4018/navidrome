@@ -107,6 +107,8 @@ func (s *SQLStore) ArtworkQueue(ctx context.Context) model.ArtworkQueueRepositor
 
 func (s *SQLStore) Resource(ctx context.Context, m any) model.ResourceRepository {
 	switch m.(type) {
+	case model.HomeTubeVideo:
+		return NewHomeTubeRepository(ctx, s.getDBXBuilder())
 	case model.User:
 		return s.User(ctx).(model.ResourceRepository)
 	case model.Transcoding:

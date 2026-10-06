@@ -191,7 +191,7 @@ describe('shared sleep timer', () => {
     expect(homeTube.pause).toHaveBeenCalledOnce()
     expect(music.pause).not.toHaveBeenCalled()
     expect(onHomeTubeExpire).toHaveBeenCalledOnce()
-    expect(onMusicExpire).not.toHaveBeenCalled()
+    expect(onMusicExpire).toHaveBeenCalledOnce()
     expect(screen.getByRole('button', { name: '15 min' })).toBeEnabled()
   })
 

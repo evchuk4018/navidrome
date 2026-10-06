@@ -53,6 +53,7 @@ import { useEffect } from 'react'
 import { usePreventPageZoom } from './common/usePreventPageZoom'
 import { MediaSessionCoordinator } from './audioplayer/MediaSessionCoordinator'
 import { HomeTubePlaybackProvider } from './hometube/HomeTubePlaybackContext'
+import { PlaybackQueueProvider } from './audioplayer/PlaybackQueueContext'
 import { SleepTimerProvider } from './audioplayer/SleepTimerContext'
 
 const history = createHashHistory()
@@ -91,9 +92,11 @@ const App = () => (
   <Provider store={adminStore}>
     <MediaSessionCoordinator>
       <SleepTimerProvider>
-        <HomeTubePlaybackProvider>
-          <Admin />
-        </HomeTubePlaybackProvider>
+        <PlaybackQueueProvider>
+          <HomeTubePlaybackProvider>
+            <Admin />
+          </HomeTubePlaybackProvider>
+        </PlaybackQueueProvider>
       </SleepTimerProvider>
     </MediaSessionCoordinator>
   </Provider>
@@ -137,6 +140,7 @@ const Admin = (props) => {
         <Resource name="album" {...album} options={{ subMenu: 'albumList' }} />,
         <Resource name="artist" {...artist} />,
         <Resource name="song" {...song} />,
+        <Resource name="hometubeVideo" />,
         <Resource
           name="radio"
           {...(permissions === 'admin' ? radio.admin : radio.all)}

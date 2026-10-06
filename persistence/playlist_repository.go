@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"time"
 
@@ -117,6 +118,16 @@ func (r *playlistRepository) Put(p *model.Playlist, cols ...string) error {
 		_, err := r.put(pls.ID, pls, cols...)
 		return err
 	}
+	// Replacing music-only rows must never erase videos (including M3U sync).
+	if len(pls.Tracks) > 0 && pls.ID != "" {
+		existing, e := r.Get(pls.ID)
+		if e != nil && !errors.Is(e, model.ErrNotFound) {
+			return e
+		}
+		if existing != nil && existing.HasVideos {
+			return fmt.Errorf("cannot replace a mixed playlist through the music-only interface")
+		}
+	}
 	isNew := pls.ID == ""
 	if isNew {
 		pls.CreatedAt = time.Now()
@@ -159,7 +170,7 @@ func (r *playlistRepository) GetWithTracks(id string, refreshSmartPlaylist, incl
 		r.refreshSmartPlaylist(pls)
 	}
 	tracks, err := r.loadTracks(Select().From("playlist_tracks").
-		Where(Eq{"missing": false}).
+		Where(Or{Eq{"missing": false}, Eq{"playlist_tracks.source": "hometube"}}).
 		OrderBy("playlist_tracks.id"), id)
 	if err != nil {
 		log.Error(r.ctx, "Error loading playlist tracks ", "playlist", pls.Name, "id", pls.ID, err)
@@ -262,7 +273,7 @@ func (r *playlistRepository) GetPlaylists(mediaFileId string) (model.Playlists, 
 func (r *playlistRepository) selectPlaylist(options ...model.QueryOptions) SelectBuilder {
 	queryOptions, likedSongsFirst := r.playlistQueryOptions(options...)
 	sel := r.newSelect(queryOptions).Join("user on user.id = owner_id").
-		Columns(r.tableName+".*", "user.user_name as owner_name")
+		Columns(r.tableName+".*", "user.user_name as owner_name", "EXISTS(SELECT 1 FROM playlist_tracks pt WHERE pt.playlist_id = playlist.id AND pt.source = 'hometube') as has_videos")
 	if likedSongsFirst {
 		sel = r.orderLikedSongsFirst(sel)
 	}
@@ -335,12 +346,14 @@ func (r *playlistRepository) addTracks(playlistId string, startingPos int, media
 // refreshCounters updates total playlist duration, size and count
 func (r *playlistRepository) refreshCounters(pls *model.Playlist) error {
 	statsSql := Select(
-		"coalesce(sum(duration), 0) as duration",
+		"coalesce(sum(coalesce(media_file.duration, v.duration_seconds)), 0) as duration",
 		"coalesce(sum(size), 0) as size",
 		"count(*) as count",
 	).
-		From("media_file").
-		Join("playlist_tracks f on f.media_file_id = media_file.id").
+		From("playlist_tracks f").
+		LeftJoin("media_file on f.media_file_id = media_file.id").
+		LeftJoin("hometube_video v on v.id = f.video_id").
+		Where(Or{NotEq{"media_file.id": nil}, Eq{"f.source": "hometube"}}).
 		Where(Eq{"playlist_id": pls.ID})
 	var res struct{ Duration, Size, Count float32 }
 	err := r.queryOne(statsSql, &res)
@@ -377,7 +390,7 @@ func (r *playlistRepository) enqueueCoverRebuild(id string) {
 
 // tracksQuery is shared by loadTracks and GetCursor, so both hydrate rows identically.
 func (r *playlistRepository) tracksQuery(query SelectBuilder, id string) SelectBuilder {
-	query = r.applyLibraryFilter(query, "f")
+	query = r.applyMixedLibraryFilter(query).Columns(mixedMediaColumns...)
 	userID := loggedUser(r.ctx).ID
 	return query.
 		Columns(
@@ -387,17 +400,19 @@ func (r *playlistRepository) tracksQuery(query SelectBuilder, id string) SelectB
 			"play_date",
 			"coalesce(rating, 0) as rating",
 			"rated_at",
-			"f.*",
+
 			"playlist_tracks.*",
-			"library.path as library_path",
-			"library.name as library_name",
+			"coalesce(library.path, '') as library_path",
+			"coalesce(library.name, '') as library_name",
+			"v.title as video_title", "v.channel_id as video_channel_id", "v.channel_name as video_channel_name", "v.thumbnail_url as video_thumbnail_url", "v.duration_seconds as video_duration",
 		).
 		LeftJoin("annotation on (" +
-			"annotation.item_id = media_file_id" +
-			" AND annotation.item_type = 'media_file'" +
+			"annotation.item_id = CASE WHEN playlist_tracks.source = 'hometube' THEN video_id ELSE media_file_id END" +
+			" AND annotation.item_type = CASE WHEN playlist_tracks.source = 'hometube' THEN 'hometube_video' ELSE 'media_file' END" +
 			" AND annotation.user_id = '" + userID + "')").
-		Join("media_file f on f.id = media_file_id").
-		Join("library on f.library_id = library.id").
+		LeftJoin("media_file f on f.id = media_file_id").
+		LeftJoin("library on f.library_id = library.id").
+		LeftJoin("hometube_video v on v.id = video_id").
 		Where(Eq{"playlist_id": id})
 }
 
@@ -457,7 +472,7 @@ func (r *playlistRepository) removeOrphans() error {
 	sel := Select("playlist_tracks.playlist_id as id", "p.name").From("playlist_tracks").
 		Join("playlist p on playlist_tracks.playlist_id = p.id").
 		LeftJoin("media_file mf on playlist_tracks.media_file_id = mf.id").
-		Where(Eq{"mf.id": nil}).
+		Where(And{Eq{"mf.id": nil}, Eq{"playlist_tracks.source": "music"}}).
 		GroupBy("playlist_tracks.playlist_id")
 
 	var pls []struct{ Id, Name string }
@@ -470,6 +485,7 @@ func (r *playlistRepository) removeOrphans() error {
 		log.Debug(r.ctx, "Cleaning-up orphan tracks from playlist", "id", pl.Id, "name", pl.Name)
 		del := Delete("playlist_tracks").Where(And{
 			ConcatExpr("media_file_id not in (select id from media_file)"),
+			Eq{"source": "music"},
 			Eq{"playlist_id": pl.Id},
 		})
 		n, err := r.executeSQL(del)
@@ -517,3 +533,34 @@ func (r *playlistRepository) renumber(id string) error {
 var _ model.PlaylistRepository = (*playlistRepository)(nil)
 var _ rest.Repository = (*playlistRepository)(nil)
 var _ rest.Persistable = (*playlistRepository)(nil)
+
+func (r *playlistRepository) applyMixedLibraryFilter(query SelectBuilder) SelectBuilder {
+	user := loggedUser(r.ctx)
+	if user.IsAdmin || user.ID == invalidUserId {
+		return query
+	}
+	return query.Where(Or{Eq{"playlist_tracks.source": "hometube"}, Expr("f.library_id IN (SELECT library_id FROM user_library WHERE user_id = ?)", user.ID)})
+}
+
+// A video has no media_file row. Supply zero values only for non-nullable Go
+// fields; retain NULL for optional numeric tags and timestamps on music rows.
+var mixedMediaColumns = func() []string {
+	typ := reflect.TypeFor[model.MediaFile]()
+	columns := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		column := field.Tag.Get("structs")
+		if column == "" || column == "-" {
+			continue
+		}
+		expression := "f." + column
+		switch field.Type.Kind() {
+		case reflect.String, reflect.Map:
+			expression = "coalesce(" + expression + ", '')"
+		case reflect.Int, reflect.Int64, reflect.Float32, reflect.Bool:
+			expression = "coalesce(" + expression + ", 0)"
+		}
+		columns = append(columns, expression+" as "+column)
+	}
+	return columns
+}()

@@ -1,5 +1,18 @@
 import React, { useEffect } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Provider } from 'react-redux'
+import { createStore } from 'redux'
+import { playerReducer } from '../reducers/playerReducer'
+import { playTracks } from '../actions'
+import {
+  PlaybackQueueProvider,
+  usePlaybackQueue,
+} from '../audioplayer/PlaybackQueueContext'
+import {
+  MediaSessionCoordinator,
+  useMediaSessionCoordinator,
+  useMediaSessionSource,
+} from '../audioplayer/MediaSessionCoordinator'
 import config from '../config'
 import {
   HomeTubePlaybackProvider,
@@ -29,6 +42,7 @@ const engine = vi.hoisted(() => ({
 vi.mock('./HomeTubePlayer', () => ({
   default: function MockHomeTubePlayer({
     video,
+    active,
     autoplayNonce,
     onElementChange,
     onPlay,
@@ -39,6 +53,13 @@ vi.mock('./HomeTubePlayer', () => ({
     onSleepExpire,
     onUserPlayback,
   }) {
+    useMediaSessionSource({
+      source: 'hometube',
+      element: engine.element,
+      active,
+      onSleepExpire,
+      onUserPlayback,
+    })
     useEffect(() => {
       onElementChange(engine.element)
     }, [onElementChange])
@@ -112,6 +133,43 @@ const Harness = ({ firstVideo = video('one'), secondVideo = video('two') }) => {
       </span>
     </>
   )
+}
+
+let managedQueue, managedCoordinator
+const ManagedProbe = () => {
+  managedQueue = usePlaybackQueue()
+  managedCoordinator = useMediaSessionCoordinator()
+  return <Harness />
+}
+const renderManaged = () => {
+  const store = createStore((state, action) => ({
+    player: playerReducer(state?.player, action),
+  }))
+  render(
+    <Provider store={store}>
+      <MediaSessionCoordinator>
+        <PlaybackQueueProvider>
+          <HomeTubePlaybackProvider>
+            <ManagedProbe />
+          </HomeTubePlaybackProvider>
+        </PlaybackQueueProvider>
+      </MediaSessionCoordinator>
+    </Provider>,
+  )
+  act(() => {
+    store.dispatch(
+      playTracks(
+        {
+          1: { id: 'song', title: 'Song' },
+          2: { source: 'hometube', videoId: 'saved', video: video('saved') },
+          3: { id: 'last', title: 'Last song' },
+        },
+        undefined,
+        '2',
+      ),
+    )
+  })
+  return store
 }
 
 describe('HomeTubePlaybackProvider', () => {
@@ -313,7 +371,7 @@ describe('HomeTubePlaybackProvider', () => {
     })
 
     expect(screen.getByTestId('current')).toHaveTextContent('two')
-    expect(screen.getByTestId('queue')).toHaveTextContent('')
+    expect(screen.getByTestId('queue')).toHaveTextContent('two')
     expect(screen.getByTestId('autoplay-nonce')).toHaveTextContent('2')
 
     await act(async () => {
@@ -371,5 +429,61 @@ describe('HomeTubePlaybackProvider', () => {
     expect(
       shouldResume({ playbackPositionSeconds: 20, watchState: 'watched' }, 60),
     ).toBe(0)
+  })
+
+  it('refreshes a saved video and keeps the mixed playlist order through preparation and Next', async () => {
+    let ready = false
+    api.request.mockImplementation(async (path) => {
+      if (path === '/api/videos/saved/download') {
+        ready = true
+        return {}
+      }
+      if (path === '/api/videos/saved')
+        return video('saved', ready ? 'ready' : 'missing')
+      return {}
+    })
+    renderManaged()
+    await waitFor(() =>
+      expect(screen.getByTestId('status')).toHaveTextContent('ready'),
+    )
+    expect(managedQueue.queue.map((item) => item.trackId)).toEqual([
+      'song',
+      'saved',
+      'last',
+    ])
+    expect(api.request.mock.calls.some(([path]) => path === '/api/queue')).toBe(
+      false,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'engine ended' }))
+    expect(managedQueue.selected.trackId).toBe('last')
+  })
+
+  it('does not restart from a late readiness response after expiry, and explicit selection works', async () => {
+    let complete
+    api.request.mockImplementation((path) =>
+      path === '/api/videos/saved'
+        ? new Promise((resolve) => {
+            complete = resolve
+          })
+        : Promise.resolve({}),
+    )
+    renderManaged()
+    await waitFor(() => expect(complete).toBeDefined())
+    act(() => managedCoordinator.expireSleep())
+    await act(async () => {
+      complete(video('saved'))
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('autoplay-nonce')).toHaveTextContent('0')
+    expect(managedCoordinator.isPlaybackBlocked()).toBe(true)
+    api.request.mockImplementation(async (path) =>
+      path === '/api/videos/saved' ? video('saved') : {},
+    )
+    act(() => managedQueue.select(1))
+    await waitFor(() =>
+      expect(screen.getByTestId('status')).toHaveTextContent('ready'),
+    )
+    expect(managedCoordinator.isPlaybackBlocked()).toBe(false)
+    expect(managedQueue.queue).toHaveLength(3)
   })
 })

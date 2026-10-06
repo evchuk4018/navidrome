@@ -19,6 +19,7 @@ type Playlist struct {
 	Annotations `structs:"-"`
 	ItemImage   `structs:"-"`
 
+	HasVideos        bool           `structs:"-" json:"hasVideos,omitempty"`
 	ID               string         `structs:"id" json:"id"`
 	Name             string         `structs:"name" json:"name"`
 	Comment          string         `structs:"comment" json:"comment"`
@@ -157,18 +158,23 @@ type PlaylistRepository interface {
 }
 
 type PlaylistTrack struct {
-	ID          string `json:"id"`
-	MediaFileID string `json:"mediaFileId"`
-	PlaylistID  string `json:"playlistId"`
+	Source      string         `json:"source"`
+	VideoID     string         `json:"videoId,omitempty"`
+	Video       *HomeTubeVideo `structs:"-" json:"video,omitempty"`
+	ID          string         `json:"id"`
+	MediaFileID string         `json:"mediaFileId"`
+	PlaylistID  string         `json:"playlistId"`
 	MediaFile
 }
 
 type PlaylistTracks []PlaylistTrack
 
 func (plt PlaylistTracks) MediaFiles() MediaFiles {
-	mfs := make(MediaFiles, len(plt))
-	for i, t := range plt {
-		mfs[i] = t.MediaFile
+	mfs := make(MediaFiles, 0, len(plt))
+	for _, t := range plt {
+		if t.Source != "hometube" {
+			mfs = append(mfs, t.MediaFile)
+		}
 	}
 	return mfs
 }
@@ -183,6 +189,7 @@ type PlaylistTrackRepository interface {
 	GetAlbumIDs(options ...QueryOptions) ([]string, error)
 	GetMediaFileIDs(options ...QueryOptions) ([]string, error)
 	Add(mediaFileIds []string) (int, error)
+	AddEntries(entries []PlaylistEntry) (int, error)
 	AddAlbums(albumIds []string) (int, error)
 	AddArtists(artistIds []string) (int, error)
 	AddDiscs(discs []DiscID) (int, error)

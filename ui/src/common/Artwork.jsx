@@ -46,7 +46,12 @@ export const Artwork = ({
   onClick,
 }) => {
   const classes = useStyles()
-  const url = record ? subsonic.getCoverArtUrl(record, size, square) : ''
+  const url =
+    record?.source === 'hometube'
+      ? record.video?.thumbnailUrl || ''
+      : record
+        ? subsonic.getCoverArtUrl(record, size, square)
+        : ''
   const { imgUrl, fromCache } = useImageUrl(url)
 
   const [decoded, setDecoded] = useState(false)

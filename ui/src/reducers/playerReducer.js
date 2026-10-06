@@ -73,7 +73,22 @@ const makeMusicSrc = (trackId) =>
 
 const mapToAudioLists = (item) => {
   // If item comes from a playlist, trackId is mediaFileId
-  const trackId = item.mediaFileId || item.id
+  const trackId = item.videoId || item.mediaFileId || item.id
+  if (item.source === 'hometube') {
+    const video = item.video || item
+    return {
+      source: 'hometube',
+      trackId,
+      videoId: trackId,
+      uuid: uuidv4(),
+      video,
+      name: video.title,
+      singer: video.channelName,
+      cover: video.thumbnailUrl,
+      duration: video.durationSeconds,
+      song: item,
+    }
+  }
 
   if (item.isRadio || item.radioPending) {
     return {
@@ -115,6 +130,7 @@ const mapToAudioLists = (item) => {
   }
 
   return {
+    source: 'music',
     trackId,
     uuid: uuidv4(),
     song: item,
@@ -138,7 +154,13 @@ const mapToAudioLists = (item) => {
   }
 }
 
-const reduceClearQueue = () => ({ ...initialState, clear: true })
+const reduceClearQueue = (state) => ({
+  ...initialState,
+  mode: state.mode,
+  volume: state.volume,
+  musicIntent: state.musicIntent,
+  clear: true,
+})
 
 const reducePlayTracks = (state, { data, id, searchPlayRequestId }) => {
   let playIndex = 0
@@ -158,6 +180,7 @@ const reducePlayTracks = (state, { data, id, searchPlayRequestId }) => {
       searchPlayRequestId === state.pendingSearchPlay?.requestId
         ? state.pendingSearchPlay
         : null,
+    selectionAutomatic: false,
     musicIntent: (state.musicIntent || 0) + 1,
   }
 }
@@ -170,6 +193,7 @@ const reduceSetTrack = (state, { data }) => {
     clear: true,
     radioSession: null,
     pendingSearchPlay: null,
+    selectionAutomatic: false,
     musicIntent: (state.musicIntent || 0) + 1,
   }
 }
@@ -282,7 +306,7 @@ const reduceCurrent = (state, { data }) => {
     playIndex: pending ? state.playIndex : undefined,
     clear: pending ? state.clear : false,
     savedPlayIndex: pending ? state.savedPlayIndex : savedPlayIndex,
-    volume: data.volume,
+    volume: data.volume ?? state.volume,
   }
 }
 
@@ -296,6 +320,99 @@ const reduceMode = (state, { data: { mode } }) => {
 export const playerReducer = (previousState = initialState, payload) => {
   const { type } = payload
   switch (type) {
+    case 'PLAYER_QUEUE_REORDER': {
+      const queue = [...previousState.queue]
+      const selected =
+        queue[previousState.playIndex ?? previousState.savedPlayIndex ?? 0]
+      if (!queue[payload.from] || !queue[payload.to]) return previousState
+      const [row] = queue.splice(payload.from, 1)
+      queue.splice(payload.to, 0, row)
+      const index = queue.indexOf(selected)
+      return {
+        ...previousState,
+        queue,
+        savedPlayIndex: index,
+        playIndex: previousState.playIndex == null ? undefined : index,
+      }
+    }
+    case 'PLAYER_QUEUE_SELECT':
+      return {
+        ...previousState,
+        playIndex: payload.index,
+        savedPlayIndex: payload.index,
+        autoPlay: true,
+        selectionAutomatic: payload.automatic,
+        musicIntent: (previousState.musicIntent || 0) + 1,
+      }
+    case 'PLAYER_QUEUE_REMOVE': {
+      const index =
+        previousState.playIndex ??
+        Math.max(0, previousState.savedPlayIndex || 0)
+      const removed = previousState.queue.findIndex(
+        (item) => item.uuid === payload.uuid,
+      )
+      const queue = previousState.queue.filter(
+        (item) => item.uuid !== payload.uuid,
+      )
+      if (removed < 0) return previousState
+      const selected = Math.max(
+        0,
+        Math.min(queue.length - 1, index - (removed < index ? 1 : 0)),
+      )
+      return {
+        ...previousState,
+        queue,
+        playIndex: selected,
+        savedPlayIndex: selected,
+        clear: true,
+        musicIntent:
+          (previousState.musicIntent || 0) + (removed === index ? 1 : 0),
+        selectionAutomatic: false,
+      }
+    }
+    case 'PLAYER_HOMETUBE_METADATA': {
+      const video = payload.video
+      const update = (item) =>
+        item?.source === 'hometube' && item.videoId === video.id
+          ? {
+              ...item,
+              video,
+              name: video.title,
+              singer: video.channelName,
+              cover: video.thumbnailUrl,
+              duration: video.durationSeconds,
+            }
+          : item
+      return {
+        ...previousState,
+        queue: previousState.queue.map(update),
+        current: update(previousState.current),
+      }
+    }
+    case 'PLAYER_HOMETUBE_QUEUE': {
+      const queue = payload.entries.map((entry) => {
+        const existing = previousState.queue.find(
+          (item) =>
+            item.source === 'hometube' && item.videoId === entry.video.id,
+        )
+        return {
+          ...mapToAudioLists({
+            source: 'hometube',
+            videoId: entry.video.id,
+            video: entry.video,
+          }),
+          ...(existing ? { uuid: existing.uuid } : {}),
+        }
+      })
+      return {
+        ...previousState,
+        queue,
+        savedPlayIndex: 0,
+        playIndex: undefined,
+        current: queue[0] || {},
+        clear: true,
+      }
+    }
     case PLAYER_REQUEST_SEARCH_PLAY:
       return {
         ...previousState,
@@ -319,7 +436,7 @@ export const playerReducer = (previousState = initialState, payload) => {
         ? { ...previousState, pendingSearchPlay: null }
         : previousState
     case PLAYER_CLEAR_QUEUE:
-      return reduceClearQueue()
+      return reduceClearQueue(previousState)
     case PLAYER_PLAY_TRACKS:
       return reducePlayTracks(previousState, payload)
     case PLAYER_SET_TRACK:
@@ -344,9 +461,13 @@ export const playerReducer = (previousState = initialState, payload) => {
         ...previousState,
         queue: previousState.queue.map((item) => ({
           ...item,
-          musicSrc: item.isRadio
-            ? item.musicSrc
-            : resolvedUrls[item.trackId] || subsonic.streamUrl(item.trackId),
+          musicSrc:
+            item.source === 'hometube'
+              ? undefined
+              : item.isRadio
+                ? item.musicSrc
+                : resolvedUrls[item.trackId] ||
+                  subsonic.streamUrl(item.trackId),
         })),
         clear: true,
         autoPlay: false,

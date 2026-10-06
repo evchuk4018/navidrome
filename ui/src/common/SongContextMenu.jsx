@@ -102,7 +102,7 @@ export const SongContextMenu = ({
       action: (record) => dispatch(addTracks({ [record.id]: record })),
     },
     instantMix: {
-      enabled: config.enableExternalServices,
+      enabled: config.enableExternalServices && record.source !== 'hometube',
       label: translate('resources.song.actions.instantMix'),
       action: async (record) => {
         notify('message.startingInstantMix', { type: 'info' })
@@ -125,13 +125,26 @@ export const SongContextMenu = ({
       action: (record) =>
         dispatch(
           openAddToPlaylist({
-            selectedIds: [record.mediaFileId || record.id],
+            selectedIds:
+              record.source === 'hometube'
+                ? [`hometube:${record.videoId}`]
+                : [record.mediaFileId || record.id],
+            selectedEntries:
+              record.source === 'hometube'
+                ? [
+                    {
+                      source: 'hometube',
+                      id: record.videoId,
+                      video: record.video,
+                    },
+                  ]
+                : undefined,
             onSuccess: (id) => onAddToPlaylist(id),
           }),
         ),
     },
     showInPlaylist: {
-      enabled: true,
+      enabled: record?.source !== 'hometube',
       label:
         translate('resources.song.actions.showInPlaylist') +
         (playlists.length > 0 ? ' ►' : ''),
@@ -140,7 +153,7 @@ export const SongContextMenu = ({
       },
     },
     share: {
-      enabled: config.enableSharing,
+      enabled: config.enableSharing && record?.source !== 'hometube',
       label: translate('ra.action.share'),
       action: (record) =>
         dispatch(
@@ -152,13 +165,13 @@ export const SongContextMenu = ({
         ),
     },
     download: {
-      enabled: config.enableDownloads,
+      enabled: config.enableDownloads && record?.source !== 'hometube',
       label: `${translate('ra.action.download')} (${formatBytes(record.size)})`,
       action: (record) =>
         dispatch(openDownloadMenu(record, DOWNLOAD_MENU_SONG)),
     },
     info: {
-      enabled: true,
+      enabled: record?.source !== 'hometube',
       label: translate('resources.song.actions.info'),
       action: async (record) => {
         let fullRecord = record
@@ -186,7 +199,7 @@ export const SongContextMenu = ({
 
   const handleClick = (e) => {
     setAnchorEl(e.currentTarget)
-    if (!playlistsLoaded) {
+    if (!playlistsLoaded && record.source !== 'hometube') {
       const id = record.mediaFileId || record.id
       dataProvider
         .getPlaylists(id)

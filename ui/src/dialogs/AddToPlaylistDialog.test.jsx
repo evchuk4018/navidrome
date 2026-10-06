@@ -29,7 +29,7 @@ const mockIndexedData = {
 }
 const selectedIds = ['song-1', 'song-2']
 
-const createTestUtils = (mockDataProvider) =>
+const createTestUtils = (mockDataProvider, entries) =>
   render(
     <DataProviderContext.Provider value={mockDataProvider}>
       <TestContext
@@ -37,7 +37,10 @@ const createTestUtils = (mockDataProvider) =>
           addToPlaylistDialog: {
             open: true,
             duplicateSong: false,
-            selectedIds: selectedIds,
+            selectedIds: entries
+              ? entries.map((entry) => `${entry.source}:${entry.id}`)
+              : selectedIds,
+            selectedEntries: entries,
           },
           admin: {
             ui: { optimistic: false },
@@ -71,6 +74,40 @@ vi.mock('../dataProvider', () => ({
 describe('AddToPlaylistDialog', () => {
   beforeAll(() => localStorage.setItem('userId', 'admin'))
   afterEach(cleanup)
+
+  it('adds a video when a song has the same ID, without treating it as a duplicate', async () => {
+    const { httpClient } = await import('../dataProvider')
+    httpClient.mockResolvedValue({
+      json: [{ source: 'music', mediaFileId: 'same-id' }],
+    })
+    const entries = [
+      {
+        source: 'hometube',
+        id: 'same-id',
+        video: { id: 'same-id', title: 'Video' },
+      },
+    ]
+    const provider = {
+      getList: vi.fn().mockResolvedValue({ data: mockData, total: 2 }),
+      getOne: vi.fn().mockResolvedValue({ data: mockData[0] }),
+      create: vi.fn().mockResolvedValue({ data: { id: 'created' } }),
+    }
+    createTestUtils(provider, entries)
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'sample' },
+    })
+    fireEvent.click(screen.getByText('sample playlist 1'))
+    await waitFor(() =>
+      expect(screen.getByTestId('playlist-add')).toBeEnabled(),
+    )
+    fireEvent.click(screen.getByTestId('playlist-add'))
+    await waitFor(() =>
+      expect(provider.create).toHaveBeenCalledWith('playlistTrack', {
+        data: { entries },
+        filter: { playlist_id: 'sample-id1' },
+      }),
+    )
+  })
 
   it('adds distinct songs to already existing playlists', async () => {
     const dataProvider = await import('../dataProvider')

@@ -120,10 +120,11 @@ func deleteFromPlaylist(pls playlists.Playlists) http.HandlerFunc {
 
 func addToPlaylist(pls playlists.Playlists) http.HandlerFunc {
 	type addTracksPayload struct {
-		Ids       []string       `json:"ids"`
-		AlbumIds  []string       `json:"albumIds"`
-		ArtistIds []string       `json:"artistIds"`
-		Discs     []model.DiscID `json:"discs"`
+		Ids       []string              `json:"ids"`
+		AlbumIds  []string              `json:"albumIds"`
+		ArtistIds []string              `json:"artistIds"`
+		Discs     []model.DiscID        `json:"discs"`
+		Entries   []model.PlaylistEntry `json:"entries"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -137,27 +138,39 @@ func addToPlaylist(pls playlists.Playlists) http.HandlerFunc {
 			return
 		}
 		count, c := 0, 0
-		if c, err = pls.AddTracks(ctx, playlistId, payload.Ids); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		if payload.Entries != nil {
+			if len(payload.Ids)+len(payload.AlbumIds)+len(payload.ArtistIds)+len(payload.Discs) > 0 {
+				http.Error(w, "entries cannot be combined with music IDs", http.StatusBadRequest)
+				return
+			}
+			if c, err = pls.AddEntries(ctx, playlistId, payload.Entries); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			count += c
+		} else {
+			if c, err = pls.AddTracks(ctx, playlistId, payload.Ids); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			count += c
+			if c, err = pls.AddAlbums(ctx, playlistId, payload.AlbumIds); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			count += c
+			if c, err = pls.AddArtists(ctx, playlistId, payload.ArtistIds); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			count += c
+			if c, err = pls.AddDiscs(ctx, playlistId, payload.Discs); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			count += c
 		}
-		count += c
-		if c, err = pls.AddAlbums(ctx, playlistId, payload.AlbumIds); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		count += c
-		if c, err = pls.AddArtists(ctx, playlistId, payload.ArtistIds); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		count += c
-		if c, err = pls.AddDiscs(ctx, playlistId, payload.Discs); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		count += c
-
+		w.Header().Set("Content-Type", "application/json")
 		// Must return an object with an ID, to satisfy ReactAdmin `create` call
 		_, err = fmt.Fprintf(w, `{"added":%d}`, count) //nolint:gosec
 		if err != nil {

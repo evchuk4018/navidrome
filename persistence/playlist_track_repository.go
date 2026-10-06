@@ -20,9 +20,26 @@ type playlistTrackRepository struct {
 type dbPlaylistTrack struct {
 	dbMediaFile
 	*model.PlaylistTrack `structs:",flatten"`
+	BirthTime            sql.NullTime
+	CreatedAt            sql.NullTime
+	UpdatedAt            sql.NullTime
+	VideoTitle           sql.NullString
+	VideoChannelID       sql.NullString
+	VideoChannelName     sql.NullString
+	VideoThumbnailURL    sql.NullString
+	VideoDuration        sql.NullFloat64
 }
 
 func (t *dbPlaylistTrack) PostScan() error {
+	if t.Source == "hometube" {
+		annotation := t.dbMediaFile.MediaFile.Annotations
+		t.PlaylistTrack.MediaFile = model.MediaFile{Annotations: annotation, Title: t.VideoTitle.String, Artist: t.VideoChannelName.String, Duration: float32(t.VideoDuration.Float64)}
+		t.Video = &model.HomeTubeVideo{ID: t.VideoID, Title: t.VideoTitle.String, ChannelID: t.VideoChannelID.String, ChannelName: t.VideoChannelName.String, ThumbnailURL: t.VideoThumbnailURL.String, DurationSeconds: float32(t.VideoDuration.Float64), Starred: annotation.Starred}
+		return nil
+	}
+	t.dbMediaFile.MediaFile.BirthTime = t.BirthTime.Time
+	t.dbMediaFile.MediaFile.CreatedAt = t.CreatedAt.Time
+	t.dbMediaFile.MediaFile.UpdatedAt = t.UpdatedAt.Time
 	if err := t.dbMediaFile.PostScan(); err != nil {
 		return err
 	}
@@ -47,8 +64,12 @@ func (r *playlistRepository) Tracks(playlistId string, refreshSmartPlaylist bool
 	p.db = r.db
 	p.tableName = "playlist_tracks"
 	p.registerModel(&model.PlaylistTrack{}, map[string]filterFunc{
-		"missing":    booleanFilter,
-		"library_id": libraryIdFilter,
+		"missing": func(field string, value any) Sqlizer {
+			return Or{Eq{"playlist_tracks.source": "hometube"}, booleanFilter(field, value)}
+		},
+		"library_id": func(field string, value any) Sqlizer {
+			return Or{Eq{"playlist_tracks.source": "hometube"}, libraryIdFilter(field, value)}
+		},
 	})
 	p.setSortMappings(
 		map[string]string{
@@ -79,9 +100,9 @@ func (r *playlistRepository) Tracks(playlistId string, refreshSmartPlaylist bool
 
 func (r *playlistTrackRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	query := Select().
-		Join("media_file f on f.id = media_file_id").
+		LeftJoin("media_file f on f.id = media_file_id").
 		Where(Eq{"playlist_id": r.playlistId})
-	query = r.applyLibraryFilter(query, "f")
+	query = r.playlistRepo.applyMixedLibraryFilter(query)
 	return r.count(query, options...)
 }
 
@@ -89,31 +110,19 @@ func (r *playlistTrackRepository) Count(options ...rest.QueryOptions) (int64, er
 	query := Select().
 		LeftJoin("media_file f on f.id = media_file_id").
 		Where(Eq{"playlist_id": r.playlistId})
+	query = r.playlistRepo.applyMixedLibraryFilter(query)
 	return r.count(query, r.parseRestOptions(r.ctx, options...))
 }
 
 func (r *playlistTrackRepository) Read(id string) (any, error) {
-	userID := loggedUser(r.ctx).ID
-	sel := r.newSelect().
-		LeftJoin("annotation on ("+
-			"annotation.item_id = media_file_id"+
-			" AND annotation.item_type = 'media_file'"+
-			" AND annotation.user_id = '"+userID+"')").
-		Columns(
-			"coalesce(starred, 0) as starred",
-			"coalesce(play_count, 0) as play_count",
-			"coalesce(rating, 0) as rating",
-			"starred_at",
-			"play_date",
-			"rated_at",
-			"f.*",
-			"playlist_tracks.*",
-		).
-		Join("media_file f on f.id = media_file_id").
-		Where(And{Eq{"playlist_id": r.playlistId}, Eq{"playlist_tracks.id": id}})
-	var trk dbPlaylistTrack
-	err := r.queryOne(sel, &trk)
-	return trk.PlaylistTrack, err
+	tracks, err := r.GetAll(model.QueryOptions{Filters: Eq{"playlist_tracks.id": id}})
+	if err != nil {
+		return nil, err
+	}
+	if len(tracks) == 0 {
+		return nil, model.ErrNotFound
+	}
+	return &tracks[0], nil
 }
 
 func (r *playlistTrackRepository) GetAll(options ...model.QueryOptions) (model.PlaylistTracks, error) {
@@ -283,3 +292,28 @@ func (r *playlistTrackRepository) Reorder(pos int, newPos int) error {
 }
 
 var _ model.PlaylistTrackRepository = (*playlistTrackRepository)(nil)
+
+func (r *playlistTrackRepository) AddEntries(entries []model.PlaylistEntry) (int, error) {
+	var res struct{ Max sql.NullInt32 }
+	if err := r.queryOne(r.newSelect().Columns("max(id) as max").Where(Eq{"playlist_id": r.playlistId}), &res); err != nil {
+		return 0, err
+	}
+	pos := int(res.Max.Int32) + 1
+	for _, entry := range entries {
+		source := entry.Source
+		if source == "" {
+			source = "music"
+		}
+		musicID, videoID := entry.ID, ""
+		if source == "hometube" {
+			musicID = ""
+			videoID = entry.ID
+		}
+		if _, err := r.executeSQL(Insert("playlist_tracks").Columns("id", "playlist_id", "media_file_id", "source", "video_id").Values(pos, r.playlistId, musicID, source, videoID)); err != nil {
+			return 0, err
+		}
+		pos++
+	}
+	r.playlistRepo.enqueueCoverRebuild(r.playlistId)
+	return len(entries), r.playlistRepo.refreshCounters(&model.Playlist{ID: r.playlistId})
+}

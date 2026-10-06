@@ -1,0 +1,608 @@
+diff --git a/node_modules/navidrome-music-player/es/components/AudioListsPanel.js b/node_modules/navidrome-music-player/es/components/AudioListsPanel.js
+index ca69703..40a7e69 100644
+--- a/node_modules/navidrome-music-player/es/components/AudioListsPanel.js
++++ b/node_modules/navidrome-music-player/es/components/AudioListsPanel.js
+@@ -1,5 +1,6 @@
++import Sortable from 'sortablejs';
+ import cls from 'classnames';
+-import React, { memo } from 'react';
++import React, { memo, useRef, useEffect } from 'react';
+ import { PLAYER_KEY } from '../config/player';
+ import SORTABLE_CONFIG from '../config/sortable';
+ var AudioListsPanel = function AudioListsPanel(_ref) {
+@@ -17,7 +18,28 @@ var AudioListsPanel = function AudioListsPanel(_ref) {
+     locale = _ref.locale,
+     icon = _ref.icon,
+     playing = _ref.playing;
++  const panelRef = useRef(null);
++  useEffect(() => {
++    if(!_ref.visible) return;
++    const previousFocus = document.activeElement;
++    panelRef.current?.focus();
++    return () => { if(previousFocus?.isConnected) previousFocus.focus(); };
++  }, [_ref.visible]);
++  const listRef = useRef(null);
++  const onReorder = _ref.onReorder;
++  useEffect(() => {
++    if(!onReorder || !listRef.current) return;
++    const sortable = new Sortable(listRef.current, {animation: 100, delay: 200, delayOnTouchOnly: true, onEnd: ({oldIndex,newIndex}) => {
++      if(oldIndex === newIndex) return;
++      // React owns the order: undo Sortable's DOM move before updating the queue.
++      const node = listRef.current.children[newIndex];
++      listRef.current.insertBefore(node, listRef.current.children[oldIndex + (newIndex < oldIndex ? 1 : 0)] || null);
++      onReorder(oldIndex,newIndex);
++    }});
++    return () => sortable.destroy();
++  }, [onReorder]);
+   return /*#__PURE__*/React.createElement("div", {
++    ref: panelRef, role: 'dialog', 'aria-label': locale.playListsText, 'aria-hidden': !_ref.visible, tabIndex: -1, onKeyDown: function(e) { if(e.key === 'Escape') { e.stopPropagation();onCancel(e); } },
+     className: cls('audio-lists-panel', panelToggleAnimate, {
+       'audio-lists-panel-mobile': isMobile,
+       'glass-bg': glassBg
+@@ -33,26 +55,26 @@ var AudioListsPanel = function AudioListsPanel(_ref) {
+   }, remove && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+     className: "audio-lists-panel-header-delete-btn",
+     title: locale.removeAudioListsText,
+-    onClick: onDelete()
++    role: "button", tabIndex: 0, "aria-label": locale.removeAudioListsText, onKeyDown: function(e) { if(e.key === "Enter" || e.key === " ") { e.preventDefault();onDelete()(e); } }, onClick: onDelete()
+   }, icon["delete"]), /*#__PURE__*/React.createElement("span", {
+     className: "audio-lists-panel-header-line"
+   })), /*#__PURE__*/React.createElement("span", {
+     className: "audio-lists-panel-header-close-btn",
+     title: locale.closeText,
+-    onClick: onCancel
++    role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onCancel(event); } }, onClick: false ? undefined : onCancel
+   }, isMobile ? icon.packUpPanelMobile : icon.close)))), /*#__PURE__*/React.createElement("div", {
+     className: cls('audio-lists-panel-content', {
+       'no-content': audioLists.length < 1
+     })
+   }, audioLists.length >= 1 ? /*#__PURE__*/React.createElement("ul", {
+-    className: SORTABLE_CONFIG.selector
++    ref: listRef, className: SORTABLE_CONFIG.selector
+   }, audioLists.map(function (audio) {
+     var name = audio.name,
+       singer = audio.singer;
+     var audioId = audio[PLAYER_KEY];
+     var isCurrentPlaying = playId === audioId;
+     return /*#__PURE__*/React.createElement("li", {
+-      key: audioId,
++      key: audioId, role: "button", tabIndex: 0, "aria-label": name, onKeyDown: function(e) { if(e.key === "Enter" || e.key === " ") { e.preventDefault();e.stopPropagation();onPlay(audioId); } },
+       title: !playing ? locale.clickToPlayText : isCurrentPlaying ? locale.clickToPauseText : locale.clickToPlayText,
+       className: cls('audio-item', {
+         playing: isCurrentPlaying
+@@ -77,7 +99,7 @@ var AudioListsPanel = function AudioListsPanel(_ref) {
+     }, singer), remove && /*#__PURE__*/React.createElement("span", {
+       className: "group player-delete",
+       title: locale.clickToDeleteText(name),
+-      onClick: onDelete(audioId)
++      role: "button", tabIndex: 0, "aria-label": locale.clickToDeleteText(name), onKeyDown: function(e) { if(e.key === "Enter" || e.key === " ") { e.preventDefault();onDelete(audioId)(e); } }, onClick: onDelete(audioId)
+     }, icon.close));
+   })) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", null, icon.empty), /*#__PURE__*/React.createElement("span", {
+     className: "no-data"
+diff --git a/node_modules/navidrome-music-player/es/components/PlayerDesktop.js b/node_modules/navidrome-music-player/es/components/PlayerDesktop.js
+new file mode 100644
+index 0000000..e322b27
+--- /dev/null
++++ b/node_modules/navidrome-music-player/es/components/PlayerDesktop.js
+@@ -0,0 +1,82 @@
++import React from 'react';
++import cls from 'classnames';
++import Slider from 'rc-slider/lib/Slider';
++import { VOLUME_BAR_SLIDER_OPTIONS } from '../config/slider';
++export default function PlayerDesktop({glassBg,autoHiddenCover,cover,playing,isResetCoverRotate,audioTitle,renderAudioTitle,formattedCurrentTime,loading,formattedAudioDuration,ProgressBar,showPlay,shouldShowPlayIcon,icon,locale,onPlayPrevAudio,onTogglePlay,onPlayNextAudio,ReloadComponent,DownloadComponent,ThemeSwitchComponent,extendsContent,soundValue,onResetVolume,onAudioMute,onAudioSoundChange,PlayModeComponent,LyricComponent,audioLists,openAudioListsPanel,toggleMode,onHidePanel,DestroyComponent,onCoverClick,artwork,previousDisabled,nextDisabled}) { return /*#__PURE__*/React.createElement("div", {
++        className: cls('music-player-panel', 'translate', {
++          'glass-bg': glassBg
++        })
++      }, /*#__PURE__*/React.createElement("section", {
++        className: "panel-content"
++      }, artwork || (!autoHiddenCover || autoHiddenCover && cover) && /*#__PURE__*/React.createElement("div", {
++        className: cls('img-content', 'img-rotate', {
++          'img-rotate-pause': !playing || !cover,
++          'img-rotate-reset': isResetCoverRotate
++        }),
++        style: {
++          backgroundImage: "url(".concat(cover, ")")
++        },
++        onClick: function onClick() {
++          return onCoverClick();
++        }
++      }), /*#__PURE__*/React.createElement("div", {
++        className: "progress-bar-content"
++      }, /*#__PURE__*/React.createElement("span", {
++        className: "audio-title",
++        title: audioTitle
++      }, renderAudioTitle()), /*#__PURE__*/React.createElement("section", {
++        className: "audio-main"
++      }, /*#__PURE__*/React.createElement("span", {
++        className: "current-time",
++        title: formattedCurrentTime
++      }, loading ? '--' : formattedCurrentTime), /*#__PURE__*/React.createElement("div", {
++        className: "progress-bar"
++      }, ProgressBar), /*#__PURE__*/React.createElement("span", {
++        className: "duration",
++        title: formattedAudioDuration
++      }, loading ? '--' : formattedAudioDuration))), /*#__PURE__*/React.createElement("div", {
++        className: "player-content"
++      }, !showPlay ? loading && icon.loading : /*#__PURE__*/React.createElement("span", {
++        className: "group"
++      }, /*#__PURE__*/React.createElement("span", {
++        className: "group prev-audio",
++        title: locale.previousTrackText, "aria-label": locale.previousTrackText,
++        role:"button", tabIndex: previousDisabled ? -1 : 0, "aria-disabled": previousDisabled, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!previousDisabled) onPlayPrevAudio(event); } }, onClick: previousDisabled ? undefined : onPlayPrevAudio
++      }, icon.prev), loading ? /*#__PURE__*/React.createElement("span", {
++        className: "group loading-icon",
++        title: locale.loadingText
++      }, icon.loading) : /*#__PURE__*/React.createElement("span", {
++        className: "group play-btn",
++        role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onTogglePlay(event); } }, onClick: false ? undefined : onTogglePlay,
++        "aria-label": shouldShowPlayIcon ? locale.clickToPlayText : locale.clickToPauseText,
++        title: shouldShowPlayIcon ? locale.clickToPlayText : locale.clickToPauseText
++      }, shouldShowPlayIcon ? icon.play : icon.pause), /*#__PURE__*/React.createElement("span", {
++        className: "group next-audio",
++        title: locale.nextTrackText, "aria-label": locale.nextTrackText,
++        role:"button", tabIndex: nextDisabled ? -1 : 0, "aria-disabled": nextDisabled, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!nextDisabled) onPlayNextAudio(event); } }, onClick: nextDisabled ? undefined : onPlayNextAudio
++      }, icon.next)), ReloadComponent, DownloadComponent, ThemeSwitchComponent, extendsContent || null, /*#__PURE__*/React.createElement("span", {
++        className: "group play-sounds",
++        title: locale.volumeText
++      }, soundValue === 0 ? /*#__PURE__*/React.createElement("span", {
++        className: "sounds-icon", "aria-label": locale.volumeText,
++        role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onResetVolume(event); } }, onClick: false ? undefined : onResetVolume
++      }, icon.mute) : /*#__PURE__*/React.createElement("span", {
++        className: "sounds-icon", "aria-label": locale.volumeText,
++        role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onAudioMute(event); } }, onClick: false ? undefined : onAudioMute
++      }, icon.volume), /*#__PURE__*/React.createElement(Slider, Object.assign({
++        value: soundValue,
++        onChange: onAudioSoundChange,
++        className: "sound-operation"
++      }, VOLUME_BAR_SLIDER_OPTIONS))), PlayModeComponent, LyricComponent, /*#__PURE__*/React.createElement("span", {
++        className: "group audio-lists-btn",
++        title: locale.playListsText, "aria-label": locale.playListsText,
++        role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) openAudioListsPanel(event); } }, onClick: function(event) { event.currentTarget.focus();openAudioListsPanel(event); }
++      }, /*#__PURE__*/React.createElement("span", {
++        className: "audio-lists-icon"
++      }, icon.playLists), /*#__PURE__*/React.createElement("span", {
++        className: "audio-lists-num"
++      }, audioLists.length)), toggleMode && /*#__PURE__*/React.createElement("span", {
++        className: "group hide-panel",
++        title: locale.toggleMiniModeText, "aria-label": locale.toggleMiniModeText,
++        role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onHidePanel(event); } }, onClick: false ? undefined : onHidePanel
++      }, icon.toggle), DestroyComponent))); }
+diff --git a/node_modules/navidrome-music-player/es/components/PlayerDestroy.js b/node_modules/navidrome-music-player/es/components/PlayerDestroy.js
+new file mode 100644
+index 0000000..03c5174
+--- /dev/null
++++ b/node_modules/navidrome-music-player/es/components/PlayerDestroy.js
+@@ -0,0 +1,12 @@
++import React from 'react';
++export default function PlayerDestroy({ icon, title, onClick, buttonRef }) {
++  return React.createElement('span', {
++    title, 'aria-label': title, className: 'group destroy-btn', ref: buttonRef,
++    role: 'button', tabIndex: 0, onClick,
++    onKeyDown: function(event) {
++      if (event.key === 'Enter' || event.key === ' ') {
++        event.preventDefault(); event.stopPropagation(); onClick && onClick(event);
++      }
++    }
++  }, icon);
++}
+diff --git a/node_modules/navidrome-music-player/es/components/PlayerIcons.js b/node_modules/navidrome-music-player/es/components/PlayerIcons.js
+new file mode 100644
+index 0000000..d086133
+--- /dev/null
++++ b/node_modules/navidrome-music-player/es/components/PlayerIcons.js
+@@ -0,0 +1,46 @@
++import React from 'react';
++import { AnimatePauseIcon, AnimatePlayIcon, ArrowDownIcon, CloseIcon, DeleteIcon, DownloadIcon, EmptyIcon, FaMinusSquareOIcon, LoadIcon, LoopIcon, LyricIcon, NextAudioIcon, OrderPlayIcon, PlayListsIcon, PrevAudioIcon, ReloadIcon, RepeatIcon, ShufflePlayIcon, VolumeMuteIcon, VolumeUnmuteIcon } from './Icon';
++var DEFAULT_ICON = {
++  pause: /*#__PURE__*/React.createElement(AnimatePauseIcon, null),
++  play: /*#__PURE__*/React.createElement(AnimatePlayIcon, null),
++  destroy: /*#__PURE__*/React.createElement(CloseIcon, null),
++  close: /*#__PURE__*/React.createElement(CloseIcon, null),
++  "delete": /*#__PURE__*/React.createElement(DeleteIcon, {
++    size: 24
++  }),
++  download: /*#__PURE__*/React.createElement(DownloadIcon, {
++    size: 26
++  }),
++  toggle: /*#__PURE__*/React.createElement(FaMinusSquareOIcon, null),
++  lyric: /*#__PURE__*/React.createElement(LyricIcon, null),
++  volume: /*#__PURE__*/React.createElement(VolumeUnmuteIcon, {
++    size: 26
++  }),
++  mute: /*#__PURE__*/React.createElement(VolumeMuteIcon, {
++    size: 26
++  }),
++  next: /*#__PURE__*/React.createElement(NextAudioIcon, null),
++  prev: /*#__PURE__*/React.createElement(PrevAudioIcon, null),
++  playLists: /*#__PURE__*/React.createElement(PlayListsIcon, null),
++  reload: /*#__PURE__*/React.createElement(ReloadIcon, {
++    size: 22
++  }),
++  loop: /*#__PURE__*/React.createElement(LoopIcon, {
++    size: 26
++  }),
++  order: /*#__PURE__*/React.createElement(OrderPlayIcon, {
++    size: 26
++  }),
++  orderLoop: /*#__PURE__*/React.createElement(RepeatIcon, {
++    size: 26
++  }),
++  shuffle: /*#__PURE__*/React.createElement(ShufflePlayIcon, {
++    size: 26
++  }),
++  loading: /*#__PURE__*/React.createElement(LoadIcon, null),
++  packUpPanelMobile: /*#__PURE__*/React.createElement(ArrowDownIcon, {
++    size: 26
++  }),
++  empty: /*#__PURE__*/React.createElement(EmptyIcon, null)
++};
++export default DEFAULT_ICON;
+diff --git a/node_modules/navidrome-music-player/es/components/PlayerMobile.js b/node_modules/navidrome-music-player/es/components/PlayerMobile.js
+index db46539..d156a6f 100644
+--- a/node_modules/navidrome-music-player/es/components/PlayerMobile.js
++++ b/node_modules/navidrome-music-player/es/components/PlayerMobile.js
+@@ -3,7 +3,10 @@ import React, { isValidElement, memo } from 'react';
+ import PlayModeTip from './PlayModeTip';
+ var prefix = 'react-jinke-music-player-mobile';
+ var PlayerMobile = function PlayerMobile(_ref) {
+-  var name = _ref.name,
++  var artwork = _ref.artwork,
++    previousDisabled = _ref.previousDisabled,
++    nextDisabled = _ref.nextDisabled,
++    name = _ref.name,
+     cover = _ref.cover,
+     singer = _ref.singer,
+     playing = _ref.playing,
+@@ -46,8 +49,8 @@ var PlayerMobile = function PlayerMobile(_ref) {
+     className: "".concat(prefix, "-header-title"),
+     title: name
+   }, renderAudioTitle()), toggleMode && /*#__PURE__*/React.createElement("div", {
+-    className: "".concat(prefix, "-header-right"),
+-    onClick: onClose
++    className: "".concat(prefix, "-header-right"), "aria-label": locale.toggleMiniModeText,
++    role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onClose(event); } }, onClick: false ? undefined : onClose
+   }, icon.close)), /*#__PURE__*/React.createElement("div", {
+     className: "".concat(prefix, "-singer text-center group")
+   }, /*#__PURE__*/React.createElement("span", {
+@@ -55,12 +58,12 @@ var PlayerMobile = function PlayerMobile(_ref) {
+     title: singer
+   }, singer)), /*#__PURE__*/React.createElement("div", {
+     className: "".concat(prefix, "-switch text-center group")
+-  }, themeSwitch), (!autoHiddenCover || autoHiddenCover && cover) && /*#__PURE__*/React.createElement("div", {
++  }, themeSwitch), (artwork || !autoHiddenCover || autoHiddenCover && cover) && /*#__PURE__*/React.createElement("div", {
+     className: "".concat(prefix, "-cover text-center"),
+     onClick: function onClick() {
+       return onCoverClick();
+     }
+-  }, /*#__PURE__*/React.createElement("img", {
++  }, artwork || /*#__PURE__*/React.createElement("img", {
+     src: cover,
+     alt: "cover",
+     className: cls('cover', {
+@@ -79,30 +82,30 @@ var PlayerMobile = function PlayerMobile(_ref) {
+     className: "".concat(prefix, "-toggle text-center group")
+   }, /*#__PURE__*/React.createElement("span", {
+     className: "group prev-audio",
+-    title: locale.previousTrackText,
+-    onClick: audioPrevPlay
++    title: locale.previousTrackText, "aria-label": locale.previousTrackText,
++    role:"button", tabIndex: previousDisabled ? -1 : 0, "aria-disabled": previousDisabled, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!previousDisabled) audioPrevPlay(event); } }, onClick: previousDisabled ? undefined : audioPrevPlay
+   }, icon.prev), loading ? /*#__PURE__*/React.createElement("span", {
+     className: "group loading-icon"
+   }, icon.loading) : /*#__PURE__*/React.createElement("span", {
+     className: "group play-btn",
+-    title: shouldShowPlayIcon ? locale.clickToPlayText : locale.clickToPauseText,
+-    onClick: onPlay
++    title: shouldShowPlayIcon ? locale.clickToPlayText : locale.clickToPauseText, "aria-label": shouldShowPlayIcon ? locale.clickToPlayText : locale.clickToPauseText,
++    role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) onPlay(event); } }, onClick: false ? undefined : onPlay
+   }, shouldShowPlayIcon ? icon.play : icon.pause), /*#__PURE__*/React.createElement("span", {
+     className: "group next-audio",
+-    title: locale.nextTrackText,
+-    onClick: audioNextPlay
++    title: locale.nextTrackText, "aria-label": locale.nextTrackText,
++    role:"button", tabIndex: nextDisabled ? -1 : 0, "aria-disabled": nextDisabled, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!nextDisabled) audioNextPlay(event); } }, onClick: nextDisabled ? undefined : audioNextPlay
+   }, icon.next)), /*#__PURE__*/React.createElement("div", {
+     className: "".concat(prefix, "-operation group")
+   }, /*#__PURE__*/React.createElement("ul", {
+     className: "items"
+-  }, [playMode, icon.download, icon.reload, icon.lyric].filter(isValidElement).map(function (item) {
++  }, [playMode, icon.download, icon.reload, icon.lyric].filter(isValidElement).map(function (item, index) {
+     return /*#__PURE__*/React.createElement("li", {
+       className: "item",
+-      key: item.props.className
++      key: item.props.className || index
+     }, item);
+   }), extendsContent, /*#__PURE__*/React.createElement("li", {
+-    className: "item",
+-    onClick: openAudioListsPanel
++    className: "item", "aria-label": locale.playListsText,
++    role:"button", tabIndex: false ? -1 : 0, "aria-disabled": false, onKeyDown: function(event) { if(event.key === "Enter" || event.key === " ") { event.preventDefault();event.stopPropagation(); if(!false) openAudioListsPanel(event); } }, onClick: function(event) { event.currentTarget.focus();openAudioListsPanel(event); }
+   }, icon.playLists))));
+ };
+ PlayerMobile.defaultProps = {
+diff --git a/node_modules/navidrome-music-player/es/components/PlayerMode.js b/node_modules/navidrome-music-player/es/components/PlayerMode.js
+new file mode 100644
+index 0000000..94f1186
+--- /dev/null
++++ b/node_modules/navidrome-music-player/es/components/PlayerMode.js
+@@ -0,0 +1,4 @@
++import React from 'react';
++export default function PlayerMode({icon,title,onClick}) {
++ return React.createElement('span',{className:'group loop-btn',role:'button',tabIndex:0,title,onClick,onKeyDown:event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();onClick()}}},icon);
++}
+diff --git a/node_modules/navidrome-music-player/es/components/PlayerProgress.js b/node_modules/navidrome-music-player/es/components/PlayerProgress.js
+new file mode 100644
+index 0000000..536e7c1
+--- /dev/null
++++ b/node_modules/navidrome-music-player/es/components/PlayerProgress.js
+@@ -0,0 +1,6 @@
++import React from 'react';
++import Slider from 'rc-slider/lib/Slider';
++import { PROGRESS_BAR_SLIDER_OPTIONS } from '../config/slider';
++export default function PlayerProgress({duration,currentTime,loadedProgress=0,showProgressLoadBar=false,onChange,onAfterChange,disabled=false,label='Position'}) {
++ return React.createElement(React.Fragment,null,showProgressLoadBar && React.createElement('div',{className:'progress-load-bar',style:{width:Math.min(loadedProgress,100)+'%'}}),React.createElement(Slider,{max:Math.max(1,Math.ceil(duration || 0)),defaultValue:0,value:Math.min(Math.ceil(currentTime || 0),Math.ceil(duration || 0)),onChange,onAfterChange,disabled,ariaLabelForHandle:label,...PROGRESS_BAR_SLIDER_OPTIONS}));
++}
+diff --git a/node_modules/navidrome-music-player/es/index.js b/node_modules/navidrome-music-player/es/index.js
+index dd68040..113d6a7 100644
+--- a/node_modules/navidrome-music-player/es/index.js
++++ b/node_modules/navidrome-music-player/es/index.js
+@@ -43,7 +43,12 @@ import Sortable, { Swap } from 'sortablejs';
+ import AudioListsPanel from './components/AudioListsPanel';
+ import CircleProcessBar from './components/CircleProcessBar';
+ import { AnimatePauseIcon, AnimatePlayIcon, ArrowDownIcon, CloseIcon, DeleteIcon, DownloadIcon, EmptyIcon, FaMinusSquareOIcon, LoadIcon, LoopIcon, LyricIcon, NextAudioIcon, OrderPlayIcon, PlayListsIcon, PrevAudioIcon, ReloadIcon, RepeatIcon, ShufflePlayIcon, VolumeMuteIcon, VolumeUnmuteIcon } from './components/Icon';
++import DEFAULT_ICON from './components/PlayerIcons';
+ import AudioPlayerMobile from './components/PlayerMobile';
++import PlayerDesktop from './components/PlayerDesktop';
++import PlayerDestroy from './components/PlayerDestroy';
++import PlayerProgress from './components/PlayerProgress';
++import PlayerMode from './components/PlayerMode';
+ import PlayModel from './components/PlayModel';
+ import { AUDIO_LIST_REMOVE_ANIMATE_TIME } from './config/animate';
+ import { SPACE_BAR_KEYCODE } from './config/keycode';
+@@ -61,51 +66,9 @@ import SORTABLE_CONFIG from './config/sortable';
+ import LOCALE_CONFIG from './locale';
+ import Lyric from './lyric';
+ import { adjustVolume, arrayEqual, createRandomNum, formatTime, isSafari, uuId } from './utils';
+-Sortable.mount(new Swap());
++if (Swap) Sortable.mount(new Swap());
+ var IS_MOBILE = getIsMobile();
+-var DEFAULT_ICON = {
+-  pause: /*#__PURE__*/React.createElement(AnimatePauseIcon, null),
+-  play: /*#__PURE__*/React.createElement(AnimatePlayIcon, null),
+-  destroy: /*#__PURE__*/React.createElement(CloseIcon, null),
+-  close: /*#__PURE__*/React.createElement(CloseIcon, null),
+-  "delete": /*#__PURE__*/React.createElement(DeleteIcon, {
+-    size: 24
+-  }),
+-  download: /*#__PURE__*/React.createElement(DownloadIcon, {
+-    size: 26
+-  }),
+-  toggle: /*#__PURE__*/React.createElement(FaMinusSquareOIcon, null),
+-  lyric: /*#__PURE__*/React.createElement(LyricIcon, null),
+-  volume: /*#__PURE__*/React.createElement(VolumeUnmuteIcon, {
+-    size: 26
+-  }),
+-  mute: /*#__PURE__*/React.createElement(VolumeMuteIcon, {
+-    size: 26
+-  }),
+-  next: /*#__PURE__*/React.createElement(NextAudioIcon, null),
+-  prev: /*#__PURE__*/React.createElement(PrevAudioIcon, null),
+-  playLists: /*#__PURE__*/React.createElement(PlayListsIcon, null),
+-  reload: /*#__PURE__*/React.createElement(ReloadIcon, {
+-    size: 22
+-  }),
+-  loop: /*#__PURE__*/React.createElement(LoopIcon, {
+-    size: 26
+-  }),
+-  order: /*#__PURE__*/React.createElement(OrderPlayIcon, {
+-    size: 26
+-  }),
+-  orderLoop: /*#__PURE__*/React.createElement(RepeatIcon, {
+-    size: 26
+-  }),
+-  shuffle: /*#__PURE__*/React.createElement(ShufflePlayIcon, {
+-    size: 26
+-  }),
+-  loading: /*#__PURE__*/React.createElement(LoadIcon, null),
+-  packUpPanelMobile: /*#__PURE__*/React.createElement(ArrowDownIcon, {
+-    size: 26
+-  }),
+-  empty: /*#__PURE__*/React.createElement(EmptyIcon, null)
+-};
++var IS_MOBILE_LAYOUT = typeof window !== "undefined" && !!window.matchMedia?.(MEDIA_QUERY.MOBILE).matches;
+ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+   function ReactJkMusicPlayer(props) {
+     var _this;
+@@ -129,7 +92,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+       lyric: '',
+       // 当前歌词
+       currentLyric: '',
+-      isMobile: IS_MOBILE,
++      isMobile: IS_MOBILE_LAYOUT,
+       toggle: _this.props.mode === MODE.FULL,
+       playing: false,
+       currentTime: 0,
+@@ -844,7 +807,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+     });
+     _defineProperty(_this, "onAudioEnd", function () {
+       _this.props.onAudioEnded && _this.props.onAudioEnded(_this.state.playId, _this.state.audioLists, _this.getBaseAudioInfo());
+-      _this.handlePlay(_this.state.playMode);
++      if (!_this.props.navigation) _this.handlePlay(_this.state.playMode);
+     });
+     /**
+      * 上一首 下一首 通用方法
+@@ -866,6 +829,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+       _this.handlePlay(_playMode, isNext);
+     });
+     _defineProperty(_this, "onPlayPrevAudio", function () {
++      if (_this.props.navigation) return _this.props.navigation.previous();
+       var restartCurrentOnPrev = _this.props.restartCurrentOnPrev;
+       if (restartCurrentOnPrev && _this.audio.currentTime > 1) {
+         _this.audio.currentTime = 0;
+@@ -874,6 +838,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+       _this.audioPrevAndNextBasePlayHandle(false);
+     });
+     _defineProperty(_this, "onPlayNextAudio", function () {
++      if (_this.props.navigation) return _this.props.navigation.next();
+       _this.audioPrevAndNextBasePlayHandle(true);
+     });
+     _defineProperty(_this, "audioTimeUpdate", function () {
+@@ -1620,6 +1585,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+       });
+     });
+     _defineProperty(_this, "initSortableAudioLists", function () {
++      if (_this.props.navigation) return;
+       var _this$props4 = _this.props,
+         audioLists = _this$props4.audioLists,
+         sortableOptions = _this$props4.sortableOptions;
+@@ -1777,16 +1743,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+         onChange: this.onProgressChange,
+         onAfterChange: this.onAudioSeeked
+       } : {};
+-      var ProgressBar = /*#__PURE__*/React.createElement(React.Fragment, null, showProgressLoadBar && /*#__PURE__*/React.createElement("div", {
+-        className: "progress-load-bar",
+-        style: {
+-          width: "".concat(Math.min(loadedProgress, 100), "%")
+-        }
+-      }), /*#__PURE__*/React.createElement(Slider, _extends({
+-        max: Math.ceil(this.audioDuration),
+-        defaultValue: 0,
+-        value: Math.ceil(currentTime)
+-      }, progressHandler, PROGRESS_BAR_SLIDER_OPTIONS)));
++      var ProgressBar = React.createElement(PlayerProgress, { duration: this.audioDuration, currentTime, loadedProgress, showProgressLoadBar, onChange: progressHandler.onChange, onAfterChange: progressHandler.onAfterChange });
+       var DownloadComponent = showDownload && /*#__PURE__*/React.createElement("span", {
+         className: "group audio-download",
+         onClick: this.onAudioDownload,
+@@ -1814,18 +1771,9 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+         onClick: this.toggleAudioLyric,
+         title: locale.toggleLyricText
+       }, this.iconMap.lyric);
+-      var PlayModeComponent = showPlayMode && /*#__PURE__*/React.createElement("span", {
+-        className: cls('group loop-btn'),
+-        onClick: this.togglePlayMode,
+-        title: locale.playModeText[currentPlayMode]
+-      }, this.renderPlayModeIcon(currentPlayMode));
++      var PlayModeComponent = showPlayMode && React.createElement(PlayerMode,{onClick:this.togglePlayMode,title:locale.playModeText[currentPlayMode],icon:this.renderPlayModeIcon(currentPlayMode)});
+       var miniProcessBarR = isMobile ? 30 : 40;
+-      var DestroyComponent = showDestroy && /*#__PURE__*/React.createElement("span", {
+-        title: locale.destroyText,
+-        className: "group destroy-btn",
+-        ref: this.destroyBtn,
+-        onClick: !drag || toggle ? this.onDestroyPlayer : undefined
+-      }, this.iconMap.destroy);
++      var DestroyComponent = showDestroy && React.createElement(PlayerDestroy, {title: locale.destroyText, buttonRef: this.destroyBtn, onClick: !drag || toggle ? this.onDestroyPlayer : undefined, icon: this.iconMap.destroy});
+       var AudioController = /*#__PURE__*/React.createElement("div", {
+         className: cls('react-jinke-music-player'),
+         style: defaultPosition,
+@@ -1902,89 +1850,13 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+         onDrag: this.onControllerDrag,
+         onStop: this.onControllerDragStop,
+         onStart: this.onControllerDragStart
+-      }, AudioController) : AudioController, toggle && (!isMobile || !responsive) && /*#__PURE__*/React.createElement("div", {
+-        className: cls('music-player-panel', 'translate', {
+-          'glass-bg': glassBg
+-        })
+-      }, /*#__PURE__*/React.createElement("section", {
+-        className: "panel-content"
+-      }, (!autoHiddenCover || autoHiddenCover && cover) && /*#__PURE__*/React.createElement("div", {
+-        className: cls('img-content', 'img-rotate', {
+-          'img-rotate-pause': !playing || !cover,
+-          'img-rotate-reset': isResetCoverRotate
+-        }),
+-        style: {
+-          backgroundImage: "url(".concat(cover, ")")
+-        },
+-        onClick: function onClick() {
+-          return _this6.onCoverClick();
+-        }
+-      }), /*#__PURE__*/React.createElement("div", {
+-        className: "progress-bar-content"
+-      }, /*#__PURE__*/React.createElement("span", {
+-        className: "audio-title",
+-        title: audioTitle
+-      }, this.renderAudioTitle()), /*#__PURE__*/React.createElement("section", {
+-        className: "audio-main"
+-      }, /*#__PURE__*/React.createElement("span", {
+-        className: "current-time",
+-        title: formattedCurrentTime
+-      }, loading ? '--' : formattedCurrentTime), /*#__PURE__*/React.createElement("div", {
+-        className: "progress-bar"
+-      }, ProgressBar), /*#__PURE__*/React.createElement("span", {
+-        className: "duration",
+-        title: formattedAudioDuration
+-      }, loading ? '--' : formattedAudioDuration))), /*#__PURE__*/React.createElement("div", {
+-        className: "player-content"
+-      }, !showPlay ? loading && this.iconMap.loading : /*#__PURE__*/React.createElement("span", {
+-        className: "group"
+-      }, /*#__PURE__*/React.createElement("span", {
+-        className: "group prev-audio",
+-        title: locale.previousTrackText,
+-        onClick: this.onPlayPrevAudio
+-      }, this.iconMap.prev), loading ? /*#__PURE__*/React.createElement("span", {
+-        className: "group loading-icon",
+-        title: locale.loadingText
+-      }, this.iconMap.loading) : /*#__PURE__*/React.createElement("span", {
+-        className: "group play-btn",
+-        onClick: this.onTogglePlay,
+-        title: shouldShowPlayIcon ? locale.clickToPlayText : locale.clickToPauseText
+-      }, shouldShowPlayIcon ? this.iconMap.play : this.iconMap.pause), /*#__PURE__*/React.createElement("span", {
+-        className: "group next-audio",
+-        title: locale.nextTrackText,
+-        onClick: this.onPlayNextAudio
+-      }, this.iconMap.next)), ReloadComponent, DownloadComponent, ThemeSwitchComponent, extendsContent || null, /*#__PURE__*/React.createElement("span", {
+-        className: "group play-sounds",
+-        title: locale.volumeText
+-      }, soundValue === 0 ? /*#__PURE__*/React.createElement("span", {
+-        className: "sounds-icon",
+-        onClick: this.onResetVolume
+-      }, this.iconMap.mute) : /*#__PURE__*/React.createElement("span", {
+-        className: "sounds-icon",
+-        onClick: this.onAudioMute
+-      }, this.iconMap.volume), /*#__PURE__*/React.createElement(Slider, _extends({
+-        value: soundValue,
+-        onChange: this.onAudioSoundChange,
+-        className: "sound-operation"
+-      }, VOLUME_BAR_SLIDER_OPTIONS))), PlayModeComponent, LyricComponent, /*#__PURE__*/React.createElement("span", {
+-        className: "group audio-lists-btn",
+-        title: locale.playListsText,
+-        onClick: this.openAudioListsPanel
+-      }, /*#__PURE__*/React.createElement("span", {
+-        className: "audio-lists-icon"
+-      }, this.iconMap.playLists), /*#__PURE__*/React.createElement("span", {
+-        className: "audio-lists-num"
+-      }, audioLists.length)), toggleMode && /*#__PURE__*/React.createElement("span", {
+-        className: "group hide-panel",
+-        title: locale.toggleMiniModeText,
+-        onClick: this.onHidePanel
+-      }, this.iconMap.toggle), DestroyComponent))), /*#__PURE__*/React.createElement(AudioListsPanel, {
++      }, AudioController) : AudioController, toggle && (!isMobile || !responsive) && /*#__PURE__*/React.createElement(PlayerDesktop, {glassBg: glassBg,autoHiddenCover: autoHiddenCover,cover: cover,playing: playing,isResetCoverRotate: isResetCoverRotate,audioTitle: audioTitle,renderAudioTitle: this.renderAudioTitle,formattedCurrentTime: formattedCurrentTime,loading: loading,formattedAudioDuration: formattedAudioDuration,ProgressBar: ProgressBar,showPlay: showPlay,shouldShowPlayIcon: shouldShowPlayIcon,icon: this.iconMap,locale: locale,onPlayPrevAudio: this.onPlayPrevAudio,onTogglePlay: this.onTogglePlay,onPlayNextAudio: this.onPlayNextAudio,ReloadComponent: ReloadComponent,DownloadComponent: DownloadComponent,ThemeSwitchComponent: ThemeSwitchComponent,extendsContent: extendsContent,soundValue: soundValue,onResetVolume: this.onResetVolume,onAudioMute: this.onAudioMute,onAudioSoundChange: this.onAudioSoundChange,PlayModeComponent: PlayModeComponent,LyricComponent: LyricComponent,audioLists: this.props.navigation ? this.props.navigation.queue : audioLists,openAudioListsPanel: this.openAudioListsPanel,toggleMode: toggleMode,onHidePanel: this.onHidePanel,DestroyComponent: DestroyComponent,onCoverClick: this.onCoverClick,artwork: undefined,previousDisabled: undefined,nextDisabled: undefined}), /*#__PURE__*/React.createElement(AudioListsPanel, {
+         playing: playing,
+-        playId: playId,
++        playId: this.props.navigation ? this.props.navigation.playId : playId,
+         loading: loading,
+         visible: audioListsPanelVisible,
+-        audioLists: audioLists,
+-        onPlay: this.audioListsPlay,
++        audioLists: this.props.navigation ? this.props.navigation.queue : audioLists,
++        onPlay: this.props.navigation ? this.props.navigation.select : this.audioListsPlay,
+         onCancel: this.closeAudioListsPanel,
+         icon: this.iconMap,
+         isMobile: isMobile,
+@@ -1992,7 +1864,8 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+         glassBg: glassBg,
+         cover: cover,
+         remove: remove,
+-        onDelete: this.onDeleteAudioLists,
++        onReorder: this.props.navigation && this.props.navigation.reorder,
++        onDelete: this.props.navigation ? function(id) {return function(event) {event.stopPropagation();_this6.props.navigation.remove(id)}} : this.onDeleteAudioLists,
+         removeId: removeId,
+         locale: locale
+       }), !isMobile && /*#__PURE__*/React.createElement(PlayModel, {
+@@ -2212,4 +2085,5 @@ _defineProperty(ReactJkMusicPlayer, "defaultProps", {
+   sortableOptions: {}
+ });
+ _defineProperty(ReactJkMusicPlayer, "propTypes", PROP_TYPES);
+-export { ReactJkMusicPlayer as default };
+\ No newline at end of file
++export { ReactJkMusicPlayer as default };
++export { DEFAULT_ICON as playerIcons };
