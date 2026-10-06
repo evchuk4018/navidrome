@@ -68,12 +68,15 @@ const statusLabel = (video) => {
 const isActiveJob = (job) =>
   job?.status === 'queued' || job?.status === 'running'
 
-const BrandMark = () => (
-  <svg className="hometube-brand-mark" viewBox="0 0 32 24" aria-hidden="true">
-    <rect width="32" height="24" rx="7" fill="currentColor" />
-    <path d="m13 7 8 5-8 5V7Z" fill="#fff" />
-  </svg>
-)
+const BrandMark = () => {
+  const classes = useStyles()
+  return (
+    <svg className={classes.brandMark} viewBox="0 0 32 24" aria-hidden="true">
+      <rect width="32" height="24" rx="7" fill="currentColor" />
+      <path d="m13 7 8 5-8 5V7Z" fill="#fff" />
+    </svg>
+  )
+}
 
 const RefreshIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -298,6 +301,7 @@ const PullToRefresh = ({
   return (
     <div
       ref={shellRef}
+      className={classes.feedShell}
       data-testid="hometube-feed-shell"
       style={{
         transform: indicatorActive ? `translateY(${pull}px)` : undefined,
