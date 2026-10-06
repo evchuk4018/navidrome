@@ -41,8 +41,11 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
-import { pauseAudio, resumeContext } from './playback'
-import { useMediaSessionSource } from './MediaSessionCoordinator'
+import { pauseAudio, resumeContext, togglePlayback } from './playback'
+import {
+  useMediaSessionCoordinator,
+  useMediaSessionSource,
+} from './MediaSessionCoordinator'
 import { useHomeTubePlayback } from '../hometube/HomeTubePlaybackContext'
 import {
   radioSongs,
@@ -105,6 +108,12 @@ const Player = () => {
 
   const { authenticated } = useAuthState()
   const homeTubePlayback = useHomeTubePlayback()
+  const coordinator = useMediaSessionCoordinator()
+  const [sleepStopped, setSleepStopped] = useState(false)
+  const handleUserPlayback = useCallback(() => {
+    coordinator?.allowPlayback?.()
+    setSleepStopped(false)
+  }, [coordinator])
   const musicIntent = playerState.musicIntent || 0
   const homeTubeSourceRef = useRef(homeTubePlayback.activeSource)
   homeTubeSourceRef.current = homeTubePlayback.activeSource
@@ -112,8 +121,11 @@ const Player = () => {
   useEffect(() => {
     if (musicIntentRef.current === musicIntent) return
     musicIntentRef.current = musicIntent
-    if (musicIntent > 0) homeTubePlayback.claimMusic()
-  }, [homeTubePlayback, musicIntent])
+    if (musicIntent > 0) {
+      handleUserPlayback()
+      homeTubePlayback.claimMusic()
+    }
+  }, [homeTubePlayback, musicIntent, handleUserPlayback])
 
   // Keep a ref to playerState so the mount effect can read the latest value
   // without re-triggering on every queue/position change
@@ -431,8 +443,7 @@ const Player = () => {
   }, [playerState.queue, playerState.savedPlayIndex, currentUuid, dispatch])
 
   const visible = authenticated && playerState.queue.length > 0
-  const musicUiVisible =
-    visible && homeTubePlayback.activeSource !== 'hometube'
+  const musicUiVisible = visible && homeTubePlayback.activeSource !== 'hometube'
   const isRadio = playerState.current?.isRadio || false
   const classes = useStyle({
     isRadio,
@@ -581,11 +592,13 @@ const Player = () => {
       audioLists: playerState.queue.map((item) => item),
       playIndex: playerState.playIndex,
       autoPlay:
+        !sleepStopped &&
         homeTubePlayback.activeSource !== 'hometube' &&
         playerState.queue.length > 0 &&
         playerState.autoPlay !== false &&
         (playerState.clear || playerState.playIndex === 0),
-      autoPlayInitLoadPlayList: homeTubePlayback.activeSource !== 'hometube',
+      autoPlayInitLoadPlayList:
+        !sleepStopped && homeTubePlayback.activeSource !== 'hometube',
       clearPriorAudioLists: playerState.clear,
       extendsContent: (
         <PlayerToolbar id={current.trackId} isRadio={current.isRadio} />
@@ -593,7 +606,13 @@ const Player = () => {
       defaultVolume: isMobilePlayer ? 1 : playerState.volume,
       showMediaSession: false,
     }
-  }, [playerState, defaultOptions, homeTubePlayback.activeSource, isMobilePlayer])
+  }, [
+    playerState,
+    defaultOptions,
+    homeTubePlayback.activeSource,
+    isMobilePlayer,
+    sleepStopped,
+  ])
 
   const onAudioListsChange = useCallback(
     (_, audioLists, audioInfo) => dispatch(syncQueue(audioInfo, audioLists)),
@@ -646,6 +665,10 @@ const Player = () => {
 
   const onAudioPlay = useCallback(
     (info) => {
+      if (coordinator?.isPlaybackBlocked?.()) {
+        pauseAudio(audioInstance)
+        return
+      }
       stoppedRef.current = false
       // Ignore an autoplay/recovery callback from the music engine while
       // HomeTube owns playback. Explicit music actions increment musicIntent
@@ -728,6 +751,7 @@ const Player = () => {
       requestRadioRefill,
       homeTubePlayback,
       audioInstance,
+      coordinator,
     ],
   )
 
@@ -866,8 +890,16 @@ const Player = () => {
   }
 
   const handlers = useMemo(
-    () => keyHandlers(audioInstance, playerState),
-    [audioInstance, playerState],
+    () =>
+      homeTubePlayback.activeSource === 'hometube'
+        ? {}
+        : keyHandlers(audioInstance, playerState, handleUserPlayback),
+    [
+      audioInstance,
+      playerState,
+      handleUserPlayback,
+      homeTubePlayback.activeSource,
+    ],
   )
 
   useEffect(() => {
@@ -901,6 +933,8 @@ const Player = () => {
         (homeTubePlayback.activeSource == null && !audioInstance.paused)),
     onPrevious: () => audioInstance?.playPrev?.(),
     onNext: () => audioInstance?.playNext?.(),
+    onSleepExpire: () => setSleepStopped(true),
+    onUserPlayback: handleUserPlayback,
   })
 
   // Report every seek (including programmatic ones the library does not surface
@@ -944,28 +978,46 @@ const Player = () => {
           isPlaying={miniIsPlaying}
           radioPlanningStatus={radioPlanningStatus}
           onExpand={openFullPlayer}
+          onTogglePlayback={() => {
+            handleUserPlayback()
+            togglePlayback(audioInstance, context)
+          }}
           openLabel={translate('player.openText')}
           playLabel={translate('player.clickToPlayText')}
           pauseLabel={translate('player.clickToPauseText')}
         />
       )}
-      <ReactJkMusicPlayer
-        {...options}
-        className={classes.player}
-        onAudioListsChange={onAudioListsChange}
-        onAudioVolumeChange={onAudioVolumeChange}
-        onAudioProgress={onAudioProgress}
-        onAudioPlay={onAudioPlay}
-        onAudioPlayTrackChange={onAudioPlayTrackChange}
-        onAudioPause={onAudioPause}
-        onModeChange={handleModeChange}
-        onPlayModeChange={(mode) => dispatch(setPlayMode(mode))}
-        onAudioEnded={onAudioEnded}
-        onCoverClick={onCoverClick}
-        onAudioError={onAudioError}
-        onBeforeDestroy={onBeforeDestroy}
-        getAudioInstance={setAudioInstance}
-      />
+      <div
+        onClickCapture={(event) => {
+          // The dependency owns these controls; acknowledge only explicit
+          // playback clicks, never timer, queue-delete or display actions.
+          if (
+            event.target.closest(
+              '.play-btn, .prev-audio, .next-audio, .audio-item',
+            ) &&
+            !event.target.closest('.player-delete')
+          )
+            handleUserPlayback()
+        }}
+      >
+        <ReactJkMusicPlayer
+          {...options}
+          className={classes.player}
+          onAudioListsChange={onAudioListsChange}
+          onAudioVolumeChange={onAudioVolumeChange}
+          onAudioProgress={onAudioProgress}
+          onAudioPlay={onAudioPlay}
+          onAudioPlayTrackChange={onAudioPlayTrackChange}
+          onAudioPause={onAudioPause}
+          onModeChange={handleModeChange}
+          onPlayModeChange={(mode) => dispatch(setPlayMode(mode))}
+          onAudioEnded={onAudioEnded}
+          onCoverClick={onCoverClick}
+          onAudioError={onAudioError}
+          onBeforeDestroy={onBeforeDestroy}
+          getAudioInstance={setAudioInstance}
+        />
+      </div>
       <GlobalHotKeys handlers={handlers} keyMap={keyMap} allowChanges />
     </ThemeProvider>
   )

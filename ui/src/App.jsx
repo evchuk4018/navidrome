@@ -53,6 +53,7 @@ import { useEffect } from 'react'
 import { usePreventPageZoom } from './common/usePreventPageZoom'
 import { MediaSessionCoordinator } from './audioplayer/MediaSessionCoordinator'
 import { HomeTubePlaybackProvider } from './hometube/HomeTubePlaybackContext'
+import { SleepTimerProvider } from './audioplayer/SleepTimerContext'
 
 const history = createHashHistory()
 
@@ -89,9 +90,11 @@ const adminStore = createAdminStore({
 const App = () => (
   <Provider store={adminStore}>
     <MediaSessionCoordinator>
-      <HomeTubePlaybackProvider>
-        <Admin />
-      </HomeTubePlaybackProvider>
+      <SleepTimerProvider>
+        <HomeTubePlaybackProvider>
+          <Admin />
+        </HomeTubePlaybackProvider>
+      </SleepTimerProvider>
     </MediaSessionCoordinator>
   </Provider>
 )

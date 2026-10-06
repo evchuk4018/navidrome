@@ -1,4 +1,4 @@
-const keyHandlers = (audioInstance, playerState) => {
+const keyHandlers = (audioInstance, playerState, onUserPlayback = () => {}) => {
   const nextSong = () => {
     const idx = playerState.queue.findIndex(
       (item) => item.uuid === playerState.current.uuid,
@@ -16,6 +16,7 @@ const keyHandlers = (audioInstance, playerState) => {
   return {
     TOGGLE_PLAY: (e) => {
       e.preventDefault()
+      onUserPlayback()
       audioInstance && audioInstance.togglePlay()
     },
     VOL_UP: () =>
@@ -23,13 +24,19 @@ const keyHandlers = (audioInstance, playerState) => {
     VOL_DOWN: () =>
       (audioInstance.volume = Math.max(0, audioInstance.volume - 0.1)),
     PREV_SONG: (e) => {
-      if (!e.metaKey && prevSong()) audioInstance && audioInstance.playPrev()
+      if (!e.metaKey && prevSong()) {
+        onUserPlayback()
+        audioInstance && audioInstance.playPrev()
+      }
     },
     CURRENT_SONG: () => {
       window.location.href = `#/album/${playerState.current?.song.albumId}/show`
     },
     NEXT_SONG: (e) => {
-      if (!e.metaKey && nextSong()) audioInstance && audioInstance.playNext()
+      if (!e.metaKey && nextSong()) {
+        onUserPlayback()
+        audioInstance && audioInstance.playNext()
+      }
     },
   }
 }

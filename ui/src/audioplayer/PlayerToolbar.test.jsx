@@ -65,17 +65,18 @@ describe('<PlayerToolbar />', () => {
       useMediaQuery.mockReturnValue(true) // isDesktop = true
     })
 
-    it('renders desktop toolbar with all three buttons', () => {
+    it('renders desktop toolbar with all four buttons', () => {
       render(<PlayerToolbar id="song-1" />)
 
       // All buttons should be in a single list item
       const listItems = screen.getAllByRole('listitem')
       expect(listItems).toHaveLength(1)
 
-      // Verify all three buttons are rendered
+      // Verify all four buttons are rendered
       expect(screen.getByTestId('save-queue-button')).toBeInTheDocument()
       expect(screen.getByTestId('add-to-playlist-button')).toBeInTheDocument()
       expect(screen.getByTestId('love-button')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Sleep timer' })).toBeEnabled()
 
       // Verify desktop classes are applied
       expect(listItems[0].className).toContain('toolbar')
@@ -89,7 +90,9 @@ describe('<PlayerToolbar />', () => {
       expect(openAddToPlaylist).toHaveBeenCalledWith({
         selectedIds: ['song-1'],
       })
-      expect(mockDispatch).toHaveBeenCalledWith({ type: 'OPEN_ADD_TO_PLAYLIST' })
+      expect(mockDispatch).toHaveBeenCalledWith({
+        type: 'OPEN_ADD_TO_PLAYLIST',
+      })
     })
 
     it('disables add to playlist button when isRadio is true', () => {
@@ -137,12 +140,13 @@ describe('<PlayerToolbar />', () => {
 
       // Each button should be in its own list item
       const listItems = screen.getAllByRole('listitem')
-      expect(listItems).toHaveLength(3)
+      expect(listItems).toHaveLength(4)
 
-      // Verify all three buttons are rendered
+      // Verify all four buttons are rendered
       expect(screen.getByTestId('save-queue-button')).toBeInTheDocument()
       expect(screen.getByTestId('add-to-playlist-button')).toBeInTheDocument()
       expect(screen.getByTestId('love-button')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Sleep timer' })).toBeEnabled()
 
       // Verify mobile classes are applied
       expect(listItems[0].className).toContain('mobileListItem')

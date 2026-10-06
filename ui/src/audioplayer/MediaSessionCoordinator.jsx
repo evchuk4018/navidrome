@@ -47,7 +47,10 @@ const updatePositionState = (mediaSession, element) => {
     mediaSession.setPositionState({
       duration,
       playbackRate: Number(element.playbackRate) || 1,
-      position: Math.max(0, Math.min(Number(element.currentTime) || 0, duration)),
+      position: Math.max(
+        0,
+        Math.min(Number(element.currentTime) || 0, duration),
+      ),
     })
   } catch {
     // Position state is best effort (for example, Safari rejects a stale
@@ -66,14 +69,31 @@ const updatePositionState = (mediaSession, element) => {
 export const MediaSessionCoordinator = ({ children }) => {
   const registrations = useRef(new Map())
   const activeId = useRef(null)
+  const sleepBlocked = useRef(false)
+  const sleepTimerCheck = useRef(null)
   const [revision, setRevision] = useState(0)
   const redraw = useCallback(() => setRevision((revision) => revision + 1), [])
 
   const register = useCallback(
     (id, descriptor) => {
       registrations.current.set(id, descriptor)
+      const guard = (event) => {
+        sleepTimerCheck.current?.()
+        if (!sleepBlocked.current) return
+        pauseAudio(descriptor.element)
+        // The music engine advances its queue unconditionally on ended.
+        // Capture prevents that handler running at or after the deadline.
+        event?.stopImmediatePropagation?.()
+      }
+      const events = ['play', 'playing', 'ended']
+      events.forEach((event) =>
+        descriptor.element.addEventListener(event, guard, true),
+      )
       redraw()
       return () => {
+        events.forEach((event) =>
+          descriptor.element.removeEventListener(event, guard, true),
+        )
         registrations.current.delete(id)
         if (activeId.current === id) activeId.current = null
         redraw()
@@ -117,9 +137,53 @@ export const MediaSessionCoordinator = ({ children }) => {
     return activeId.current
   }, [])
 
+  const expireSleep = useCallback(() => {
+    sleepBlocked.current = true
+    const descriptor = registrations.current.get(activeId.current)
+    descriptor?.onSleepExpire?.()
+    if (descriptor?.element) pauseAudio(descriptor.element)
+  }, [])
+
+  const allowPlayback = useCallback(() => {
+    sleepTimerCheck.current?.()
+    sleepBlocked.current = false
+  }, [])
+
+  const isPlaybackBlocked = useCallback(() => {
+    sleepTimerCheck.current?.()
+    return sleepBlocked.current
+  }, [])
+
+  const setSleepTimerCheck = useCallback((check) => {
+    sleepTimerCheck.current = check
+    return () => {
+      if (sleepTimerCheck.current === check) sleepTimerCheck.current = null
+    }
+  }, [])
+
   const value = useMemo(
-    () => ({ register, update, activate, deactivate, pauseActive }),
-    [activate, deactivate, pauseActive, register, update],
+    () => ({
+      register,
+      update,
+      activate,
+      deactivate,
+      pauseActive,
+      expireSleep,
+      allowPlayback,
+      isPlaybackBlocked,
+      setSleepTimerCheck,
+    }),
+    [
+      activate,
+      deactivate,
+      pauseActive,
+      register,
+      update,
+      expireSleep,
+      allowPlayback,
+      isPlaybackBlocked,
+      setSleepTimerCheck,
+    ],
   )
 
   useEffect(() => {
@@ -138,7 +202,12 @@ export const MediaSessionCoordinator = ({ children }) => {
     }
 
     mediaSession.metadata = makeMetadata(descriptor.metadata)
-    const play = () => playAudio(element, descriptor.audioContext)
+    const userPlayback = (command) => () => {
+      allowPlayback()
+      descriptor.onUserPlayback?.()
+      command()
+    }
+    const play = userPlayback(() => playAudio(element, descriptor.audioContext))
     const pause = () => pauseAudio(element)
     const seekBackward = (details = {}) => {
       if (typeof descriptor.onSeekBackward === 'function') {
@@ -169,8 +238,12 @@ export const MediaSessionCoordinator = ({ children }) => {
       seekbackward: seekBackward,
       seekforward: seekForward,
       seekto: seekTo,
-      previoustrack: descriptor.onPrevious || seekBackward,
-      nexttrack: descriptor.onNext || seekForward,
+      previoustrack: descriptor.onPrevious
+        ? userPlayback(descriptor.onPrevious)
+        : seekBackward,
+      nexttrack: descriptor.onNext
+        ? userPlayback(descriptor.onNext)
+        : seekForward,
     }
     MEDIA_SESSION_ACTIONS.forEach((action) =>
       setActionHandler(mediaSession, action, actions[action] || null),
@@ -181,7 +254,9 @@ export const MediaSessionCoordinator = ({ children }) => {
       updatePositionState(mediaSession, element)
     }
     const events = ['play', 'playing', 'pause', 'durationchange', 'timeupdate']
-    events.forEach((event) => element.addEventListener(event, updatePlaybackState))
+    events.forEach((event) =>
+      element.addEventListener(event, updatePlaybackState),
+    )
     updatePlaybackState()
 
     return () => {
@@ -194,7 +269,7 @@ export const MediaSessionCoordinator = ({ children }) => {
       mediaSession.metadata = null
       mediaSession.playbackState = 'none'
     }
-  }, [revision])
+  }, [revision, allowPlayback])
 
   return (
     <MediaSessionContext.Provider value={value}>
@@ -214,6 +289,8 @@ export const useMediaSessionSource = ({
   onNext,
   onSeekBackward,
   onSeekForward,
+  onSleepExpire,
+  onUserPlayback,
 }) => {
   const coordinator = useContext(MediaSessionContext)
   const idRef = useRef(null)
@@ -228,6 +305,8 @@ export const useMediaSessionSource = ({
       onNext,
       onSeekBackward,
       onSeekForward,
+      onSleepExpire,
+      onUserPlayback,
     }),
     [
       audioContext,
@@ -237,6 +316,8 @@ export const useMediaSessionSource = ({
       onPrevious,
       onSeekBackward,
       onSeekForward,
+      onSleepExpire,
+      onUserPlayback,
     ],
   )
 

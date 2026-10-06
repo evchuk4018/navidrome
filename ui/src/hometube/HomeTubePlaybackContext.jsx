@@ -35,7 +35,12 @@ const isReady = (video) => video?.mediaStatus === 'ready'
 const shouldResume = (video, duration) => {
   if (video?.watchState === 'watched') return 0
   const saved = Number(video?.playbackPositionSeconds || 0)
-  if (!Number.isFinite(saved) || saved <= 0 || !Number.isFinite(duration) || duration <= 0) {
+  if (
+    !Number.isFinite(saved) ||
+    saved <= 0 ||
+    !Number.isFinite(duration) ||
+    duration <= 0
+  ) {
     return 0
   }
   return saved < Math.max(0, duration - 5) ? Math.min(saved, duration) : 0
@@ -74,118 +79,6 @@ const HomeTubeMiniPlayer = ({
   )
 }
 
-const HomeTubeSleepTimer = ({
-  onPause,
-  onRearm,
-  visible = false,
-  enabled = false,
-}) => {
-  const STEP_MINUTES = 5
-  const MAX_MINUTES = 120
-  const [minutes, setMinutes] = useState(0)
-  const [remaining, setRemaining] = useState(0)
-  const [picking, setPicking] = useState(false)
-  const [armed, setArmed] = useState(false)
-  const endAtRef = useRef(0)
-
-  useEffect(() => {
-    if (!enabled) {
-      endAtRef.current = 0
-      setRemaining(0)
-      setMinutes(0)
-      setPicking(false)
-      setArmed(false)
-      return undefined
-    }
-    if (!armed || !endAtRef.current) return undefined
-    const tick = () => {
-      const next = Math.max(0, Math.ceil((endAtRef.current - Date.now()) / 1000))
-      setRemaining(next)
-      if (!next) {
-        endAtRef.current = 0
-        setArmed(false)
-        setMinutes(0)
-        onPause()
-      }
-    }
-    tick()
-    const timer = window.setInterval(tick, 500)
-    return () => window.clearInterval(timer)
-  }, [armed, enabled, onPause])
-
-  if (!visible) return null
-
-  if (remaining > 0) {
-    return (
-      <div style={{ position: 'fixed', right: 72, bottom: 24, zIndex: 1400 }}>
-        <button
-          type="button"
-          data-testid="hometube-sleep-timer"
-          onClick={() => {
-            endAtRef.current = 0
-            setRemaining(0)
-            setMinutes(0)
-            setArmed(false)
-            onRearm()
-          }}
-        >
-          Sleep {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')} · Cancel
-        </button>
-      </div>
-    )
-  }
-
-  if (!picking) {
-    return (
-      <div style={{ position: 'fixed', right: 72, bottom: 24, zIndex: 1400 }}>
-        <button
-          type="button"
-          data-testid="hometube-sleep-timer"
-          onClick={() => setPicking(true)}
-        >
-          Sleep timer
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div style={{ position: 'fixed', right: 72, bottom: 24, zIndex: 1400 }}>
-      <button
-        type="button"
-        aria-label="Subtract 5 minutes"
-        disabled={minutes <= 0}
-        onClick={() => setMinutes((current) => Math.max(0, current - STEP_MINUTES))}
-      >
-        −
-      </button>
-      <span>{minutes}</span>
-      <button
-        type="button"
-        aria-label="Add 5 minutes"
-        disabled={minutes >= MAX_MINUTES}
-        onClick={() => setMinutes((current) => Math.min(MAX_MINUTES, current + STEP_MINUTES))}
-      >
-        +
-      </button>
-      <button
-        type="button"
-        data-testid="hometube-sleep-timer"
-        disabled={minutes <= 0}
-        onClick={() => {
-          endAtRef.current = Date.now() + minutes * 60 * 1000
-          setRemaining(minutes * 60)
-          setPicking(false)
-          setArmed(true)
-          onRearm()
-        }}
-      >
-        Set
-      </button>
-    </div>
-  )
-}
-
 const HomeTubePlayback = ({ children }) => {
   const enabled = Boolean(config.homeTubeBaseURL)
   const coordinator = useMediaSessionCoordinator()
@@ -199,6 +92,7 @@ const HomeTubePlayback = ({ children }) => {
   const [duration, setDuration] = useState(0)
   const [autoplayNonce, setAutoplayNonce] = useState(0)
   const [sleepExpired, setSleepExpired] = useState(false)
+  const sleepExpiredRef = useRef(false)
   const operationRef = useRef(0)
   const progressRef = useRef({ position: 0, duration: 0 })
   const lastProgressRef = useRef(0)
@@ -210,22 +104,33 @@ const HomeTubePlayback = ({ children }) => {
   queueRef.current = queue
   expandedRef.current = expanded
 
-  const isCurrentOperation = useCallback((operation) => operationRef.current === operation, [])
+  const isCurrentOperation = useCallback(
+    (operation) => operationRef.current === operation,
+    [],
+  )
 
-  const updateProgress = useCallback((position, nextDuration, force = false) => {
-    const safePosition = Math.max(0, Number(position) || 0)
-    const safeDuration = Math.max(0, Number(nextDuration) || 0)
-    progressRef.current = { position: safePosition, duration: safeDuration }
-    if (force || Date.now() - lastProgressRef.current >= 250) {
-      lastProgressRef.current = Date.now()
-      setCurrentTime(safePosition)
-      if (safeDuration) setDuration(safeDuration)
-    }
-  }, [])
+  const updateProgress = useCallback(
+    (position, nextDuration, force = false) => {
+      const safePosition = Math.max(0, Number(position) || 0)
+      const safeDuration = Math.max(0, Number(nextDuration) || 0)
+      progressRef.current = { position: safePosition, duration: safeDuration }
+      if (force || Date.now() - lastProgressRef.current >= 250) {
+        lastProgressRef.current = Date.now()
+        setCurrentTime(safePosition)
+        if (safeDuration) setDuration(safeDuration)
+      }
+    },
+    [],
+  )
 
   const saveProgress = useCallback(
     async (video, position, nextDuration, keepalive = false) => {
-      if (!enabled || !video?.id || !Number.isFinite(Number(nextDuration)) || Number(nextDuration) <= 0) {
+      if (
+        !enabled ||
+        !video?.id ||
+        !Number.isFinite(Number(nextDuration)) ||
+        Number(nextDuration) <= 0
+      ) {
         return
       }
       try {
@@ -246,33 +151,38 @@ const HomeTubePlayback = ({ children }) => {
     [enabled],
   )
 
-  const refreshQueue = useCallback(async (videoId, operation) => {
-    if (!enabled || !videoId) return []
-    try {
-      const result = await requestJson('/api/queue', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ currentVideoId: videoId }),
-      })
-      if (!isCurrentOperation(operation)) return []
-      const entries = Array.isArray(result?.entries) ? result.entries : []
-      setQueue(entries)
-      const head = entries[0]?.video
-      if (head?.id === videoId) {
-        setCurrentVideo(head)
-        currentVideoRef.current = head
+  const refreshQueue = useCallback(
+    async (videoId, operation) => {
+      if (!enabled || !videoId) return []
+      try {
+        const result = await requestJson('/api/queue', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ currentVideoId: videoId }),
+        })
+        if (!isCurrentOperation(operation)) return []
+        const entries = Array.isArray(result?.entries) ? result.entries : []
+        setQueue(entries)
+        const head = entries[0]?.video
+        if (head?.id === videoId) {
+          setCurrentVideo(head)
+          currentVideoRef.current = head
+        }
+        return entries
+      } catch {
+        return []
       }
-      return entries
-    } catch {
-      return []
-    }
-  }, [enabled, isCurrentOperation])
+    },
+    [enabled, isCurrentOperation],
+  )
 
   const startDownload = useCallback(
     async (video, operation) => {
       if (!enabled || !video?.id) return false
       try {
-        await requestJson(`/api/videos/${video.id}/download`, { method: 'POST' })
+        await requestJson(`/api/videos/${video.id}/download`, {
+          method: 'POST',
+        })
         if (!isCurrentOperation(operation)) return false
         return true
       } catch (error) {
@@ -280,7 +190,11 @@ const HomeTubePlayback = ({ children }) => {
           setStatus('error')
           setCurrentVideo((current) =>
             current?.id === video.id
-              ? { ...current, mediaError: error?.message || 'Unable to start this download.' }
+              ? {
+                  ...current,
+                  mediaError:
+                    error?.message || 'Unable to start this download.',
+                }
               : current,
           )
         }
@@ -302,7 +216,9 @@ const HomeTubePlayback = ({ children }) => {
       currentVideoRef.current = video
       if (advanceQueue) {
         setQueue((currentQueue) => {
-          const index = currentQueue.findIndex((entry) => entry.video.id === video.id)
+          const index = currentQueue.findIndex(
+            (entry) => entry.video.id === video.id,
+          )
           return index >= 0 ? currentQueue.slice(index) : currentQueue
         })
       }
@@ -315,8 +231,10 @@ const HomeTubePlayback = ({ children }) => {
       setStatus(isReady(video) ? 'ready' : 'preparing')
       setActiveSource('hometube')
       setExpanded(openPlayer)
+      sleepExpiredRef.current = false
       setSleepExpired(false)
-      if (isReady(video) && shouldAutoplay) setAutoplayNonce((nonce) => nonce + 1)
+      if (isReady(video) && shouldAutoplay)
+        setAutoplayNonce((nonce) => nonce + 1)
     },
     [saveProgress],
   )
@@ -324,18 +242,31 @@ const HomeTubePlayback = ({ children }) => {
   const playVideo = useCallback(
     async (video, options = {}) => {
       if (!enabled || !video?.id) return false
+      if (
+        options.automatic &&
+        (sleepExpiredRef.current || coordinator?.isPlaybackBlocked?.())
+      )
+        return false
+      if (!options.automatic) coordinator?.allowPlayback?.()
       const operation = operationRef.current + 1
       operationRef.current = operation
       // Explicit HomeTube selection always pauses whichever source currently
       // owns playback. Background queue responses never call this path.
       coordinator?.pauseActive?.()
       const selectedWasReady = isReady(video)
-      selectVideo(video, true, false, options.preserveView ? expandedRef.current : true)
+      selectVideo(
+        video,
+        true,
+        false,
+        options.preserveView ? expandedRef.current : true,
+      )
 
       // Keep the recommendation/open signal separate from queue hydration.
       // The operation guard below makes a late response harmless after a
       // different source or video takes ownership.
-      void requestJson(`/api/videos/${video.id}/open`, { method: 'POST' }).catch(() => {})
+      void requestJson(`/api/videos/${video.id}/open`, {
+        method: 'POST',
+      }).catch(() => {})
 
       let entries = await refreshQueue(video.id, operation)
       if (!isCurrentOperation(operation)) return false
@@ -356,7 +287,14 @@ const HomeTubePlayback = ({ children }) => {
       }
       return isCurrentOperation(operation)
     },
-    [coordinator, enabled, isCurrentOperation, refreshQueue, selectVideo, startDownload],
+    [
+      coordinator,
+      enabled,
+      isCurrentOperation,
+      refreshQueue,
+      selectVideo,
+      startDownload,
+    ],
   )
 
   const claimMusic = useCallback(() => {
@@ -378,13 +316,19 @@ const HomeTubePlayback = ({ children }) => {
   }, [])
 
   const handleSleepPause = useCallback(() => {
+    sleepExpiredRef.current = true
+    operationRef.current += 1
     setSleepExpired(true)
+    setAutoplayNonce(0)
+    setStatus('paused')
     element?.pause?.()
   }, [element])
 
   const handleSleepRearm = useCallback(() => {
+    coordinator?.allowPlayback?.()
+    sleepExpiredRef.current = false
     setSleepExpired(false)
-  }, [])
+  }, [coordinator])
 
   const handleAutoplayRejected = useCallback(() => {
     setStatus('paused')
@@ -409,13 +353,17 @@ const HomeTubePlayback = ({ children }) => {
 
   const handleEnded = useCallback(() => {
     const next = queueRef.current[1]?.video
-    if (next && !sleepExpired) {
-      void playVideo(next, { preserveView: true })
+    if (
+      next &&
+      !sleepExpiredRef.current &&
+      !coordinator?.isPlaybackBlocked?.()
+    ) {
+      void playVideo(next, { preserveView: true, automatic: true })
       return
     }
     setStatus('paused')
     setActiveSource('hometube')
-  }, [playVideo, sleepExpired])
+  }, [coordinator, playVideo])
 
   const dismissEntry = useCallback(
     async (videoId) => {
@@ -445,7 +393,8 @@ const HomeTubePlayback = ({ children }) => {
   )
 
   useEffect(() => {
-    if (!enabled || !currentVideo || !queue.length) return undefined
+    if (!enabled || !currentVideo || !queue.length || sleepExpired)
+      return undefined
     const pending = queue.filter(
       (entry) => entry?.job && !['ready', 'failed'].includes(entry.job.status),
     )
@@ -479,10 +428,13 @@ const HomeTubePlayback = ({ children }) => {
       if (!fresh.length) return
       setQueue((currentQueue) =>
         currentQueue.map(
-          (entry) => fresh.find((next) => next.video.id === entry.video.id) || entry,
+          (entry) =>
+            fresh.find((next) => next.video.id === entry.video.id) || entry,
         ),
       )
-      const currentUpdate = fresh.find((entry) => entry.video.id === currentVideoRef.current?.id)
+      const currentUpdate = fresh.find(
+        (entry) => entry.video.id === currentVideoRef.current?.id,
+      )
       if (currentUpdate?.video) {
         setCurrentVideo(currentUpdate.video)
         if (isReady(currentUpdate.video)) {
@@ -492,7 +444,7 @@ const HomeTubePlayback = ({ children }) => {
       }
     }, 1500)
     return () => window.clearInterval(timer)
-  }, [currentVideo, enabled, isCurrentOperation, queue])
+  }, [currentVideo, enabled, isCurrentOperation, queue, sleepExpired])
 
   useEffect(() => {
     if (!enabled) return undefined
@@ -558,7 +510,12 @@ const HomeTubePlayback = ({ children }) => {
     ],
   )
 
-  if (!enabled) return <HomeTubeContext.Provider value={DISABLED_VALUE}>{children}</HomeTubeContext.Provider>
+  if (!enabled)
+    return (
+      <HomeTubeContext.Provider value={DISABLED_VALUE}>
+        {children}
+      </HomeTubeContext.Provider>
+    )
 
   return (
     <HomeTubeContext.Provider value={value}>
@@ -575,20 +532,18 @@ const HomeTubePlayback = ({ children }) => {
         onAutoplayRejected={handleAutoplayRejected}
         onClose={() => setExpanded(false)}
         onPlay={claimHomeTube}
+        onSleepExpire={handleSleepPause}
+        onUserPlayback={handleSleepRearm}
         onNext={(requestedVideo) => {
-          const next = requestedVideo?.id ? requestedVideo : queueRef.current[1]?.video
+          const next = requestedVideo?.id
+            ? requestedVideo
+            : queueRef.current[1]?.video
           if (next) void playVideo(next, { preserveView: true })
         }}
         onDismiss={dismissEntry}
         onRetry={() => {
           if (currentVideoRef.current) void playVideo(currentVideoRef.current)
         }}
-      />
-      <HomeTubeSleepTimer
-        enabled={activeSource === 'hometube' && Boolean(currentVideo)}
-        visible={expanded && activeSource === 'hometube' && Boolean(currentVideo)}
-        onPause={handleSleepPause}
-        onRearm={handleSleepRearm}
       />
       {activeSource === 'hometube' && currentVideo && !expanded && (
         <HomeTubeMiniPlayer
@@ -599,6 +554,7 @@ const HomeTubePlayback = ({ children }) => {
           isPlaying={status === 'playing' || (element && !element.paused)}
           onExpand={() => setExpanded(true)}
           onTogglePlayback={() => {
+            handleSleepRearm()
             if (element?.paused) playAudio(element)
             else pauseAudio(element)
           }}

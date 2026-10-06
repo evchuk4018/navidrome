@@ -126,7 +126,7 @@ describe('HomeTubePlayer', () => {
     expect(visual).toBeInTheDocument()
     expect(audio).toBeInTheDocument()
     expect(visual.controls).toBe(false)
-    expect(audio.controls).toBe(true)
+    expect(audio.controls).toBe(false)
 
     act(() => {
       result.rerender(<HomeTubePlayer {...result.props} expanded={false} />)
@@ -142,7 +142,7 @@ describe('HomeTubePlayer', () => {
     })
     expect(result.container.querySelector('video')).toBe(visual)
     expect(result.container.querySelector('audio')).toBe(audio)
-    expect(audio.controls).toBe(true)
+    expect(audio.controls).toBe(false)
   })
 
   it('keeps background audio playing while minimizing and pauses only the visual', () => {
@@ -242,5 +242,46 @@ describe('HomeTubePlayer', () => {
     })
     await waitFor(() => expect(media.play).toHaveBeenCalledTimes(2))
     expect(screen.getByRole('button', { name: 'Play' })).not.toBeDisabled()
+  })
+
+  it('uses one custom playback row, clamps rewind, and seeks the background audio', () => {
+    const result = renderPlayer({
+      video: makeVideo({ hasBackgroundAudio: true }),
+    })
+    const visual = result.container.querySelector('video')
+    const audio = result.container.querySelector('audio')
+    expect(visual.controls).toBe(false)
+    expect(audio.controls).toBe(false)
+    expect(screen.getAllByRole('button', { name: 'Play' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Next' })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    act(() => {
+      audio.currentTime = 8
+      audio.dispatchEvent(new Event('timeupdate'))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Rewind 10 seconds' }))
+    expect(audio.currentTime).toBe(0)
+    const slider = screen.getByRole('slider', { name: 'Video position' })
+    fireEvent.keyDown(slider, { key: 'ArrowRight', code: 'ArrowRight' })
+    expect(audio.currentTime).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Sleep timer' })).toBeEnabled()
+  })
+
+  it('opens the upcoming queue separately and preserves selection and dismissal', () => {
+    const current = makeVideo()
+    const next = makeVideo({ id: 'video-2', title: 'Upcoming video' })
+    const { props } = renderPlayer({
+      queue: [{ video: current }, { video: next }],
+    })
+    expect(
+      screen.queryByRole('button', { name: 'Upcoming video' }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open autoplay queue' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss Upcoming video' }),
+    )
+    expect(props.onDismiss).toHaveBeenCalledWith('video-2')
+    fireEvent.click(screen.getByRole('button', { name: 'Upcoming video' }))
+    expect(props.onNext).toHaveBeenCalledWith(next)
   })
 })

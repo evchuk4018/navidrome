@@ -6,19 +6,98 @@ import FullscreenExitIcon from '@material-ui/icons/FullscreenExit'
 import PauseIcon from '@material-ui/icons/Pause'
 import PlayArrowIcon from '@material-ui/icons/PlayArrow'
 import SkipNextIcon from '@material-ui/icons/SkipNext'
+import Replay10Icon from '@material-ui/icons/Replay10'
+import QueueMusicIcon from '@material-ui/icons/QueueMusic'
+import {
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  IconButton,
+  Slider,
+} from '@material-ui/core'
 import { useMediaSessionSource } from '../audioplayer/MediaSessionCoordinator'
+import SleepTimerButton from '../audioplayer/SleepTimerButton'
+import { sidebarColors } from '../layout/sidebarStyles'
+import { formatDuration } from '../utils'
 import { playAudio, pauseAudio } from '../audioplayer/playback'
 import { homeTubeApiPath } from './api'
 
 const useStyles = makeStyles((theme) => ({
   shell: {
     position: 'fixed',
-    right: 0,
+    inset: (props) => (props.expanded ? 0 : 'auto'),
     bottom: 0,
     left: 0,
-    zIndex: 1300,
-    color: '#ffe9f2',
+    width: (props) => (props.expanded ? 'auto' : 1),
+    height: (props) => (props.expanded ? 'auto' : 1),
+    overflowY: (props) => (props.expanded ? 'auto' : 'hidden'),
+    zIndex: 1200,
+    color: sidebarColors.text,
+    backgroundColor: sidebarColors.background,
     pointerEvents: (props) => (props.expanded ? 'auto' : 'none'),
+    touchAction: 'pan-y',
+  },
+  content: {
+    boxSizing: 'border-box',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between',
+    gap: theme.spacing(3),
+    width: '100%',
+    maxWidth: 940,
+    minHeight: '100%',
+    margin: '0 auto',
+    padding: theme.spacing(2.5),
+    paddingTop: 'max(20px, env(safe-area-inset-top, 0px))',
+    paddingBottom: 'max(20px, env(safe-area-inset-bottom, 0px))',
+  },
+  metadata: {
+    position: 'relative',
+    padding: '0 44px',
+    textAlign: 'center',
+    flexShrink: 0,
+  },
+  title: {
+    margin: 0,
+    color: sidebarColors.activeText,
+    fontSize: '1.25rem',
+    fontWeight: 700,
+    overflowWrap: 'anywhere',
+  },
+  channel: {
+    marginTop: theme.spacing(0.5),
+    color: sidebarColors.activeText,
+    fontSize: '1.15rem',
+    '& a': { color: 'inherit', textDecoration: 'none' },
+  },
+  closeButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    color: sidebarColors.navigation,
+  },
+  artworkArea: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 'min(50vw, 360px, 45vh)',
+  },
+  mediaFrame: {
+    position: 'relative',
+    width: 'min(100%, 97.777vh)',
+    aspectRatio: '16 / 9',
+    maxHeight: '55vh',
+    backgroundColor: '#000',
+  },
+  video: {
+    display: 'block',
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    aspectRatio: '16 / 9',
+    maxHeight: '55vh',
+    backgroundColor: '#000',
   },
   hiddenMedia: {
     position: 'fixed',
@@ -27,119 +106,104 @@ const useStyles = makeStyles((theme) => ({
     opacity: 0,
     pointerEvents: 'none',
   },
-  overlay: {
-    position: 'fixed',
+  waiting: {
+    position: 'absolute',
     inset: 0,
     display: 'flex',
     flexDirection: 'column',
-    overflowY: 'auto',
-    zIndex: 1302,
-    background: 'linear-gradient(to bottom, rgba(13, 13, 13, 0.86), rgba(13, 13, 13, 0.18) 42%, rgba(13, 13, 13, 0.98) 74%)',
-    pointerEvents: 'none',
-    touchAction: 'pan-y',
-  },
-  topBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 56,
-    padding: theme.spacing(1, 2),
-    pointerEvents: 'auto',
-  },
-  closeButton: {
-    display: 'inline-flex',
+    gap: theme.spacing(1),
     alignItems: 'center',
     justifyContent: 'center',
-    width: 44,
-    height: 44,
-    color: '#ffe9f2',
-    background: 'transparent',
-    border: 0,
-    borderRadius: '50%',
-    cursor: 'pointer',
-    '&:hover': { backgroundColor: '#29141f' },
-    '&:focus-visible': { outline: '2px solid #ff2a7f' },
-  },
-  mediaFrame: {
-    position: 'relative',
-    width: 'min(100%, 1100px)',
-    margin: '0 auto',
-    backgroundColor: 'transparent',
-    pointerEvents: 'none',
-    aspectRatio: '16 / 9',
-  },
-  video: {
-    position: 'fixed',
-    top: 56,
-    left: 0,
-    zIndex: 1301,
-    display: 'block',
-    width: '100vw',
-    height: 'min(64vh, calc(100vw * 0.5625))',
-    objectFit: 'contain',
-    backgroundColor: '#000',
-  },
-  backgroundAudio: {
-    position: 'fixed',
-    right: theme.spacing(2),
-    bottom: theme.spacing(2),
-    left: theme.spacing(2),
-    width: 'calc(100% - 32px)',
-    zIndex: 1303,
-    opacity: 0.9,
-  },
-  fullscreenButton: {
-    position: 'absolute',
-    right: theme.spacing(1),
-    bottom: theme.spacing(1),
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 42,
-    height: 42,
-    color: '#fff',
-    background: 'rgba(0, 0, 0, 0.6)',
-    border: '1px solid rgba(255, 255, 255, 0.2)',
-    borderRadius: '50%',
-    cursor: 'pointer',
-  },
-  waiting: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 230,
-    padding: theme.spacing(4),
+    padding: theme.spacing(2),
     textAlign: 'center',
     background: 'linear-gradient(140deg, #29141f, #0d0d0d)',
-    pointerEvents: 'auto',
   },
-  progress: { width: 'min(380px, 80%)', accentColor: '#ff2a7f' },
-  metadata: { padding: theme.spacing(2, 2, 4), margin: '0 auto', width: 'min(100%, 1100px)', pointerEvents: 'auto' },
-  title: { margin: 0, fontSize: '1.25rem', fontWeight: 600 },
-  channel: { margin: theme.spacing(0.5, 0, 1), color: '#ff91be' },
-  actions: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing(1) },
-  action: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: theme.spacing(0.5),
-    minHeight: 38,
-    padding: theme.spacing(0.5, 1.25),
-    color: '#ffe9f2',
-    background: '#29141f',
-    border: '1px solid #54253b',
+  progress: { width: 'min(380px, 80%)', accentColor: sidebarColors.accent },
+  retry: {
+    color: sidebarColors.activeText,
+    backgroundColor: sidebarColors.selection,
+    border: `1px solid ${sidebarColors.divider}`,
     borderRadius: 18,
+    minHeight: 44,
+    padding: theme.spacing(1, 2),
     cursor: 'pointer',
-    '&:hover': { background: '#462033' },
-    '&:focus-visible': { outline: '2px solid #ff2a7f' },
   },
-  queue: { marginTop: theme.spacing(2), padding: 0, listStyle: 'none' },
-  queueEntry: { display: 'flex', alignItems: 'center', gap: theme.spacing(1), padding: theme.spacing(0.5, 0) },
-  queueButton: { flex: 1, minWidth: 0, color: '#ffe9f2', textAlign: 'left', background: 'transparent', border: 0, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  queueDismiss: { color: '#c6aab5', background: 'transparent', border: 0, cursor: 'pointer' },
+  seekRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(2),
+    flexShrink: 0,
+  },
+  time: {
+    color: sidebarColors.secondary,
+    fontSize: 12,
+    fontVariantNumeric: 'tabular-nums',
+    minWidth: 38,
+  },
+  seek: {
+    color: sidebarColors.accent,
+    '& .MuiSlider-rail': { backgroundColor: sidebarColors.divider, opacity: 1 },
+    '& .MuiSlider-thumb': { border: '2px solid white' },
+  },
+  transport: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: theme.spacing(4),
+    flexShrink: 0,
+    padding: theme.spacing(2, 0, 4),
+  },
+  control: {
+    color: sidebarColors.navigation,
+    width: 48,
+    height: 48,
+    '& svg': { fontSize: 32 },
+  },
+  play: {
+    width: 64,
+    height: 64,
+    color: sidebarColors.background,
+    backgroundColor: sidebarColors.text,
+    '&:hover': { backgroundColor: sidebarColors.activeText },
+    '& svg': { fontSize: 40 },
+  },
+  toolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    flexShrink: 0,
+    paddingTop: theme.spacing(1),
+  },
+  queuePaper: {
+    color: sidebarColors.text,
+    backgroundColor: sidebarColors.background,
+    width: '100%',
+    border: `1px solid ${sidebarColors.divider}`,
+  },
+  queueTitle: { paddingRight: 64 },
+  queue: { margin: 0, padding: 0, listStyle: 'none' },
+  queueEntry: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(1),
+    borderBottom: `1px solid ${sidebarColors.divider}`,
+    padding: theme.spacing(1, 0),
+  },
+  queueButton: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    color: sidebarColors.text,
+    textAlign: 'left',
+    font: 'inherit',
+    background: 'transparent',
+    border: 0,
+    cursor: 'pointer',
+  },
 }))
 
-const getDuration = (video) => Number(video?.durationSeconds || video?.playbackDurationSeconds || 0)
+const getDuration = (video) =>
+  Number(video?.durationSeconds || video?.playbackDurationSeconds || 0)
 
 const HomeTubePlayer = ({
   video,
@@ -156,7 +220,8 @@ const HomeTubePlayer = ({
   onRetry,
   onNext,
   onDismiss,
-  sleepTimer,
+  onSleepExpire,
+  onUserPlayback,
 }) => {
   const classes = useStyles({ expanded })
   const shellRef = useRef(null)
@@ -166,6 +231,9 @@ const HomeTubePlayer = ({
   const [audioElement, setAudioElement] = useState(null)
   const [fullscreenMode, setFullscreenMode] = useState('none')
   const [isPlaying, setIsPlaying] = useState(false)
+  const [position, setPosition] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [queueOpen, setQueueOpen] = useState(false)
   const restoredVideoId = useRef(null)
   const touchStartY = useRef(null)
   const autoplayCancelledRef = useRef(false)
@@ -174,6 +242,15 @@ const HomeTubePlayer = ({
   const mediaReady = video?.mediaStatus === 'ready'
   const hasBackgroundAudio = Boolean(video?.hasBackgroundAudio)
   const mediaElement = hasBackgroundAudio ? audioElement : videoElement
+
+  useEffect(() => {
+    setPosition(Number(video?.playbackPositionSeconds) || 0)
+    setDuration(0)
+  }, [video?.id, video?.playbackPositionSeconds])
+
+  useEffect(() => {
+    if (!expanded) setQueueOpen(false)
+  }, [expanded])
 
   const setVideoNode = useCallback((node) => {
     videoRef.current = node
@@ -199,12 +276,14 @@ const HomeTubePlayer = ({
     [video],
   )
 
-  useMediaSessionSource({
+  const coordinator = useMediaSessionSource({
     source: 'hometube',
     element: mediaElement,
     metadata,
     active: Boolean(mediaElement && active),
-    onNext,
+    onNext: queue[1] ? onNext : undefined,
+    onSleepExpire,
+    onUserPlayback,
   })
 
   useEffect(() => {
@@ -215,7 +294,8 @@ const HomeTubePlayer = ({
     if (!mediaElement) return undefined
     const report = (event) => {
       if (!activeRef.current) {
-        if (event.type === 'play' || event.type === 'playing') pauseAudio(mediaElement)
+        if (event.type === 'play' || event.type === 'playing')
+          pauseAudio(mediaElement)
         return
       }
       const eventType =
@@ -229,6 +309,9 @@ const HomeTubePlayer = ({
                 ? 'ended'
                 : 'timeupdate'
       setIsPlaying(!mediaElement.paused && !mediaElement.ended)
+      setPosition(Math.max(0, Number(mediaElement.currentTime) || 0))
+      if (Number.isFinite(mediaElement.duration))
+        setDuration(mediaElement.duration)
       onProgress?.({
         position: mediaElement.currentTime,
         duration: mediaElement.duration,
@@ -237,16 +320,27 @@ const HomeTubePlayer = ({
       if (eventType === 'play') onPlay?.()
       if (eventType === 'ended') onEnded?.()
     }
-    const events = ['play', 'playing', 'pause', 'timeupdate', 'seeked', 'ended']
+    const events = [
+      'play',
+      'playing',
+      'pause',
+      'timeupdate',
+      'seeked',
+      'ended',
+      'loadedmetadata',
+      'durationchange',
+    ]
     events.forEach((event) => mediaElement.addEventListener(event, report))
-    return () => events.forEach((event) => mediaElement.removeEventListener(event, report))
+    return () =>
+      events.forEach((event) => mediaElement.removeEventListener(event, report))
   }, [active, mediaElement, onEnded, onPlay, onProgress])
 
   useEffect(() => {
     if (!mediaElement || !video || restoredVideoId.current === video.id) return
     const restore = () => {
       if (restoredVideoId.current === video.id) return
-      if (!Number.isFinite(mediaElement.duration) || mediaElement.duration <= 0) return
+      if (!Number.isFinite(mediaElement.duration) || mediaElement.duration <= 0)
+        return
       const saved = Number(video.playbackPositionSeconds || 0)
       const position =
         video.watchState === 'watched' || saved >= mediaElement.duration - 5
@@ -271,11 +365,20 @@ const HomeTubePlayer = ({
   }, [mediaElement, video])
 
   useEffect(() => {
-    if (!active || !mediaElement || !mediaReady || !autoplayNonce) return undefined
+    if (!active || !mediaElement || !mediaReady || !autoplayNonce)
+      return undefined
     let cancelled = false
     autoplayCancelledRef.current = false
     const attempt = () => {
-      if (!active || cancelled || autoplayCancelledRef.current || !mediaElement.paused || mediaElement.ended) return
+      if (
+        !active ||
+        cancelled ||
+        autoplayCancelledRef.current ||
+        coordinator?.isPlaybackBlocked?.() ||
+        !mediaElement.paused ||
+        mediaElement.ended
+      )
+        return
       const result = mediaElement.play()
       if (result?.catch) result.catch(() => onAutoplayRejected?.())
     }
@@ -293,12 +396,21 @@ const HomeTubePlayer = ({
       mediaElement.removeEventListener('loadedmetadata', attempt)
       mediaElement.removeEventListener('pause', cancel)
     }
-  }, [active, autoplayNonce, mediaElement, mediaReady, onAutoplayRejected])
+  }, [
+    active,
+    autoplayNonce,
+    coordinator,
+    mediaElement,
+    mediaReady,
+    onAutoplayRejected,
+  ])
 
   useEffect(() => {
     if (!hasBackgroundAudio || !videoElement || !audioElement) return undefined
     const syncPosition = (force = false) => {
-      const gap = Math.abs((audioElement.currentTime || 0) - (videoElement.currentTime || 0))
+      const gap = Math.abs(
+        (audioElement.currentTime || 0) - (videoElement.currentTime || 0),
+      )
       if (force || gap > 0.25) {
         try {
           videoElement.currentTime = audioElement.currentTime
@@ -308,7 +420,12 @@ const HomeTubePlayer = ({
       }
     }
     const syncVisual = () => {
-      if (!expanded || document.hidden || audioElement.paused || audioElement.ended) {
+      if (
+        !expanded ||
+        document.hidden ||
+        audioElement.paused ||
+        audioElement.ended
+      ) {
         if (!videoElement.paused) videoElement.pause()
         return
       }
@@ -356,7 +473,12 @@ const HomeTubePlayer = ({
   }, [videoElement])
 
   useEffect(() => {
-    if (typeof navigator === 'undefined' || !expanded || !navigator.wakeLock?.request) return undefined
+    if (
+      typeof navigator === 'undefined' ||
+      !expanded ||
+      !navigator.wakeLock?.request
+    )
+      return undefined
     let lock
     let cancelled = false
     navigator.wakeLock
@@ -394,19 +516,21 @@ const HomeTubePlayer = ({
         setFullscreenMode('element')
         return
       }
-      request.then(() => setFullscreenMode('element')).catch(() => {
-        const nativeVideo = videoRef.current
-        if (nativeVideo?.webkitEnterFullscreen) {
-          try {
-            nativeVideo.webkitEnterFullscreen()
-            setFullscreenMode('native')
-            return
-          } catch {
-            // Continue to the viewport fallback.
+      request
+        .then(() => setFullscreenMode('element'))
+        .catch(() => {
+          const nativeVideo = videoRef.current
+          if (nativeVideo?.webkitEnterFullscreen) {
+            try {
+              nativeVideo.webkitEnterFullscreen()
+              setFullscreenMode('native')
+              return
+            } catch {
+              // Continue to the viewport fallback.
+            }
           }
-        }
-        setFullscreenMode('viewport')
-      })
+          setFullscreenMode('viewport')
+        })
       return
     }
     const nativeVideo = videoRef.current
@@ -423,7 +547,13 @@ const HomeTubePlayer = ({
   }, [fullscreenMode])
 
   const handleTouchStart = useCallback((event) => {
-    touchStartY.current = event.touches[0]?.clientY ?? null
+    const dialog = event.target.closest('[role=dialog]')
+    touchStartY.current =
+      event.target.closest('button, input, [role=slider]') ||
+      (dialog && dialog !== shellRef.current) ||
+      shellRef.current?.scrollTop > 0
+        ? null
+        : (event.touches[0]?.clientY ?? null)
   }, [])
 
   const handleTouchEnd = useCallback(
@@ -438,100 +568,249 @@ const HomeTubePlayer = ({
 
   if (!video) return null
 
-  const progress = queue[0]?.job?.progress ?? (video.mediaStatus === 'downloading' ? 5 : 0)
-  const videoSrc = mediaReady ? homeTubeApiPath(`/api/videos/${video.id}/stream`) : undefined
-  const audioSrc = mediaReady && hasBackgroundAudio ? homeTubeApiPath(`/api/videos/${video.id}/audio`) : undefined
+  const progress =
+    queue[0]?.job?.progress ?? (video.mediaStatus === 'downloading' ? 5 : 0)
+  const videoSrc = mediaReady
+    ? homeTubeApiPath(`/api/videos/${video.id}/stream`)
+    : undefined
+  const audioSrc =
+    mediaReady && hasBackgroundAudio
+      ? homeTubeApiPath(`/api/videos/${video.id}/audio`)
+      : undefined
+
+  const totalDuration = Math.max(0, duration || getDuration(video))
+  const safePosition = Math.min(position, totalDuration || position)
+  const userPlayback = (command) => {
+    coordinator?.allowPlayback?.()
+    onUserPlayback?.()
+    command()
+  }
 
   return (
     <div
       ref={shellRef}
       className={classes.shell}
       data-testid="hometube-player"
+      role={expanded ? 'dialog' : undefined}
+      aria-label={expanded ? 'HomeTube player' : undefined}
       onTouchStart={expanded ? handleTouchStart : undefined}
       onTouchEnd={expanded ? handleTouchEnd : undefined}
     >
-      <video
-        ref={setVideoNode}
-        className={expanded ? classes.video : classes.hiddenMedia}
-        src={videoSrc}
-        poster={video.thumbnailUrl || undefined}
-        controls={expanded && !hasBackgroundAudio}
-        muted={hasBackgroundAudio}
-        playsInline
-        preload="metadata"
-        aria-label={video.title}
-      />
-      {hasBackgroundAudio && (
-        <audio
-          ref={setAudioNode}
-          className={expanded ? classes.backgroundAudio : classes.hiddenMedia}
-          src={audioSrc}
-          controls={expanded}
-          preload="metadata"
-          aria-label={`Playback controls for ${video.title}`}
-        />
-      )}
-      {expanded && (
-        <div className={classes.overlay} role="dialog" aria-label="HomeTube player">
-          <div className={classes.topBar}>
-            <button type="button" className={classes.closeButton} onClick={onClose} aria-label="Minimize HomeTube player">
-              <CloseIcon />
-            </button>
-            <span>HomeTube</span>
-            <button type="button" className={classes.closeButton} onClick={enterFullscreen} aria-label={fullscreenMode !== 'none' ? 'Exit fullscreen' : 'Enter fullscreen'}>
-              {fullscreenMode !== 'none' ? <FullscreenExitIcon /> : <FullscreenIcon />}
-            </button>
-          </div>
-          <div className={classes.mediaFrame}>
-            {!mediaReady && (
-              <div className={classes.waiting} data-testid="hometube-preparing">
-                <strong>{video.mediaError ? 'Download interrupted' : 'Getting your video ready'}</strong>
-                <span>{video.mediaError || queue[0]?.job?.stage || 'Starting download'}</span>
-                {video.mediaError ? (
-                  <>
-                    <span>{video.mediaError}</span>
-                    <button type="button" className={classes.action} onClick={onRetry}>
-                      Retry download
-                    </button>
-                  </>
-                ) : <progress className={classes.progress} max="100" value={progress} />}
-              </div>
-            )}
-          </div>
-          <section className={classes.metadata}>
+      <div className={classes.content}>
+        {expanded && (
+          <header className={classes.metadata}>
             <h1 className={classes.title}>{video.title}</h1>
             <div className={classes.channel}>
-              <a href={`#/hometube/channels/${video.channelId}`} onClick={onClose} style={{ color: 'inherit' }}>
+              <a
+                href={`#/hometube/channels/${video.channelId}`}
+                onClick={onClose}
+              >
                 {video.channelName}
               </a>
             </div>
-            <div className={classes.actions}>
-              <button type="button" className={classes.action} onClick={() => (mediaElement?.paused ? playAudio(mediaElement) : pauseAudio(mediaElement))} disabled={!mediaReady}>
-                {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
-                {isPlaying ? 'Pause' : 'Play'}
-              </button>
-              <button type="button" className={classes.action} onClick={() => onNext?.()} disabled={!queue[1]}>
-                <SkipNextIcon /> Next
-              </button>
-              {sleepTimer}
-            </div>
-            {queue.length > 1 && (
-              <ol className={classes.queue} aria-label="Autoplay queue">
-                {queue.slice(1).map((entry) => (
-                  <li key={entry.video.id} className={classes.queueEntry}>
-                    <button type="button" className={classes.queueButton} onClick={() => onNext?.(entry.video)}>
-                      {entry.video.title}
-                    </button>
-                    <button type="button" className={classes.queueDismiss} onClick={() => onDismiss?.(entry.video.id)} aria-label={`Dismiss ${entry.video.title}`}>
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ol>
+            <IconButton
+              className={classes.closeButton}
+              onClick={onClose}
+              aria-label="Minimize HomeTube player"
+            >
+              <CloseIcon />
+            </IconButton>
+          </header>
+        )}
+        <div className={classes.artworkArea}>
+          <div className={classes.mediaFrame}>
+            <video
+              ref={setVideoNode}
+              className={expanded ? classes.video : classes.hiddenMedia}
+              src={videoSrc}
+              poster={video.thumbnailUrl || undefined}
+              controls={false}
+              muted={hasBackgroundAudio}
+              playsInline
+              preload="metadata"
+              aria-label={video.title}
+            />
+            {expanded && !mediaReady && (
+              <div className={classes.waiting} data-testid="hometube-preparing">
+                <strong>
+                  {video.mediaError
+                    ? 'Download interrupted'
+                    : 'Getting your video ready'}
+                </strong>
+                <span>
+                  {video.mediaError ||
+                    queue[0]?.job?.stage ||
+                    'Starting download'}
+                </span>
+                {video.mediaError ? (
+                  <button
+                    type="button"
+                    className={classes.retry}
+                    onClick={onRetry}
+                  >
+                    Retry download
+                  </button>
+                ) : (
+                  <progress
+                    className={classes.progress}
+                    max="100"
+                    value={progress}
+                  />
+                )}
+              </div>
             )}
-          </section>
+          </div>
         </div>
-      )}
+        {hasBackgroundAudio && (
+          <audio
+            ref={setAudioNode}
+            className={classes.hiddenMedia}
+            src={audioSrc}
+            controls={false}
+            preload="metadata"
+            aria-label={`Playback controls for ${video.title}`}
+          />
+        )}
+        {expanded && (
+          <>
+            <div className={classes.seekRow}>
+              <span className={classes.time}>
+                {formatDuration(safePosition)}
+              </span>
+              <Slider
+                className={classes.seek}
+                aria-label="Video position"
+                min={0}
+                max={totalDuration || 1}
+                value={safePosition}
+                disabled={!mediaReady || !totalDuration}
+                onChange={(_, value) => {
+                  if (mediaElement) mediaElement.currentTime = value
+                  setPosition(value)
+                }}
+              />
+              <span className={classes.time}>
+                {formatDuration(totalDuration)}
+              </span>
+            </div>
+            <div className={classes.transport}>
+              <IconButton
+                className={classes.control}
+                aria-label="Rewind 10 seconds"
+                disabled={!mediaReady}
+                onClick={() => {
+                  if (mediaElement) {
+                    mediaElement.currentTime = Math.max(
+                      0,
+                      mediaElement.currentTime - 10,
+                    )
+                    setPosition(mediaElement.currentTime)
+                  }
+                }}
+              >
+                <Replay10Icon />
+              </IconButton>
+              <IconButton
+                className={classes.play}
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+                disabled={!mediaReady}
+                onClick={() =>
+                  userPlayback(() =>
+                    mediaElement?.paused
+                      ? playAudio(mediaElement)
+                      : pauseAudio(mediaElement),
+                  )
+                }
+              >
+                {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
+              </IconButton>
+              <IconButton
+                className={classes.control}
+                aria-label="Next"
+                disabled={!queue[1]}
+                onClick={() => userPlayback(() => onNext?.())}
+              >
+                <SkipNextIcon />
+              </IconButton>
+            </div>
+            <div className={classes.toolbar}>
+              <IconButton
+                className={classes.control}
+                onClick={enterFullscreen}
+                aria-label={
+                  fullscreenMode !== 'none'
+                    ? 'Exit fullscreen'
+                    : 'Enter fullscreen'
+                }
+              >
+                {fullscreenMode !== 'none' ? (
+                  <FullscreenExitIcon />
+                ) : (
+                  <FullscreenIcon />
+                )}
+              </IconButton>
+              <SleepTimerButton className={classes.control} />
+              <IconButton
+                className={classes.control}
+                aria-label="Open autoplay queue"
+                onClick={() => setQueueOpen(true)}
+              >
+                <QueueMusicIcon />
+              </IconButton>
+            </div>
+          </>
+        )}
+      </div>
+      <Dialog
+        open={Boolean(expanded && queueOpen)}
+        onClose={() => setQueueOpen(false)}
+        container={document.fullscreenElement || undefined}
+        aria-labelledby="hometube-queue-title"
+        classes={{ paper: classes.queuePaper }}
+      >
+        <DialogTitle id="hometube-queue-title" className={classes.queueTitle}>
+          Autoplay queue
+        </DialogTitle>
+        <IconButton
+          className={classes.closeButton}
+          style={{ top: 8, right: 8 }}
+          aria-label="Close autoplay queue"
+          onClick={() => setQueueOpen(false)}
+        >
+          <CloseIcon />
+        </IconButton>
+        <DialogContent>
+          {queue.length > 1 ? (
+            <ol className={classes.queue} aria-label="Autoplay queue">
+              {queue.slice(1).map((entry) => (
+                <li key={entry.video.id} className={classes.queueEntry}>
+                  <button
+                    type="button"
+                    className={classes.queueButton}
+                    onClick={() =>
+                      userPlayback(() => {
+                        onNext?.(entry.video)
+                        setQueueOpen(false)
+                      })
+                    }
+                  >
+                    {entry.video.title}
+                  </button>
+                  <IconButton
+                    className={classes.control}
+                    onClick={() => onDismiss?.(entry.video.id)}
+                    aria-label={`Dismiss ${entry.video.title}`}
+                  >
+                    <CloseIcon />
+                  </IconButton>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>No upcoming videos.</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

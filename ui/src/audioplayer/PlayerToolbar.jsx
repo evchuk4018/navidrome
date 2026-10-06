@@ -10,8 +10,9 @@ import { LoveButton, useToggleLove } from '../common'
 import { openAddToPlaylist, openSaveQueueDialog } from '../actions'
 import { keyMap } from '../hotkeys'
 import { makeStyles } from '@material-ui/core/styles'
+import SleepTimerButton from './SleepTimerButton'
 
-const useStyles = makeStyles((theme) => ({
+const useStyles = makeStyles(() => ({
   toolbar: {
     display: 'flex',
     alignItems: 'center',
@@ -27,9 +28,9 @@ const useStyles = makeStyles((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     listStyle: 'none',
-    padding: theme.spacing(0.5),
+    padding: 0,
     margin: 0,
-    height: 24,
+    height: 44,
   },
   button: {
     width: '2.5rem',
@@ -40,8 +41,8 @@ const useStyles = makeStyles((theme) => ({
     padding: 0,
   },
   mobileButton: {
-    width: 24,
-    height: 24,
+    width: 44,
+    height: 44,
     padding: 0,
     margin: 0,
     display: 'flex',
@@ -110,7 +111,9 @@ const PlayerToolbar = ({ id, isRadio }) => {
       title={translate('resources.song.actions.addToPlaylist')}
       aria-label={translate('resources.song.actions.addToPlaylist')}
     >
-      <PlaylistAddIcon className={!isDesktop ? classes.mobileIcon : undefined} />
+      <PlaylistAddIcon
+        className={!isDesktop ? classes.mobileIcon : undefined}
+      />
     </IconButton>
   )
 
@@ -132,12 +135,19 @@ const PlayerToolbar = ({ id, isRadio }) => {
           {saveQueueButton}
           {addToPlaylistButton}
           {loveButton}
+          <SleepTimerButton className={buttonClass} />
         </li>
       ) : (
         <>
           <li className={`${listItemClass} item`}>{saveQueueButton}</li>
           <li className={`${listItemClass} item`}>{addToPlaylistButton}</li>
           <li className={`${listItemClass} item`}>{loveButton}</li>
+          <li className={`${listItemClass} item`}>
+            <SleepTimerButton
+              className={buttonClass}
+              iconClassName={classes.mobileIcon}
+            />
+          </li>
         </>
       )}
     </>

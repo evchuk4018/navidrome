@@ -36,6 +36,8 @@ vi.mock('./HomeTubePlayer', () => ({
     onEnded,
     onClose,
     onExpand,
+    onSleepExpire,
+    onUserPlayback,
   }) {
     useEffect(() => {
       onElementChange(engine.element)
@@ -43,6 +45,12 @@ vi.mock('./HomeTubePlayer', () => ({
     if (!video) return null
     return (
       <div data-testid="mock-hometube-player">
+        <button type="button" onClick={onSleepExpire}>
+          expire sleep timer
+        </button>
+        <button type="button" onClick={onUserPlayback}>
+          resume manually
+        </button>
         <span data-testid="autoplay-nonce">{autoplayNonce}</span>
         <button type="button" onClick={onPlay}>
           engine play
@@ -239,6 +247,31 @@ describe('HomeTubePlaybackProvider', () => {
     expect(engine.element.play).not.toHaveBeenCalled()
   })
 
+  it('invalidates pending downloads when sleep expires before readiness arrives', async () => {
+    let resolveQueue
+    api.request.mockImplementation((path) =>
+      path === '/api/queue'
+        ? new Promise((resolve) => {
+            resolveQueue = resolve
+          })
+        : Promise.resolve({}),
+    )
+    render(
+      <HomeTubePlaybackProvider>
+        <Harness firstVideo={video('one', 'downloading')} />
+      </HomeTubePlaybackProvider>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'select video' }))
+    fireEvent.click(screen.getByRole('button', { name: 'expire sleep timer' }))
+    await act(async () => {
+      resolveQueue({ entries: [{ video: video('one'), job: null }] })
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('status')).toHaveTextContent('paused')
+    expect(screen.getByTestId('autoplay-nonce')).toHaveTextContent('0')
+    expect(engine.element.play).not.toHaveBeenCalled()
+  })
+
   it('ignores the first selection response after a second video is selected', async () => {
     const pendingQueues = new Map()
     api.request.mockImplementation((path, options = {}) => {
@@ -298,7 +331,7 @@ describe('HomeTubePlaybackProvider', () => {
     expect(screen.getByTestId('queue')).toHaveTextContent('two,two-next')
   })
 
-  it('keeps the sleep timer armed while minimized and blocks queue advance after expiry', async () => {
+  it('blocks queue advancement after sleep expiry until explicit playback', async () => {
     render(
       <HomeTubePlaybackProvider>
         <Harness />
@@ -308,28 +341,18 @@ describe('HomeTubePlaybackProvider', () => {
     await waitFor(() =>
       expect(screen.getByTestId('source')).toHaveTextContent('hometube'),
     )
-
-    vi.useFakeTimers()
-    try {
-      fireEvent.click(screen.getByTestId('hometube-sleep-timer'))
-      fireEvent.click(screen.getByRole('button', { name: 'Add 5 minutes' }))
-      fireEvent.click(screen.getByRole('button', { name: 'Set' }))
-      fireEvent.click(screen.getByRole('button', { name: 'minimize player' }))
-      expect(
-        screen.queryByTestId('hometube-sleep-timer'),
-      ).not.toBeInTheDocument()
-
-      const requestCount = api.request.mock.calls.length
-      await act(async () => {
-        vi.advanceTimersByTime(5 * 60 * 1000)
-      })
-      expect(engine.element.pause).toHaveBeenCalled()
-
-      fireEvent.click(screen.getByRole('button', { name: 'engine ended' }))
-      expect(api.request).toHaveBeenCalledTimes(requestCount)
-    } finally {
-      vi.useRealTimers()
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'minimize player' }))
+    fireEvent.click(screen.getByRole('button', { name: 'expire sleep timer' }))
+    expect(engine.element.pause).toHaveBeenCalled()
+    expect(screen.getByTestId('autoplay-nonce')).toHaveTextContent('0')
+    const requestCount = api.request.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'engine ended' }))
+    expect(api.request).toHaveBeenCalledTimes(requestCount)
+    fireEvent.click(screen.getByRole('button', { name: 'resume manually' }))
+    fireEvent.click(screen.getByRole('button', { name: 'engine ended' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('current')).toHaveTextContent('one-next'),
+    )
   })
 
   it('resumes only before the end tolerance and never resumes watched videos', () => {

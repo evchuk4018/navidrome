@@ -56,6 +56,8 @@ const MediaSource = ({
   onNext,
   onSeekBackward,
   onSeekForward,
+  onSleepExpire,
+  onUserPlayback,
 }) => {
   useMediaSessionSource({
     source,
@@ -66,6 +68,8 @@ const MediaSource = ({
     onNext,
     onSeekBackward,
     onSeekForward,
+    onSleepExpire,
+    onUserPlayback,
   })
   return null
 }
@@ -101,6 +105,43 @@ describe('MediaSessionCoordinator', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+  })
+
+  it('allows OS playback to explicitly resume a source stopped by the sleep timer', async () => {
+    const music = createMediaElement({ paused: false })
+    const onCoordinator = vi.fn()
+    const onSleepExpire = vi.fn()
+    const onUserPlayback = vi.fn()
+    renderTree({
+      onCoordinator,
+      music: {
+        element: music,
+        active: true,
+        metadata: { title: 'Radio' },
+        onSleepExpire,
+        onUserPlayback,
+      },
+      homeTube: {},
+    })
+    const coordinator = onCoordinator.mock.lastCall[0]
+    act(() => {
+      coordinator.expireSleep()
+    })
+    expect(onSleepExpire).toHaveBeenCalledOnce()
+    expect(music.paused).toBe(true)
+    expect(coordinator.isPlaybackBlocked()).toBe(true)
+    act(() => {
+      mediaSession.handlers.previoustrack()
+    })
+    expect(music.currentTime).toBe(20)
+    expect(music.paused).toBe(true)
+    expect(onUserPlayback).not.toHaveBeenCalled()
+    act(() => {
+      mediaSession.handlers.play()
+    })
+    expect(onUserPlayback).toHaveBeenCalledOnce()
+    expect(music.paused).toBe(false)
+    expect(coordinator.isPlaybackBlocked()).toBe(false)
   })
 
   it('keeps active ownership while descriptors and callbacks rerender', async () => {
