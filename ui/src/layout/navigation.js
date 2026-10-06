@@ -3,6 +3,8 @@ import SearchIcon from '@material-ui/icons/Search'
 import FlashOnIcon from '@material-ui/icons/FlashOn'
 import MusicNoteOutlinedIcon from '@material-ui/icons/MusicNoteOutlined'
 import PlaylistPlayIcon from '@material-ui/icons/PlaylistPlay'
+import OndemandVideoIcon from '@material-ui/icons/OndemandVideo'
+import config from '../config'
 
 export const COMPACT_NAVIGATION_QUERY = '(max-width:959.95px)'
 export const COMPACT_NAVIGATION_MEDIA = `@media ${COMPACT_NAVIGATION_QUERY}`
@@ -32,5 +34,14 @@ export const useNavigationLinks = () => {
       }),
       icon: PlaylistPlayIcon,
     },
+    ...(config.homeTubeBaseURL
+      ? [
+          {
+            to: '/hometube',
+            label: 'HomeTube',
+            icon: OndemandVideoIcon,
+          },
+        ]
+      : []),
   ]
 }

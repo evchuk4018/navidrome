@@ -76,6 +76,7 @@ var _ = Describe("serveIndex", func() {
 			Expect(config).To(HaveKeyWithValue(configKey, expectedValue))
 		},
 		Entry("baseURL", func() { conf.Server.BasePath = "base_url_test" }, "baseURL", "base_url_test"),
+		Entry("homeTubeBaseURL", func() { conf.Server.HomeTubeBaseURL = "https://hometube.example.test/" }, "homeTubeBaseURL", "https://hometube.example.test"),
 		Entry("welcomeMessage", func() { conf.Server.UIWelcomeMessage = "Hello" }, "welcomeMessage", "Hello"),
 		Entry("maxSidebarPlaylists", func() { conf.Server.MaxSidebarPlaylists = 42 }, "maxSidebarPlaylists", float64(42)),
 		Entry("enableTranscodingConfig", func() { conf.Server.EnableTranscodingConfig = true }, "enableTranscodingConfig", true),

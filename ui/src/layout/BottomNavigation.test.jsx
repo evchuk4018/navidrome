@@ -5,6 +5,7 @@ import { createMemoryHistory } from 'history'
 import { ThemeProvider, createTheme } from '@material-ui/core/styles'
 import BottomNavigation from './BottomNavigation'
 import { emittedRules } from './testMediaQuery'
+import config from '../config'
 
 vi.mock('react-admin', () => ({
   useTranslate:
@@ -32,12 +33,27 @@ const renderNavigation = (path = '/quick-pick') => {
   return history
 }
 
+const originalHomeTubeBaseURL = config.homeTubeBaseURL
+
+const renderConfiguredNavigation = (path = '/quick-pick') => {
+  config.homeTubeBaseURL = '/hometube'
+  return renderNavigation(path)
+}
+
 const selectedLinks = () =>
   screen
     .getAllByRole('link')
     .filter((link) => link.hasAttribute('aria-current'))
 
 describe('bottom navigation', () => {
+  beforeEach(() => {
+    config.homeTubeBaseURL = originalHomeTubeBaseURL
+  })
+
+  afterEach(() => {
+    config.homeTubeBaseURL = originalHomeTubeBaseURL
+  })
+
   it('renders exactly four accessible icons in order with no visible labels or tooltips', () => {
     renderNavigation()
     const links = screen.getAllByRole('link')
@@ -86,6 +102,47 @@ describe('bottom navigation', () => {
     },
   )
 
+  it('adds HomeTube as the fifth tab with a 20 percent indicator when configured', () => {
+    renderConfiguredNavigation()
+
+    expect(
+      screen
+        .getAllByRole('link')
+        .map((link) => [
+          link.getAttribute('aria-label'),
+          link.getAttribute('href'),
+        ]),
+    ).toEqual([
+      ['Quick Pick', '/quick-pick'],
+      ['Search', '/search'],
+      ['Songs', '/song'],
+      ['Playlists', '/playlist'],
+      ['HomeTube', '/hometube'],
+    ])
+    expect(screen.getByTestId('bottom-navigation-indicator')).toHaveStyle({
+      width: '20%',
+      transform: 'translateX(0%)',
+      opacity: '1',
+    })
+  })
+
+  it.each([
+    ['/hometube/feed'],
+    ['/hometube/channels'],
+    ['/hometube/channels/channel-1'],
+  ])('selects HomeTube for its nested route %s', (path) => {
+    renderConfiguredNavigation(path)
+
+    expect(selectedLinks()).toEqual([
+      screen.getByRole('link', { name: 'HomeTube' }),
+    ])
+    expect(screen.getByTestId('bottom-navigation-indicator')).toHaveStyle({
+      width: '20%',
+      transform: 'translateX(400%)',
+      opacity: '1',
+    })
+  })
+
   it.each([
     '/album/album-1/show',
     '/personal',
@@ -120,6 +177,33 @@ describe('bottom navigation', () => {
     ])
     expect(screen.getByTestId('bottom-navigation-indicator')).toHaveStyle({
       transform: 'translateX(300%)',
+    })
+  })
+
+  it('keeps HomeTube selected through browser back and forward navigation', () => {
+    const history = renderConfiguredNavigation()
+    fireEvent.click(screen.getByRole('link', { name: 'HomeTube' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Search' }))
+
+    expect(history.location.pathname).toBe('/search')
+    act(() => history.goBack())
+    expect(history.location.pathname).toBe('/hometube')
+    expect(selectedLinks()).toEqual([
+      screen.getByRole('link', { name: 'HomeTube' }),
+    ])
+    expect(screen.getByTestId('bottom-navigation-indicator')).toHaveStyle({
+      width: '20%',
+      transform: 'translateX(400%)',
+    })
+
+    act(() => history.goForward())
+    expect(history.location.pathname).toBe('/search')
+    expect(selectedLinks()).toEqual([
+      screen.getByRole('link', { name: 'Search' }),
+    ])
+    expect(screen.getByTestId('bottom-navigation-indicator')).toHaveStyle({
+      width: '20%',
+      transform: 'translateX(100%)',
     })
   })
 

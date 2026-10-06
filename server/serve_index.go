@@ -44,6 +44,7 @@ func serveIndex(ds model.DataStore, fs fs.FS, shareInfo *model.Share) http.Handl
 			"firstTime":                 firstTime,
 			"variousArtistsId":          consts.VariousArtistsID,
 			"baseURL":                   str.SanitizeText(strings.TrimSuffix(conf.Server.BasePath, "/")),
+			"homeTubeBaseURL":           str.SanitizeText(strings.TrimSuffix(conf.Server.HomeTubeBaseURL, "/")),
 			"loginBackgroundURL":        str.SanitizeText(conf.Server.UILoginBackgroundURL),
 			"welcomeMessage":            str.SanitizeHTML(conf.Server.UIWelcomeMessage),
 			"maxSidebarPlaylists":       conf.Server.MaxSidebarPlaylists,

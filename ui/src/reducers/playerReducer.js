@@ -30,6 +30,10 @@ const initialState = {
   savedPlayIndex: 0,
   radioSession: null,
   pendingSearchPlay: null,
+  // Incremented only by explicit music play intents. Queue hydration and
+  // radio/download reconciliation intentionally leave it unchanged so they
+  // cannot steal ownership from HomeTube.
+  musicIntent: 0,
 }
 
 // The music-player dependency uses musicSrc as a fallback identity when it
@@ -154,6 +158,7 @@ const reducePlayTracks = (state, { data, id, searchPlayRequestId }) => {
       searchPlayRequestId === state.pendingSearchPlay?.requestId
         ? state.pendingSearchPlay
         : null,
+    musicIntent: (state.musicIntent || 0) + 1,
   }
 }
 
@@ -165,6 +170,7 @@ const reduceSetTrack = (state, { data }) => {
     clear: true,
     radioSession: null,
     pendingSearchPlay: null,
+    musicIntent: (state.musicIntent || 0) + 1,
   }
 }
 
@@ -291,7 +297,11 @@ export const playerReducer = (previousState = initialState, payload) => {
   const { type } = payload
   switch (type) {
     case PLAYER_REQUEST_SEARCH_PLAY:
-      return { ...previousState, pendingSearchPlay: payload.data }
+      return {
+        ...previousState,
+        pendingSearchPlay: payload.data,
+        musicIntent: (previousState.musicIntent || 0) + 1,
+      }
     case PLAYER_UPDATE_SEARCH_PLAY:
       return previousState.pendingSearchPlay?.requestId ===
         payload.data.requestId

@@ -41,8 +41,9 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
-import configureMediaSessionTrackNavigation from './mediaSession'
-import { resumeContext } from './playback'
+import { pauseAudio, resumeContext } from './playback'
+import { useMediaSessionSource } from './MediaSessionCoordinator'
+import { useHomeTubePlayback } from '../hometube/HomeTubePlaybackContext'
 import {
   radioSongs,
   refillPersonalRadio,
@@ -87,6 +88,7 @@ const Player = () => {
   const [heartbeatTrackId, setHeartbeatTrackId] = useState(null)
   const lastPositionMsRef = useRef(0)
   const currentTrackIdRef = useRef(null)
+  const musicIntentRef = useRef(null)
   const stoppedRef = useRef(false)
   const radioPlaybackRef = useRef(null)
   const [audioInstance, setAudioInstance] = useState(null)
@@ -102,6 +104,16 @@ const Player = () => {
     )
 
   const { authenticated } = useAuthState()
+  const homeTubePlayback = useHomeTubePlayback()
+  const musicIntent = playerState.musicIntent || 0
+  const homeTubeSourceRef = useRef(homeTubePlayback.activeSource)
+  homeTubeSourceRef.current = homeTubePlayback.activeSource
+
+  useEffect(() => {
+    if (musicIntentRef.current === musicIntent) return
+    musicIntentRef.current = musicIntent
+    if (musicIntent > 0) homeTubePlayback.claimMusic()
+  }, [homeTubePlayback, musicIntent])
 
   // Keep a ref to playerState so the mount effect can read the latest value
   // without re-triggering on every queue/position change
@@ -121,6 +133,7 @@ const Player = () => {
     let active = true
     const isCurrent = () =>
       active &&
+      homeTubeSourceRef.current !== 'hometube' &&
       store.getState().player.pendingSearchPlay?.requestId ===
         searchPlayRequestId
 
@@ -311,6 +324,12 @@ const Player = () => {
     }
   }, [playerState.queue.length])
 
+  useEffect(() => {
+    if (homeTubePlayback.activeSource !== 'hometube') return
+    setDisplayMode(MINI_MODE)
+    if (searchPlayRequestId) dispatch(clearSearchPlay(searchPlayRequestId))
+  }, [dispatch, homeTubePlayback.activeSource, searchPlayRequestId])
+
   useInterval(
     () => {
       if (heartbeatTrackId && !stoppedRef.current) {
@@ -412,10 +431,12 @@ const Player = () => {
   }, [playerState.queue, playerState.savedPlayIndex, currentUuid, dispatch])
 
   const visible = authenticated && playerState.queue.length > 0
+  const musicUiVisible =
+    visible && homeTubePlayback.activeSource !== 'hometube'
   const isRadio = playerState.current?.isRadio || false
   const classes = useStyle({
     isRadio,
-    visible,
+    visible: musicUiVisible,
     enableCoverAnimation: config.enableCoverAnimation,
   })
   const showNotifications = useSelector(
@@ -522,7 +543,9 @@ const Player = () => {
       toggleMode: true,
       glassBg: false,
       showThemeSwitch: false,
-      showMediaSession: true,
+      // MediaSession is owned by MediaSessionCoordinator so a HomeTube video
+      // and the music engine cannot overwrite one another's OS controls.
+      showMediaSession: false,
       restartCurrentOnPrev: true,
       quietUpdate: true,
       defaultPosition: {
@@ -558,17 +581,19 @@ const Player = () => {
       audioLists: playerState.queue.map((item) => item),
       playIndex: playerState.playIndex,
       autoPlay:
+        homeTubePlayback.activeSource !== 'hometube' &&
         playerState.queue.length > 0 &&
         playerState.autoPlay !== false &&
         (playerState.clear || playerState.playIndex === 0),
+      autoPlayInitLoadPlayList: homeTubePlayback.activeSource !== 'hometube',
       clearPriorAudioLists: playerState.clear,
       extendsContent: (
         <PlayerToolbar id={current.trackId} isRadio={current.isRadio} />
       ),
       defaultVolume: isMobilePlayer ? 1 : playerState.volume,
-      showMediaSession: !current.isRadio,
+      showMediaSession: false,
     }
-  }, [playerState, defaultOptions, isMobilePlayer])
+  }, [playerState, defaultOptions, homeTubePlayback.activeSource, isMobilePlayer])
 
   const onAudioListsChange = useCallback(
     (_, audioLists, audioInfo) => dispatch(syncQueue(audioInfo, audioLists)),
@@ -622,6 +647,16 @@ const Player = () => {
   const onAudioPlay = useCallback(
     (info) => {
       stoppedRef.current = false
+      // Ignore an autoplay/recovery callback from the music engine while
+      // HomeTube owns playback. Explicit music actions increment musicIntent
+      // and claim the source before this callback can run.
+      if (homeTubePlayback.activeSource === 'hometube') {
+        pauseAudio(audioInstance)
+        return
+      }
+      if (homeTubePlayback.activeSource !== 'music') {
+        homeTubePlayback.claimMusic()
+      }
       resumeContext(context)
 
       dispatch(currentPlaying(info))
@@ -691,6 +726,8 @@ const Player = () => {
       currentTrackId,
       reportRadioFeedback,
       requestRadioRefill,
+      homeTubePlayback,
+      audioInstance,
     ],
   )
 
@@ -815,7 +852,10 @@ const Player = () => {
   const miniTrack = playerState.current?.uuid
     ? playerState.current
     : queuedMiniTrack
-  const miniPlayerVisible = visible && displayMode === MINI_MODE
+  const miniPlayerVisible =
+    visible &&
+    displayMode === MINI_MODE &&
+    homeTubePlayback.activeSource !== 'hometube'
   const miniIsPlaying =
     audioInstance?.paused != null
       ? !audioInstance.paused
@@ -836,15 +876,32 @@ const Player = () => {
     }
   }, [isMobilePlayer, audioInstance])
 
-  useEffect(() => {
-    if (!audioInstance || isRadio) return
+  const musicMediaMetadata = useMemo(() => {
+    const song = playerState.current?.song || {}
+    if (!song.title) return null
+    return {
+      title: song.title,
+      artist: song.artist || '',
+      album: song.album || '',
+      artwork: playerState.current?.cover
+        ? [{ src: playerState.current.cover, sizes: '512x512' }]
+        : [],
+    }
+  }, [playerState])
 
-    return configureMediaSessionTrackNavigation(
-      audioInstance,
-      undefined,
-      context,
-    )
-  }, [audioInstance, isRadio, playerState.queue, context])
+  useMediaSessionSource({
+    source: 'music',
+    element: audioInstance,
+    metadata: musicMediaMetadata,
+    audioContext: context,
+    active:
+      !!audioInstance &&
+      !!playerState.current &&
+      (homeTubePlayback.activeSource === 'music' ||
+        (homeTubePlayback.activeSource == null && !audioInstance.paused)),
+    onPrevious: () => audioInstance?.playPrev?.(),
+    onNext: () => audioInstance?.playNext?.(),
+  })
 
   // Report every seek (including programmatic ones the library does not surface
   // via onAudioSeeked, e.g. restartCurrentOnPrev). Debounce coalesces drag

@@ -6,6 +6,7 @@ services:
     restart: unless-stopped
     environment:
       ND_BASEURL: /navidrome
+      ND_HOMETUBEBASEURL: ${ND_HOMETUBEBASEURL-/hometube}
       ND_DEVAUTOLOGINUSERNAME: admin
       ND_LASTFM_ENABLED: ${ND_LASTFM_ENABLED:-false}
       ND_LASTFM_APIKEY: ${ND_LASTFM_APIKEY:-}

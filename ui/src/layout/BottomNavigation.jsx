@@ -108,6 +108,7 @@ const BottomNavigation = () => {
             aria-hidden="true"
             data-testid="bottom-navigation-indicator"
             style={{
+              width: `${100 / Math.max(1, links.length)}%`,
               transform: `translateX(${Math.max(0, activeIndex) * 100}%)`,
               opacity: activeIndex < 0 ? 0 : 1,
             }}

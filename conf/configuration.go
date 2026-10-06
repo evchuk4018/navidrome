@@ -44,6 +44,7 @@ type configOptions struct {
 	LogFile                         string
 	SessionTimeout                  time.Duration
 	BaseURL                         string
+	HomeTubeBaseURL                 string
 	BasePath                        string
 	BaseHost                        string
 	BaseScheme                      string
@@ -947,6 +948,7 @@ func setViperDefaults() {
 	viper.SetDefault("enforcenonrootuser", false)
 	viper.SetDefault("sessiontimeout", consts.DefaultSessionTimeout)
 	viper.SetDefault("baseurl", "")
+	viper.SetDefault("hometubebaseurl", "")
 	viper.SetDefault("tlscert", "")
 	viper.SetDefault("tlskey", "")
 	viper.SetDefault("uiloginbackgroundurl", consts.DefaultUILoginBackgroundURL)

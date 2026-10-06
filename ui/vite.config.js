@@ -4,6 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 const frontendPort = parseInt(process.env.PORT) || 4533
 const backendPort = frontendPort + 100
+const homeTubePort = parseInt(process.env.HOMETUBE_PORT) || 3010
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -30,6 +31,9 @@ export default defineConfig({
     port: frontendPort,
     proxy: {
       '^/(auth|api|rest|backgrounds)/.*': 'http://localhost:' + backendPort,
+      // HomeTube is mounted under the same path in production. Keep the
+      // optional local service same-origin during frontend development too.
+      '^/hometube/api/.*': 'http://localhost:' + homeTubePort,
     },
   },
   base: './',

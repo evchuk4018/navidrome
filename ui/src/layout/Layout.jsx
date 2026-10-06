@@ -16,6 +16,7 @@ import Notification from './Notification'
 import useCurrentTheme from '../themes/useCurrentTheme'
 import { useSearchRefocus } from '../common/useSearchRefocus'
 import { useUserLibraries } from '../common/useUserLibraries'
+import { useHomeTubePlayback } from '../hometube/HomeTubePlaybackContext'
 import {
   CLOSED_SIDEBAR_WIDTH,
   SIDEBAR_WIDTH,
@@ -41,9 +42,13 @@ const Layout = (props) => {
     pathname.startsWith('/song/') ||
     pathname === '/playlist' ||
     pathname.startsWith('/playlist/')
-  const isPinkPage = isDiscoveryPage || isLibraryPage
+  const isHomeTubePage = pathname === '/hometube' || pathname.startsWith('/hometube/')
+  const isPinkPage = isDiscoveryPage || isLibraryPage || isHomeTubePage
   const queue = useSelector((state) => state.player?.queue)
-  const hasPlayer = (queue?.length || 0) > 0
+  const homeTubePlayback = useHomeTubePlayback()
+  const hasPlayer =
+    (queue?.length || 0) > 0 ||
+    Boolean(homeTubePlayback.activeSource === 'hometube' && homeTubePlayback.currentVideo)
   const classes = useStyles({ addPadding: hasPlayer, compact })
   const dispatch = useDispatch()
   useSearchRefocus()

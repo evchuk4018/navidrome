@@ -51,6 +51,8 @@ import { DndProvider } from 'react-dnd'
 import missing from './missing/index.js'
 import { useEffect } from 'react'
 import { usePreventPageZoom } from './common/usePreventPageZoom'
+import { MediaSessionCoordinator } from './audioplayer/MediaSessionCoordinator'
+import { HomeTubePlaybackProvider } from './hometube/HomeTubePlaybackContext'
 
 const history = createHashHistory()
 
@@ -86,7 +88,11 @@ const adminStore = createAdminStore({
 
 const App = () => (
   <Provider store={adminStore}>
-    <Admin />
+    <MediaSessionCoordinator>
+      <HomeTubePlaybackProvider>
+        <Admin />
+      </HomeTubePlaybackProvider>
+    </MediaSessionCoordinator>
   </Provider>
 )
 

@@ -5,6 +5,9 @@ const defaultConfig = {
   version: 'dev',
   firstTime: false,
   baseURL: '',
+  // Optional HomeTube service URL. An empty value disables HomeTube UI and
+  // prevents the player from making HomeTube requests.
+  homeTubeBaseURL: '',
   variousArtistsId: '63sqASlAfjbGMuLP4JhnZU', // See consts.VariousArtistsID in consts.go
   // Login backgrounds from https://unsplash.com/collections/1065384/music-wallpapers
   loginBackgroundURL: 'https://source.unsplash.com/collection/1065384/1600x900',

@@ -191,6 +191,7 @@ const MiniPlayer = ({
   duration = 0,
   isPlaying = false,
   onExpand,
+  onTogglePlayback,
   openLabel = 'Open',
   playLabel = 'Click to play',
   pauseLabel = 'Click to pause',
@@ -214,9 +215,13 @@ const MiniPlayer = ({
   const handleTogglePlay = useCallback(
     (event) => {
       event.stopPropagation()
-      togglePlayback(audioInstance, audioContext)
+      if (onTogglePlayback) {
+        onTogglePlayback()
+      } else {
+        togglePlayback(audioInstance, audioContext)
+      }
     },
-    [audioInstance, audioContext],
+    [audioInstance, audioContext, onTogglePlayback],
   )
 
   const handleTouchStart = useCallback((event) => {
@@ -323,6 +328,7 @@ MiniPlayer.propTypes = {
   duration: PropTypes.number,
   isPlaying: PropTypes.bool,
   onExpand: PropTypes.func.isRequired,
+  onTogglePlayback: PropTypes.func,
   openLabel: PropTypes.string,
   playLabel: PropTypes.string,
   pauseLabel: PropTypes.string,
