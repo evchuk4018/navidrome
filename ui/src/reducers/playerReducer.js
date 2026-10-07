@@ -292,8 +292,10 @@ const reduceSyncQueue = (state, { data: { audioInfo, audioLists } }) => {
 
 const reduceCurrent = (state, { data }) => {
   const current = data.ended ? {} : data
+  // An ended pause arrives before queue advancement. Keep the finished track's
+  // position even though its current-track data is cleared.
   const savedPlayIndex = state.queue.findIndex(
-    (item) => item.uuid === current.uuid,
+    (item) => item.uuid === data.uuid,
   )
   // When a track selection is pending (playIndex is set), keep it alive
   // until the music player confirms it actually switched to the requested

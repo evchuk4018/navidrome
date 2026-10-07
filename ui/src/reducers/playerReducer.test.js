@@ -346,6 +346,50 @@ describe('playerReducer', () => {
     expect(typeof result.queue[1].musicSrc).toBe('function')
   })
 
+  describe('natural track completion', () => {
+    const queue = [
+      { trackId: 's1', uuid: 'first', name: 'Song 1' },
+      { trackId: 's2', uuid: 'second', name: 'Song 2' },
+      { trackId: 's3', uuid: 'third', name: 'Song 3' },
+    ]
+    const state = {
+      queue,
+      current: queue[1],
+      savedPlayIndex: 1,
+      playIndex: undefined,
+      clear: false,
+      volume: 1,
+    }
+
+    it('retains the finished second song position when its pause callback reports ended', () => {
+      const result = playerReducer(state, {
+        type: PLAYER_CURRENT,
+        data: { ...queue[1], paused: true, ended: true, volume: 0.4 },
+      })
+
+      expect(result.current).toEqual({})
+      expect(result.savedPlayIndex).toBe(1)
+      expect(result.playIndex).toBeUndefined()
+      expect(result.clear).toBe(false)
+      expect(result.queue).toBe(queue)
+      expect(result.volume).toBe(0.4)
+    })
+
+    it('preserves a pending selection when the outgoing song reports ended', () => {
+      const pending = { ...state, playIndex: 2, savedPlayIndex: 2, clear: true }
+      const result = playerReducer(pending, {
+        type: PLAYER_CURRENT,
+        data: { ...queue[1], paused: true, ended: true },
+      })
+
+      expect(result.current).toEqual({})
+      expect(result.playIndex).toBe(2)
+      expect(result.savedPlayIndex).toBe(2)
+      expect(result.clear).toBe(true)
+      expect(result.volume).toBe(1)
+    })
+  })
+
   describe('pending track selection survives SYNC_QUEUE and premature CURRENT', () => {
     // Simulates the real sequence when clicking a new song while one is playing:
     // 1. PLAYER_PLAY_TRACKS sets playIndex and clear
