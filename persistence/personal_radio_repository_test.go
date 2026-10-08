@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"context"
 	"time"
 
 	"github.com/navidrome/navidrome/db"
@@ -48,7 +49,7 @@ var _ = Describe("PersonalRadioRepository contextual feedback", func() {
 		step := 0
 		feedback := func(itemID, event string, listened int64) *model.RadioPlaybackFeedbackResult {
 			step++
-			result, err := repo.RecordPlaybackFeedback(adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
+			result, err := repo.RecordPlaybackFeedback(context.Background(), adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
 				ItemID: itemID, Event: event, ListenedMS: listened, DurationMS: 100000,
 			}, base.Add(time.Duration(step)*time.Millisecond))
 			Expect(err).ToNot(HaveOccurred())
@@ -92,22 +93,22 @@ var _ = Describe("PersonalRadioRepository contextual feedback", func() {
 
 	It("makes playback updates idempotent and isolates users", func() {
 		started := model.PersonalRadioFeedbackRequest{ItemID: "radio-context-seed", Event: model.RadioFeedbackStarted, DurationMS: 100000}
-		first, err := repo.RecordPlaybackFeedback(adminUser.ID, sessionID, started, time.Now().UTC())
+		first, err := repo.RecordPlaybackFeedback(context.Background(), adminUser.ID, sessionID, started, time.Now().UTC())
 		Expect(err).ToNot(HaveOccurred())
 		Expect(first.Applied).To(BeTrue())
-		second, err := repo.RecordPlaybackFeedback(adminUser.ID, sessionID, started, time.Now().UTC().Add(time.Second))
+		second, err := repo.RecordPlaybackFeedback(context.Background(), adminUser.ID, sessionID, started, time.Now().UTC().Add(time.Second))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(second.Applied).To(BeFalse())
 
-		_, err = repo.RecordPlaybackFeedback(adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
+		_, err = repo.RecordPlaybackFeedback(context.Background(), adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
 			ItemID: "radio-context-seed", Event: model.RadioFeedbackThresholdReached, ListenedMS: 20000, DurationMS: 100000,
 		}, time.Now().UTC())
 		Expect(err).ToNot(HaveOccurred())
-		_, err = repo.RecordPlaybackFeedback(adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
+		_, err = repo.RecordPlaybackFeedback(context.Background(), adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
 			ItemID: "radio-context-seed", Event: model.RadioFeedbackCompleted, ListenedMS: 100000, DurationMS: 100000,
 		}, time.Now().UTC())
 		Expect(err).ToNot(HaveOccurred())
-		_, err = repo.RecordPlaybackFeedback(adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
+		_, err = repo.RecordPlaybackFeedback(context.Background(), adminUser.ID, sessionID, model.PersonalRadioFeedbackRequest{
 			ItemID: "radio-context-seed", Event: model.RadioFeedbackManualSkip, ListenedMS: 100000, DurationMS: 100000,
 		}, time.Now().UTC())
 		Expect(err).ToNot(HaveOccurred())

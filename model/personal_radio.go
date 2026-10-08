@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"strings"
 	"time"
 )
@@ -104,6 +105,7 @@ const (
 )
 
 type PersonalRadioFeedbackRequest struct {
+	EventID    string `json:"eventId,omitempty"`
 	ItemID     string `json:"itemId"`
 	Event      string `json:"event"`
 	ListenedMS int64  `json:"listenedMs"`
@@ -155,8 +157,10 @@ type RadioTransitionFeedback struct {
 }
 
 type RadioPlaybackFeedbackResult struct {
-	Item    PersonalRadioItem
-	Applied bool
+	Item              PersonalRadioItem
+	Applied           bool
+	Duplicate         bool
+	DiscoveryToDelete *DiscoveryTrack
 }
 
 // NormalizeRecordingMBID is the one canonical normalization used for radio
@@ -213,7 +217,7 @@ type PersonalRadioRepository interface {
 	UpdateItem(*PersonalRadioItem) error
 	RecentSeedIDs(sessionID string, limit int) ([]string, error)
 	GetRecentAcceptedItems(sessionID string, limit int) ([]PersonalRadioItem, error)
-	RecordPlaybackFeedback(userID, sessionID string, request PersonalRadioFeedbackRequest, now time.Time) (*RadioPlaybackFeedbackResult, error)
+	RecordPlaybackFeedback(ctx context.Context, userID, sessionID string, request PersonalRadioFeedbackRequest, now time.Time) (*RadioPlaybackFeedbackResult, error)
 	GetTransitionsForTargets(userID, sourceKey string, targetKeys []string) (map[string]RadioTransitionFeedback, error)
 	GetTopTransitions(userID, sourceKey string, limit int) ([]RadioTransitionFeedback, error)
 	UpsertDiscovery(*DiscoveryTrack) error

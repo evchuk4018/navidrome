@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -204,73 +205,6 @@ func (r *personalRadioRepository) GetRecentAcceptedItems(sessionID string, limit
 	return items, rows.Err()
 }
 
-func (r *personalRadioRepository) RecordPlaybackFeedback(userID, sessionID string, request model.PersonalRadioFeedbackRequest, now time.Time) (*model.RadioPlaybackFeedbackResult, error) {
-	tx, err := r.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	item, err := scanRadioItem(tx.QueryRow(radioItemSelect+`
-		join personal_radio_session s on s.id = personal_radio_item.session_id
-		where personal_radio_item.id = ? and personal_radio_item.session_id = ? and s.user_id = ?`,
-		request.ItemID, sessionID, userID))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, model.ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	now = now.UTC()
-	item.Status = model.RadioItemPlayed
-	item.ListenedMS = maxInt64(item.ListenedMS, request.ListenedMS)
-	item.DurationMS = maxInt64(item.DurationMS, request.DurationMS)
-	item.LastFeedbackAt = &now
-
-	outcome, applied, delta := radioPlaybackOutcome(*item, request, item.ListenedMS, item.DurationMS)
-	if applied {
-		item.PlaybackOutcome = outcome
-	}
-
-	if request.Event == model.RadioFeedbackStarted && item.TransitionSourceKey == "" {
-		targetKey := model.RadioTrackKey(item.RecordingMBID, item.MediaFileID)
-		if targetKey != "" {
-			anchor, anchorErr := recentAcceptedItemTx(tx, sessionID, item.ID)
-			if anchorErr != nil && !errors.Is(anchorErr, model.ErrNotFound) {
-				return nil, anchorErr
-			}
-			if anchor != nil {
-				sourceKey := model.RadioTrackKey(anchor.RecordingMBID, anchor.MediaFileID)
-				if sourceKey != "" {
-					item.TransitionSourceItemID = anchor.ID
-					item.TransitionSourceKey = sourceKey
-					delta.attempts++
-					delta.sourceMediaFileID = anchor.MediaFileID
-					delta.targetMediaFileID = item.MediaFileID
-				}
-			}
-		}
-	}
-
-	if err := updateRadioItemTx(tx, item); err != nil {
-		return nil, err
-	}
-	if item.TransitionSourceKey != "" {
-		delta.sourceKey = item.TransitionSourceKey
-		delta.targetKey = model.RadioTrackKey(item.RecordingMBID, item.MediaFileID)
-		if delta.hasCounts() {
-			if err := upsertRadioTransitionTx(tx, userID, delta, now); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return &model.RadioPlaybackFeedbackResult{Item: *item, Applied: applied}, nil
-}
-
 func (r *personalRadioRepository) GetTransitionsForTargets(userID, sourceKey string, targetKeys []string) (map[string]model.RadioTransitionFeedback, error) {
 	result := map[string]model.RadioTransitionFeedback{}
 	if strings.TrimSpace(sourceKey) == "" || len(targetKeys) == 0 {
@@ -393,6 +327,10 @@ func (r *personalRadioRepository) UpdateDiscovery(track *model.DiscoveryTrack) e
 }
 
 func (r *personalRadioRepository) RecordFeedback(userID, recordingMBID, event string, now time.Time) error {
+	return recordRadioTrackFeedback(context.Background(), r.db, userID, recordingMBID, event, now)
+}
+
+func recordRadioTrackFeedback(ctx context.Context, conn radioFeedbackSQL, userID, recordingMBID, event string, now time.Time) error {
 	positive, completed, neutral, early := 0, 0, 0, 0
 	var earlyAt any
 	switch event {
@@ -405,7 +343,7 @@ func (r *personalRadioRepository) RecordFeedback(userID, recordingMBID, event st
 	default:
 		neutral = 1
 	}
-	_, err := r.db.Exec(`insert into radio_track_feedback
+	_, err := conn.ExecContext(ctx, `insert into radio_track_feedback
 		(user_id, recording_mbid, positive_count, completed_count, neutral_skip_count,
 		 early_skip_count, last_early_skip_at, updated_at)
 		values (?, ?, ?, ?, ?, ?, ?, ?)
@@ -508,9 +446,9 @@ func (d radioTransitionDelta) hasCounts() bool {
 		d.earlySkip != 0 || d.neutralSkip != 0 || d.keep != 0
 }
 
-func updateRadioItemTx(tx *sql.Tx, item *model.PersonalRadioItem) error {
+func updateRadioItemTx(ctx context.Context, tx radioFeedbackSQL, item *model.PersonalRadioItem) error {
 	item.UpdatedAt = time.Now().UTC()
-	_, err := tx.Exec(`update personal_radio_item set status = ?, media_file_id = nullif(?, ''),
+	_, err := tx.ExecContext(ctx, `update personal_radio_item set status = ?, media_file_id = nullif(?, ''),
 		recording_mbid = ?, download_job_id = nullif(?, ''), playback_outcome = ?, listened_ms = ?,
 		duration_ms = ?, transition_source_item_id = nullif(?, ''), transition_source_key = ?,
 		last_feedback_at = ?, updated_at = ? where id = ?`, item.Status, item.MediaFileID,
@@ -520,8 +458,8 @@ func updateRadioItemTx(tx *sql.Tx, item *model.PersonalRadioItem) error {
 	return err
 }
 
-func recentAcceptedItemTx(tx *sql.Tx, sessionID, excludeItemID string) (*model.PersonalRadioItem, error) {
-	item, err := scanRadioItem(tx.QueryRow(radioItemSelect+` where session_id = ? and id <> ? and
+func recentAcceptedItemTx(ctx context.Context, tx radioFeedbackSQL, sessionID, excludeItemID string) (*model.PersonalRadioItem, error) {
+	item, err := scanRadioItem(tx.QueryRowContext(ctx, radioItemSelect+` where session_id = ? and id <> ? and
 		playback_outcome in (?, ?, ?, ?) and last_feedback_at is not null
 		order by last_feedback_at desc, id desc limit 1`, sessionID, excludeItemID,
 		model.RadioPlaybackAccepted, model.RadioPlaybackCompleted,
@@ -597,7 +535,7 @@ func earlySkipThresholdMSForDuration(durationMS int64) int64 {
 	return minInt64(30000, durationMS/5)
 }
 
-func upsertRadioTransitionTx(tx *sql.Tx, userID string, delta radioTransitionDelta, now time.Time) error {
+func upsertRadioTransitionTx(ctx context.Context, tx radioFeedbackSQL, userID string, delta radioTransitionDelta, now time.Time) error {
 	var lastAttemptAt, lastPositiveAt, lastNegativeAt any
 	if delta.attempts > 0 {
 		lastAttemptAt = now
@@ -608,7 +546,7 @@ func upsertRadioTransitionTx(tx *sql.Tx, userID string, delta radioTransitionDel
 	if delta.earlySkip > 0 || delta.neutralSkip > 0 {
 		lastNegativeAt = now
 	}
-	_, err := tx.Exec(`insert into radio_transition_feedback
+	_, err := tx.ExecContext(ctx, `insert into radio_transition_feedback
 		(user_id, source_key, target_key, source_media_file_id, target_media_file_id,
 		 attempt_count, accepted_count, completed_count, early_skip_count, neutral_skip_count,
 		 keep_count, last_attempt_at, last_positive_at, last_negative_at, updated_at)

@@ -52,8 +52,8 @@ import {
   radioSongs,
   refillPersonalRadio,
   radioErrorDetails,
-  sendRadioFeedback,
 } from '../quickpick/provider'
+import { useRadioFeedback } from './useRadioFeedback'
 import { isRadioPlanning } from '../quickpick/radioPlanning'
 import { startRelatedRadio } from '../quickpick/startRelatedRadio'
 import { resolveSearchSongForPlayback } from '../music/playSearchSong'
@@ -108,6 +108,7 @@ const Player = () => {
     )
 
   const { authenticated } = useAuthState()
+  const reportRadioFeedback = useRadioFeedback(authenticated)
   const homeTubePlayback = useHomeTubePlayback()
   const coordinator = useMediaSessionCoordinator()
   const playbackQueue = usePlaybackQueue()
@@ -293,16 +294,6 @@ const Player = () => {
     },
     [radioRefillContext, reportRadioRefillError, updateRadioResponse],
   )
-
-  const reportRadioFeedback = useCallback((playback, event) => {
-    if (!playback?.sessionId || !playback?.itemId) return
-    sendRadioFeedback(playback.sessionId, {
-      itemId: playback.itemId,
-      event,
-      listenedMs: Math.floor(playback.listenedMs || 0),
-      durationMs: Math.floor(playback.durationMs || 0),
-    }).catch(() => {})
-  }, [])
 
   const radioSessionId = playerState.radioSession?.id
   const radioPlanningStatus = playerState.radioSession?.planningStatus

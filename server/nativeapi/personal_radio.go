@@ -2,6 +2,7 @@ package nativeapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -97,7 +98,17 @@ func (api *Router) personalRadioFeedback(w http.ResponseWriter, r *http.Request)
 			"sessionID", chi.URLParam(r, "id"),
 			"itemID", payload.ItemID,
 			"event", payload.Event,
+			"eventID", payload.EventID,
 			"error", err)
+		if errors.Is(err, model.ErrFeedbackEventConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, model.ErrNotAvailable) {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		writeMusicError(w, r, err, http.StatusInternalServerError)
 		return
 	}

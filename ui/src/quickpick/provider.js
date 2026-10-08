@@ -51,8 +51,9 @@ export const radioErrorDetails = (error) => {
   }
 }
 
-export const sendRadioFeedback = (sessionId, feedback) =>
+export const sendRadioFeedback = (sessionId, feedback, options = {}) =>
   httpClient(`${REST_URL}/personal-radio/sessions/${sessionId}/feedback`, {
+    ...options,
     method: 'POST',
     body: JSON.stringify(feedback),
   })

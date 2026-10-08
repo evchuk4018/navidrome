@@ -80,7 +80,7 @@ func (f *fakePersonalRadioRepository) GetRecentAcceptedItems(sessionID string, l
 	return accepted, nil
 }
 
-func (f *fakePersonalRadioRepository) RecordPlaybackFeedback(userID, sessionID string, request model.PersonalRadioFeedbackRequest, now time.Time) (*model.RadioPlaybackFeedbackResult, error) {
+func (f *fakePersonalRadioRepository) RecordPlaybackFeedback(_ context.Context, userID, sessionID string, request model.PersonalRadioFeedbackRequest, now time.Time) (*model.RadioPlaybackFeedbackResult, error) {
 	if f.transitions == nil {
 		f.transitions = map[string]model.RadioTransitionFeedback{}
 	}
@@ -157,6 +157,31 @@ func (f *fakePersonalRadioRepository) RecordPlaybackFeedback(userID, sessionID s
 			}
 			transition.UpdatedAt = now
 			f.transitions[key] = transition
+		}
+		if item.RecordingMBID != "" && applied {
+			events := map[string]string{model.RadioPlaybackAccepted: model.RadioFeedbackThresholdReached,
+				model.RadioPlaybackCompleted: model.RadioFeedbackCompleted, model.RadioPlaybackEarlySkip: model.RadioFeedbackManualSkip,
+				model.RadioPlaybackLateSkip: "neutral", model.RadioPlaybackKeep: model.RadioFeedbackKeep}
+			if event := events[item.PlaybackOutcome]; event != "" {
+				_ = f.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), event, now)
+			}
+		}
+		if item.ItemType == model.RadioItemDiscovery {
+			discovery, err := f.GetDiscoveryByRecording(userID, model.NormalizeRecordingMBID(item.RecordingMBID))
+			if err != nil {
+				return nil, err
+			}
+			if request.Event == model.RadioFeedbackStarted {
+				discovery.PlayStarts++
+			}
+			if discovery.PlayStarts > 1 {
+				discovery.State, discovery.ExpiresAt = model.DiscoveryKept, nil
+				_ = f.RecordFeedback(userID, discovery.RecordingMBID, model.RadioFeedbackKeep, now)
+			}
+			if applied && (request.Event == model.RadioFeedbackThresholdReached || request.Event == model.RadioFeedbackCompleted || request.Event == model.RadioFeedbackKeep) {
+				discovery.State, discovery.ExpiresAt = model.DiscoveryKept, nil
+			}
+			_ = f.UpdateDiscovery(discovery)
 		}
 		return &model.RadioPlaybackFeedbackResult{Item: *item, Applied: applied}, nil
 	}

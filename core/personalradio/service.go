@@ -32,6 +32,7 @@ const (
 	localFallbackPageSize    = 500
 	radioFeedbackBatchSize   = 500
 	providerPlanningTimeout  = 5 * time.Second
+	libraryMatchingTimeout   = 5 * time.Second
 )
 
 type SimilarityProvider interface {
@@ -395,83 +396,19 @@ func (s *service) Refill(ctx context.Context, userID, sessionID string, request 
 }
 
 func (s *service) Feedback(ctx context.Context, userID, sessionID string, req model.PersonalRadioFeedbackRequest) error {
-	if _, err := s.repo.GetSessionForUser(sessionID, userID); err != nil {
-		return err
-	}
-	feedback, err := s.repo.RecordPlaybackFeedback(userID, sessionID, req, time.Now().UTC())
+	feedback, err := s.repo.RecordPlaybackFeedback(ctx, userID, sessionID, req, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	item := &feedback.Item
-	if item.RecordingMBID != "" && feedback.Applied {
-		switch item.PlaybackOutcome {
-		case model.RadioPlaybackAccepted:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackThresholdReached, time.Now().UTC()); err != nil {
-				return err
-			}
-		case model.RadioPlaybackCompleted:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackCompleted, time.Now().UTC()); err != nil {
-				return err
-			}
-		case model.RadioPlaybackEarlySkip:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackManualSkip, time.Now().UTC()); err != nil {
-				return err
-			}
-		case model.RadioPlaybackLateSkip:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), "neutral", time.Now().UTC()); err != nil {
-				return err
-			}
-		case model.RadioPlaybackKeep:
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackKeep, time.Now().UTC()); err != nil {
-				return err
-			}
-		}
+	if discovery := feedback.DiscoveryToDelete; discovery != nil {
+		go func() {
+			timer := time.NewTimer(2 * time.Second)
+			defer timer.Stop()
+			<-timer.C
+			s.deleteDiscovery(context.WithoutCancel(ctx), *discovery)
+		}()
 	}
-	if item.ItemType != model.RadioItemDiscovery || item.RecordingMBID == "" {
-		return nil
-	}
-	discovery, err := s.repo.GetDiscoveryByRecording(userID, model.NormalizeRecordingMBID(item.RecordingMBID))
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	switch req.Event {
-	case model.RadioFeedbackStarted:
-		// Keep counting starts for the discovery lifecycle, including a second
-		// start of the same item. The generic transition attempt remains
-		// idempotent in the repository.
-		discovery.PlayStarts++
-		if discovery.PlayStarts > 1 {
-			discovery.State, discovery.ExpiresAt = model.DiscoveryKept, nil
-			if err := s.repo.RecordFeedback(userID, model.NormalizeRecordingMBID(item.RecordingMBID), model.RadioFeedbackKeep, now); err != nil {
-				return err
-			}
-		}
-	case model.RadioFeedbackThresholdReached, model.RadioFeedbackCompleted, model.RadioFeedbackKeep:
-		if !feedback.Applied {
-			return nil
-		}
-		discovery.State, discovery.ExpiresAt = model.DiscoveryKept, nil
-	case model.RadioFeedbackManualSkip:
-		if !feedback.Applied {
-			return nil
-		}
-		if item.PlaybackOutcome == model.RadioPlaybackEarlySkip {
-			discovery.State = model.DiscoveryDeletePending
-			if err := s.repo.UpdateDiscovery(discovery); err != nil {
-				return err
-			}
-			go func() {
-				timer := time.NewTimer(2 * time.Second)
-				defer timer.Stop()
-				<-timer.C
-				s.deleteDiscovery(context.WithoutCancel(ctx), *discovery)
-			}()
-			return nil
-		}
-		discovery.State, discovery.ExpiresAt = model.DiscoveryKept, nil
-	}
-	return s.repo.UpdateDiscovery(discovery)
+	return nil
 }
 
 func (s *service) planningSeed(ctx context.Context, session model.PersonalRadioSession) (*model.MediaFile, error) {
@@ -805,6 +742,18 @@ func (s *service) recommendationPoolsWithLimit(ctx context.Context, session mode
 	return s.recommendationPoolsWithLimitContext(ctx, providerCtx, session, seed, seen, seenRecordings, count, providerLimit, seedWeight, true)
 }
 
+// Provider deadlines apply only to remote lookups. Local matching gets its own
+// budget while still respecting cancellation of the parent planning operation.
+func (s *service) matchRadioSongs(ctx context.Context, songs []agents.Song) (map[int]model.MediaFile, error) {
+	return s.matchRadioSongsWithin(ctx, songs, libraryMatchingTimeout)
+}
+
+func (s *service) matchRadioSongsWithin(ctx context.Context, songs []agents.Song, timeout time.Duration) (map[int]model.MediaFile, error) {
+	matchingCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return s.matcher.MatchSongsIndexed(matchingCtx, songs)
+}
+
 func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.Context, session model.PersonalRadioSession, seed *model.MediaFile, seen map[string]bool, seenRecordings map[string]bool, count, providerLimit int, seedWeight float64, loadFeedback bool) (candidatePools, error) {
 	var pools candidatePools
 	localAdded := map[string]bool{}
@@ -846,7 +795,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 				"error", recErr)
 		} else if len(providerRecommendations) > 0 {
 			stats["providerCandidates"] = len(providerRecommendations)
-			matches, matchErr := s.matcher.MatchSongsIndexed(providerCtx, providerRecommendations)
+			matches, matchErr := s.matchRadioSongs(ctx, providerRecommendations)
 			if matchErr != nil {
 				log.Warn(ctx, "Unable to compare personal radio recommendations with the library",
 					"sessionID", session.ID,
@@ -1043,7 +992,7 @@ func (s *service) recommendationPoolsWithLimitContext(ctx, providerCtx context.C
 			for i, candidate := range artistSongs {
 				songs[i] = candidate.song
 			}
-			matches, matchErr := s.matcher.MatchSongsIndexed(ctx, songs)
+			matches, matchErr := s.matchRadioSongs(ctx, songs)
 			if matchErr != nil {
 				log.Warn(ctx, "Related radio could not match artist suggestions", "seedID", seed.ID, "error", matchErr)
 			} else {
