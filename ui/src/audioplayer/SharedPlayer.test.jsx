@@ -4,6 +4,7 @@ import { Provider } from 'react-redux'
 import { createStore } from 'redux'
 import MusicPlayer from 'navidrome-music-player/es/index'
 import HomeTubePlayerView from '../hometube/HomeTubePlayerView'
+import { pauseAudio, resumePlayback, togglePlayback } from './playback'
 
 const shared = vi.hoisted(() => {
   window.matchMedia = vi.fn((media) => ({
@@ -192,3 +193,70 @@ it.each([false, true])(
     expect(next).not.toHaveBeenCalled()
   },
 )
+
+it('keeps a cancelled resume paused when the music engine receives late canplay', async () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(function () {
+    this.currentTime = 0
+  })
+  let paused = true
+  const play = vi
+    .spyOn(HTMLMediaElement.prototype, 'play')
+    .mockImplementation(function () {
+      paused = false
+      this.dispatchEvent(new Event('play'))
+      return Promise.resolve()
+    })
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function () {
+    paused = true
+    this.dispatchEvent(new Event('pause'))
+  })
+  const ref = createRef()
+  let audio
+  const { baseElement } = render(
+    <MusicPlayer
+      ref={ref}
+      audioLists={[song]}
+      autoPlay={false}
+      autoPlayInitLoadPlayList={false}
+      showMediaSession={false}
+      mode="full"
+      locale={{ clickToPlayText: 'Play', clickToPauseText: 'Pause' }}
+      navigation={{
+        queue: [song],
+        playId: 'song',
+        toggle: () => togglePlayback(audio),
+      }}
+    />,
+  )
+  audio = ref.current.audio
+  let readyState = 0
+  let networkState = 0
+  Object.defineProperty(audio, 'paused', { get: () => paused })
+  Object.defineProperty(audio, 'readyState', { get: () => readyState })
+  Object.defineProperty(audio, 'networkState', { get: () => networkState })
+  audio.currentTime = 45
+  act(() => {
+    ref.current.setState({ canPlay: true, isInitAutoPlay: true })
+  })
+  play.mockClear()
+  await act(async () => {
+    resumePlayback(audio)
+    pauseAudio(audio)
+    readyState = 4
+    networkState = 1
+    audio.dispatchEvent(new Event('loadedmetadata'))
+    audio.dispatchEvent(new Event('canplay'))
+  })
+
+  expect(audio.paused).toBe(true)
+  expect(play).toHaveBeenCalledOnce()
+  expect(ref.current.state.playing).toBe(false)
+
+  await act(async () => {
+    fireEvent.click(baseElement.querySelector('.player-content .play-btn'))
+  })
+  expect(audio.paused).toBe(false)
+  expect(audio.currentTime).toBe(45)
+  expect(ref.current.state.playing).toBe(true)
+  expect(play).toHaveBeenCalledTimes(2)
+})

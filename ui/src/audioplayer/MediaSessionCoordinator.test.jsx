@@ -8,10 +8,28 @@ import {
 
 const createMediaSession = () => {
   const handlers = {}
+  let metadata = null
+  let playbackState = 'none'
+  const metadataHistory = []
+  const stateHistory = []
   return {
     handlers,
-    metadata: null,
-    playbackState: 'none',
+    metadataHistory,
+    stateHistory,
+    get metadata() {
+      return metadata
+    },
+    set metadata(value) {
+      metadataHistory.push(value)
+      metadata = value
+    },
+    get playbackState() {
+      return playbackState
+    },
+    set playbackState(value) {
+      stateHistory.push(value)
+      playbackState = value
+    },
     setActionHandler: vi.fn((action, handler) => {
       handlers[action] = handler
     }),
@@ -19,14 +37,30 @@ const createMediaSession = () => {
   }
 }
 
-const createMediaElement = ({ paused = true, duration = 120 } = {}) => {
+const createMediaElement = ({
+  paused = true,
+  duration = 120,
+  evicted = false,
+} = {}) => {
   const listeners = new Map()
   const element = {
     paused,
+    src: '/song.mp3',
+    readyState: evicted ? 0 : 4,
+    networkState: evicted ? 0 : 1,
     ended: false,
     duration,
     currentTime: 30,
     playbackRate: 1,
+    emit: (event) => {
+      listeners.get(event)?.forEach((listener) => listener())
+    },
+    load: vi.fn(() => {
+      element.currentTime = 0
+      element.readyState = 0
+      element.networkState = 2
+      element.emit('loadstart')
+    }),
     play: vi.fn(() => {
       element.paused = false
       listeners.get('play')?.forEach((listener) => listener())
@@ -52,6 +86,7 @@ const MediaSource = ({
   element,
   metadata,
   active,
+  audioContext,
   onPrevious,
   onNext,
   onSeekBackward,
@@ -64,6 +99,7 @@ const MediaSource = ({
     element,
     metadata,
     active,
+    audioContext,
     onPrevious,
     onNext,
     onSeekBackward,
@@ -130,10 +166,9 @@ describe('MediaSessionCoordinator', () => {
     expect(onSleepExpire).toHaveBeenCalledOnce()
     expect(music.paused).toBe(true)
     expect(coordinator.isPlaybackBlocked()).toBe(true)
-    act(() => {
-      mediaSession.handlers.previoustrack()
-    })
-    expect(music.currentTime).toBe(20)
+    expect(mediaSession.handlers.previoustrack).toBeNull()
+    expect(mediaSession.handlers.seekbackward).toBeNull()
+    expect(music.currentTime).toBe(30)
     expect(music.paused).toBe(true)
     expect(onUserPlayback).not.toHaveBeenCalled()
     act(() => {
@@ -169,6 +204,10 @@ describe('MediaSessionCoordinator', () => {
       expect(mediaSession.metadata).toEqual({ title: 'HomeTube v1' })
       expect(mediaSession.handlers.nexttrack).toEqual(expect.any(Function))
     })
+    const nextHandler = mediaSession.handlers.nexttrack
+    mediaSession.setActionHandler.mockClear()
+    mediaSession.metadataHistory.length = 0
+    mediaSession.stateHistory.length = 0
 
     rerender(
       <TestTree
@@ -191,7 +230,11 @@ describe('MediaSessionCoordinator', () => {
     await waitFor(() =>
       expect(mediaSession.metadata).toEqual({ title: 'HomeTube v2' }),
     )
-    mediaSession.handlers.nexttrack()
+    expect(mediaSession.handlers.nexttrack).toBe(nextHandler)
+    expect(mediaSession.setActionHandler).not.toHaveBeenCalled()
+    expect(mediaSession.metadataHistory).not.toContain(null)
+    expect(mediaSession.stateHistory).not.toContain('none')
+    nextHandler()
 
     expect(updatedNext).toHaveBeenCalledOnce()
     expect(firstNext).not.toHaveBeenCalled()
@@ -309,6 +352,9 @@ describe('MediaSessionCoordinator', () => {
       }),
     )
     const coordinator = onCoordinator.mock.lastCall[0]
+    const playHandler = mediaSession.handlers.play
+    mediaSession.metadataHistory.length = 0
+    mediaSession.stateHistory.length = 0
     act(() => {
       coordinator.pauseActive()
     })
@@ -336,9 +382,176 @@ describe('MediaSessionCoordinator', () => {
       expect(mediaSession.playbackState).toBe('paused')
       expect(mediaSession.handlers.play).toEqual(expect.any(Function))
     })
+    expect(mediaSession.handlers.play).toBe(playHandler)
+    expect(mediaSession.metadataHistory).not.toContain(null)
+    expect(mediaSession.stateHistory).not.toContain('none')
 
     mediaSession.handlers.play()
     expect(homeTube.play).toHaveBeenCalledOnce()
     expect(music.play).not.toHaveBeenCalled()
+  })
+
+  it('advertises track navigation without time jumps and keeps timeline seeking', () => {
+    const music = createMediaElement({ paused: false })
+    const previous = vi.fn()
+    const next = vi.fn()
+    renderTree({
+      onCoordinator: vi.fn(),
+      music: {
+        element: music,
+        active: true,
+        metadata: { title: 'Song' },
+        onPrevious: previous,
+        onNext: next,
+      },
+      homeTube: {},
+    })
+
+    expect(mediaSession.handlers.seekbackward).toBeNull()
+    expect(mediaSession.handlers.seekforward).toBeNull()
+    mediaSession.handlers.previoustrack()
+    mediaSession.handlers.nexttrack()
+    mediaSession.handlers.seekto({ seekTime: 65 })
+    expect(previous).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledOnce()
+    expect(music.currentTime).toBe(65)
+  })
+
+  it('uses stable controls for a new source and ignores events from the old element', () => {
+    const music = createMediaElement({ paused: false })
+    const homeTube = createMediaElement()
+    const next = vi.fn()
+    const props = {
+      onCoordinator: vi.fn(),
+      music: { element: music, active: true, metadata: { title: 'Music' } },
+      homeTube: {
+        element: homeTube,
+        active: false,
+        metadata: { title: 'HomeTube' },
+        onNext: next,
+      },
+    }
+    const { rerender } = renderTree(props)
+    const play = mediaSession.handlers.play
+    const pause = mediaSession.handlers.pause
+    mediaSession.metadataHistory.length = 0
+    mediaSession.stateHistory.length = 0
+    rerender(
+      <TestTree
+        {...props}
+        music={{ ...props.music, active: false }}
+        homeTube={{ ...props.homeTube, active: true }}
+      />,
+    )
+
+    act(() => play())
+    expect(homeTube.play).toHaveBeenCalledOnce()
+    expect(music.play).not.toHaveBeenCalled()
+    expect(mediaSession.playbackState).toBe('playing')
+    music.emit('pause')
+    expect(mediaSession.playbackState).toBe('playing')
+    act(() => pause())
+    expect(homeTube.paused).toBe(true)
+    expect(mediaSession.handlers.play).toBe(play)
+    expect(mediaSession.metadata).toEqual({ title: 'HomeTube' })
+    expect(mediaSession.metadataHistory).not.toContain(null)
+    expect(mediaSession.stateHistory).not.toContain('none')
+  })
+
+  it('resumes an interrupted context when the selected element still reports playing', () => {
+    const music = createMediaElement({ paused: false })
+    const audioContext = { state: 'interrupted', resume: vi.fn() }
+    renderTree({
+      onCoordinator: vi.fn(),
+      music: { element: music, active: true, audioContext },
+      homeTube: {},
+    })
+
+    mediaSession.handlers.play()
+    expect(audioContext.resume).toHaveBeenCalledOnce()
+    expect(music.play).not.toHaveBeenCalled()
+  })
+
+  it.each(['pause', 'sleep', 'next', 'previous', 'seek', 'switch', 'remove'])(
+    'cancels an evicted-source recovery after %s',
+    (command) => {
+      const music = createMediaElement({ evicted: true })
+      const homeTube = createMediaElement()
+      const onCoordinator = vi.fn()
+      const props = {
+        onCoordinator,
+        music: {
+          element: music,
+          active: true,
+          metadata: { title: 'Music' },
+          onNext: vi.fn(),
+          onPrevious: vi.fn(),
+        },
+        homeTube: { element: homeTube, active: false },
+      }
+      const { rerender } = renderTree(props)
+      const coordinator = onCoordinator.mock.lastCall[0]
+      act(() => mediaSession.handlers.play())
+      expect(music.load).toHaveBeenCalledOnce()
+      act(() => {
+        if (command === 'pause') mediaSession.handlers.pause()
+        if (command === 'sleep') coordinator.expireSleep()
+        if (command === 'next') mediaSession.handlers.nexttrack()
+        if (command === 'previous') mediaSession.handlers.previoustrack()
+        if (command === 'seek') mediaSession.handlers.seekto({ seekTime: 12 })
+      })
+      if (command === 'switch' || command === 'remove')
+        rerender(
+          <TestTree
+            {...props}
+            music={{
+              ...props.music,
+              active: false,
+              element: command === 'remove' ? null : music,
+            }}
+            homeTube={{ ...props.homeTube, active: command === 'switch' }}
+          />,
+        )
+      music.readyState = 1
+      music.emit('loadedmetadata')
+
+      expect(music.currentTime).toBe(command === 'seek' ? 12 : 0)
+      expect(music.play).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('clears system controls only when the selected player is removed or unmounted', () => {
+    const music = createMediaElement({ paused: false })
+    const { rerender, unmount } = renderTree({
+      onCoordinator: vi.fn(),
+      music: { element: music, active: true, metadata: { title: 'Song' } },
+      homeTube: {},
+    })
+    rerender(<TestTree onCoordinator={vi.fn()} music={{}} homeTube={{}} />)
+    expect(mediaSession.metadata).toBeNull()
+    expect(mediaSession.playbackState).toBe('none')
+    expect(
+      Object.values(mediaSession.handlers).every((handler) => handler === null),
+    ).toBe(true)
+    expect(mediaSession.setPositionState).toHaveBeenCalledWith()
+    unmount()
+    expect(mediaSession.handlers.play).toBeNull()
+  })
+
+  it('keeps playback usable when a browser rejects unsupported actions', () => {
+    const install = mediaSession.setActionHandler
+    mediaSession.setActionHandler = vi.fn((action, handler) => {
+      if (action === 'seekforward' || action === 'seekbackward')
+        throw new DOMException('Unsupported', 'NotSupportedError')
+      install(action, handler)
+    })
+    const music = createMediaElement()
+    renderTree({
+      onCoordinator: vi.fn(),
+      music: { element: music, active: true },
+      homeTube: {},
+    })
+    act(() => mediaSession.handlers.play())
+    expect(music.play).toHaveBeenCalledOnce()
   })
 })

@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react'
-import { pauseAudio, playAudio } from './playback'
+import { cancelPlaybackRecovery, pauseAudio, resumePlayback } from './playback'
 
 const MEDIA_SESSION_ACTIONS = [
   'play',
@@ -71,6 +71,7 @@ export const MediaSessionCoordinator = ({ children }) => {
   const activeId = useRef(null)
   const sleepBlocked = useRef(false)
   const sleepTimerCheck = useRef(null)
+  const installedHandlers = useRef(new Map())
   const [revision, setRevision] = useState(0)
   const redraw = useCallback(() => setRevision((revision) => revision + 1), [])
 
@@ -94,6 +95,8 @@ export const MediaSessionCoordinator = ({ children }) => {
         events.forEach((event) =>
           descriptor.element.removeEventListener(event, guard, true),
         )
+        if (cancelPlaybackRecovery(descriptor.element))
+          pauseAudio(descriptor.element)
         registrations.current.delete(id)
         if (activeId.current === id) activeId.current = null
         redraw()
@@ -114,6 +117,11 @@ export const MediaSessionCoordinator = ({ children }) => {
   const activate = useCallback(
     (id) => {
       if (!registrations.current.has(id)) return
+      if (activeId.current !== id) {
+        const previous = registrations.current.get(activeId.current)
+        if (cancelPlaybackRecovery(previous?.element))
+          pauseAudio(previous.element)
+      }
       activeId.current = id
       redraw()
     },
@@ -186,90 +194,117 @@ export const MediaSessionCoordinator = ({ children }) => {
     ],
   )
 
-  useEffect(() => {
-    const mediaSession = getMediaSession()
-    if (!mediaSession?.setActionHandler) return undefined
-
-    const descriptor = registrations.current.get(activeId.current)
-    const element = descriptor?.element
-    if (!descriptor || !element) {
-      MEDIA_SESSION_ACTIONS.forEach((action) =>
-        setActionHandler(mediaSession, action, null),
-      )
-      mediaSession.metadata = null
-      mediaSession.playbackState = 'none'
-      return undefined
-    }
-
-    mediaSession.metadata = makeMetadata(descriptor.metadata)
+  const actions = useMemo(() => {
+    const selected = () => registrations.current.get(activeId.current)
     const userPlayback = (command) => () => {
+      const descriptor = selected()
+      if (!descriptor?.element) return
       allowPlayback()
       descriptor.onUserPlayback?.()
-      command()
+      command(descriptor)
     }
-    const play = userPlayback(() => playAudio(element, descriptor.audioContext))
-    const pause = () => pauseAudio(element)
-    const seekBackward = (details = {}) => {
-      if (typeof descriptor.onSeekBackward === 'function') {
-        descriptor.onSeekBackward(details)
-        return
-      }
-      element.currentTime = Math.max(
-        0,
-        element.currentTime - Number(details.seekOffset || 10),
-      )
+    return {
+      play: userPlayback(({ element, audioContext }) =>
+        resumePlayback(element, audioContext),
+      ),
+      pause: () => pauseAudio(selected()?.element),
+      previoustrack: userPlayback((descriptor) => {
+        cancelPlaybackRecovery(descriptor.element)
+        descriptor.onPrevious?.()
+      }),
+      nexttrack: userPlayback((descriptor) => {
+        cancelPlaybackRecovery(descriptor.element)
+        descriptor.onNext?.()
+      }),
+      seekto: (details = {}) => {
+        const element = selected()?.element
+        if (element && details.seekTime != null) {
+          cancelPlaybackRecovery(element)
+          element.currentTime = details.seekTime
+        }
+      },
     }
-    const seekForward = (details = {}) => {
-      if (typeof descriptor.onSeekForward === 'function') {
-        descriptor.onSeekForward(details)
-        return
-      }
-      element.currentTime = Math.min(
-        Number.isFinite(element.duration) ? element.duration : Infinity,
-        element.currentTime + Number(details.seekOffset || 10),
-      )
-    }
-    const seekTo = (details = {}) => {
-      if (details.seekTime != null) element.currentTime = details.seekTime
-    }
-    const actions = {
-      play,
-      pause,
-      seekbackward: seekBackward,
-      seekforward: seekForward,
-      seekto: seekTo,
-      previoustrack: descriptor.onPrevious
-        ? userPlayback(descriptor.onPrevious)
-        : seekBackward,
-      nexttrack: descriptor.onNext
-        ? userPlayback(descriptor.onNext)
-        : seekForward,
-    }
-    MEDIA_SESSION_ACTIONS.forEach((action) =>
-      setActionHandler(mediaSession, action, actions[action] || null),
-    )
+  }, [allowPlayback])
 
-    const updatePlaybackState = () => {
-      mediaSession.playbackState = element.paused ? 'paused' : 'playing'
-      updatePositionState(mediaSession, element)
-    }
-    const events = ['play', 'playing', 'pause', 'durationchange', 'timeupdate']
-    events.forEach((event) =>
-      element.addEventListener(event, updatePlaybackState),
-    )
-    updatePlaybackState()
+  const updatePlaybackState = useCallback(() => {
+    const mediaSession = getMediaSession()
+    const element = registrations.current.get(activeId.current)?.element
+    if (!mediaSession || !element) return
+    mediaSession.playbackState =
+      element.paused || element.ended ? 'paused' : 'playing'
+    updatePositionState(mediaSession, element)
+  }, [])
 
+  // Descriptor/metadata updates must not tear down the paused OS session.
+  // The installed dispatchers always resolve the latest selected source.
+  useEffect(() => {
+    const mediaSession = getMediaSession()
+    if (!mediaSession?.setActionHandler) return
+    const descriptor = registrations.current.get(activeId.current)
+    const element = descriptor?.element
+    MEDIA_SESSION_ACTIONS.forEach((action) => {
+      const available =
+        element &&
+        (action !== 'previoustrack' || descriptor.onPrevious) &&
+        (action !== 'nexttrack' || descriptor.onNext)
+      const handler = available ? actions[action] || null : null
+      if (installedHandlers.current.get(action) !== handler) {
+        setActionHandler(mediaSession, action, handler)
+        installedHandlers.current.set(action, handler)
+      }
+    })
+    mediaSession.metadata = element ? makeMetadata(descriptor.metadata) : null
+    if (element) updatePlaybackState()
+    else {
+      mediaSession.playbackState = 'none'
+      try {
+        mediaSession.setPositionState()
+      } catch {
+        // Position state is not available in every browser.
+      }
+    }
+  }, [revision, actions, updatePlaybackState])
+
+  const selectedElement = registrations.current.get(activeId.current)?.element
+  useEffect(() => {
+    if (!selectedElement) return undefined
+    const update = () => {
+      if (
+        registrations.current.get(activeId.current)?.element === selectedElement
+      )
+        updatePlaybackState()
+    }
+    const events = [
+      'play',
+      'playing',
+      'pause',
+      'ended',
+      'loadedmetadata',
+      'durationchange',
+      'timeupdate',
+      'seeked',
+      'ratechange',
+    ]
+    events.forEach((event) => selectedElement.addEventListener(event, update))
     return () => {
       events.forEach((event) =>
-        element.removeEventListener(event, updatePlaybackState),
+        selectedElement.removeEventListener(event, update),
       )
+    }
+  }, [selectedElement, updatePlaybackState])
+
+  useEffect(
+    () => () => {
+      const mediaSession = getMediaSession()
+      if (!mediaSession?.setActionHandler) return
       MEDIA_SESSION_ACTIONS.forEach((action) =>
         setActionHandler(mediaSession, action, null),
       )
       mediaSession.metadata = null
       mediaSession.playbackState = 'none'
-    }
-  }, [revision, allowPlayback])
+    },
+    [],
+  )
 
   return (
     <MediaSessionContext.Provider value={value}>

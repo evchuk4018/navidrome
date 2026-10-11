@@ -14,6 +14,7 @@ import {
   useMediaSessionCoordinator,
 } from './MediaSessionCoordinator'
 import { SleepTimerProvider, useSleepTimer } from './SleepTimerContext'
+import { resumePlayback } from './playback'
 
 vi.mock('../subsonic', () => ({
   default: { streamUrl: (id) => `/stream/${id}`, getCoverArtUrl: () => '' },
@@ -71,6 +72,43 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
 })
+
+it.each(['next', 'select', 'previous', 'repeat'])(
+  'cancels pending music recovery through the in-page queue %s command',
+  (command) => {
+    const store = setup(musicTracks)
+    const element = document.createElement('audio')
+    element.src = '/song.mp3'
+    element.currentTime = 45
+    const load = vi.spyOn(element, 'load').mockImplementation(() => {
+      element.currentTime = 0
+    })
+    vi.spyOn(element, 'play').mockResolvedValue()
+    const restart = vi.fn()
+    queue.register('music', { element, restart })
+    if (command === 'repeat')
+      act(() => {
+        store.dispatch(setPlayMode('singleLoop'))
+      })
+    resumePlayback(element)
+    // Previous must restart the current song before it steps backward.
+    if (command === 'previous') element.currentTime = 45
+    const first = queue.selected.uuid
+    act(() => {
+      if (command === 'next') queue.next()
+      if (command === 'select') queue.select(2)
+      if (command === 'previous') queue.previous()
+      if (command === 'repeat') queue.ended(first)
+    })
+    element.currentTime = 0
+    element.dispatchEvent(new Event('loadedmetadata'))
+
+    expect(element.currentTime).toBe(0)
+    expect(load).toHaveBeenCalledOnce()
+    if (command === 'previous') expect(queue.selected.uuid).toBe(first)
+    if (command === 'repeat') expect(restart).toHaveBeenCalledOnce()
+  },
+)
 
 it('autoplays five songs when each ended pause is flushed before the end callback', () => {
   const store = setup(musicTracks)

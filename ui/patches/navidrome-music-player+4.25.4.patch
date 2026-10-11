@@ -343,7 +343,7 @@ index 0000000..536e7c1
 + return React.createElement(React.Fragment,null,showProgressLoadBar && React.createElement('div',{className:'progress-load-bar',style:{width:Math.min(loadedProgress,100)+'%'}}),React.createElement(Slider,{max:Math.max(1,Math.ceil(duration || 0)),defaultValue:0,value:Math.min(Math.ceil(currentTime || 0),Math.ceil(duration || 0)),onChange,onAfterChange,disabled,ariaLabelForHandle:label,...PROGRESS_BAR_SLIDER_OPTIONS}));
 +}
 diff --git a/node_modules/navidrome-music-player/es/index.js b/node_modules/navidrome-music-player/es/index.js
-index dd68040..113d6a7 100644
+index dd68040..97701d7 100644
 --- a/node_modules/navidrome-music-player/es/index.js
 +++ b/node_modules/navidrome-music-player/es/index.js
 @@ -43,7 +43,12 @@ import Sortable, { Swap } from 'sortablejs';
@@ -422,7 +422,15 @@ index dd68040..113d6a7 100644
        toggle: _this.props.mode === MODE.FULL,
        playing: false,
        currentTime: 0,
-@@ -844,7 +807,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -592,6 +555,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+       _this.setState({
+         isAudioSeeking: false
+       });
++      if (_this.props.navigation && _this.props.navigation.toggle) return _this.props.navigation.toggle();
+       if (_this.state.audioLists.length >= 1) {
+         var _ref7 = _this.props.volumeFade || {},
+           fadeIn = _ref7.fadeIn,
+@@ -844,7 +808,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
      });
      _defineProperty(_this, "onAudioEnd", function () {
        _this.props.onAudioEnded && _this.props.onAudioEnded(_this.state.playId, _this.state.audioLists, _this.getBaseAudioInfo());
@@ -431,7 +439,7 @@ index dd68040..113d6a7 100644
      });
      /**
       * 上一首 下一首 通用方法
-@@ -866,6 +829,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -866,6 +830,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
        _this.handlePlay(_playMode, isNext);
      });
      _defineProperty(_this, "onPlayPrevAudio", function () {
@@ -439,7 +447,7 @@ index dd68040..113d6a7 100644
        var restartCurrentOnPrev = _this.props.restartCurrentOnPrev;
        if (restartCurrentOnPrev && _this.audio.currentTime > 1) {
          _this.audio.currentTime = 0;
-@@ -874,6 +838,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -874,6 +839,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
        _this.audioPrevAndNextBasePlayHandle(false);
      });
      _defineProperty(_this, "onPlayNextAudio", function () {
@@ -447,7 +455,7 @@ index dd68040..113d6a7 100644
        _this.audioPrevAndNextBasePlayHandle(true);
      });
      _defineProperty(_this, "audioTimeUpdate", function () {
-@@ -1620,6 +1585,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -1620,6 +1586,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
        });
      });
      _defineProperty(_this, "initSortableAudioLists", function () {
@@ -455,7 +463,7 @@ index dd68040..113d6a7 100644
        var _this$props4 = _this.props,
          audioLists = _this$props4.audioLists,
          sortableOptions = _this$props4.sortableOptions;
-@@ -1777,16 +1743,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -1777,16 +1744,7 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
          onChange: this.onProgressChange,
          onAfterChange: this.onAudioSeeked
        } : {};
@@ -473,7 +481,7 @@ index dd68040..113d6a7 100644
        var DownloadComponent = showDownload && /*#__PURE__*/React.createElement("span", {
          className: "group audio-download",
          onClick: this.onAudioDownload,
-@@ -1814,18 +1771,9 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -1814,18 +1772,9 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
          onClick: this.toggleAudioLyric,
          title: locale.toggleLyricText
        }, this.iconMap.lyric);
@@ -494,7 +502,7 @@ index dd68040..113d6a7 100644
        var AudioController = /*#__PURE__*/React.createElement("div", {
          className: cls('react-jinke-music-player'),
          style: defaultPosition,
-@@ -1902,89 +1850,13 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -1902,89 +1851,13 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
          onDrag: this.onControllerDrag,
          onStop: this.onControllerDragStop,
          onStart: this.onControllerDragStart
@@ -588,7 +596,7 @@ index dd68040..113d6a7 100644
          onCancel: this.closeAudioListsPanel,
          icon: this.iconMap,
          isMobile: isMobile,
-@@ -1992,7 +1864,8 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
+@@ -1992,7 +1865,8 @@ var ReactJkMusicPlayer = /*#__PURE__*/function (_PureComponent) {
          glassBg: glassBg,
          cover: cover,
          remove: remove,
@@ -598,11 +606,8 @@ index dd68040..113d6a7 100644
          removeId: removeId,
          locale: locale
        }), !isMobile && /*#__PURE__*/React.createElement(PlayModel, {
-@@ -2212,4 +2085,5 @@ _defineProperty(ReactJkMusicPlayer, "defaultProps", {
-   sortableOptions: {}
+@@ -2213,3 +2087,4 @@ _defineProperty(ReactJkMusicPlayer, "defaultProps", {
  });
  _defineProperty(ReactJkMusicPlayer, "propTypes", PROP_TYPES);
--export { ReactJkMusicPlayer as default };
-\ No newline at end of file
-+export { ReactJkMusicPlayer as default };
+ export { ReactJkMusicPlayer as default };
 +export { DEFAULT_ICON as playerIcons };

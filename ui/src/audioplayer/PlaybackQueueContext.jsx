@@ -9,6 +9,7 @@ import React, {
 import { useDispatch, useSelector } from 'react-redux'
 import { clearQueue } from '../actions'
 import { useMediaSessionCoordinator } from './MediaSessionCoordinator'
+import { cancelPlaybackRecovery } from './playback'
 
 const QueueContext = createContext(null)
 
@@ -70,6 +71,13 @@ export const PlaybackQueueProvider = ({ children }) => {
         (automatic && coordinator?.isPlaybackBlocked?.())
       )
         return
+      const selected =
+        current.queue[
+          current.playIndex ?? Math.max(0, current.savedPlayIndex || 0)
+        ]
+      cancelPlaybackRecovery(
+        engines.current[selected?.source || 'music']?.element,
+      )
       if (!automatic) coordinator?.allowPlayback?.()
       dispatch({ type: 'PLAYER_QUEUE_SELECT', index: row, automatic })
     },
@@ -99,6 +107,10 @@ export const PlaybackQueueProvider = ({ children }) => {
         if (target === currentIndex) {
           if (automatic && coordinator?.isPlaybackBlocked?.()) return
           if (!automatic) coordinator?.allowPlayback?.()
+          cancelPlaybackRecovery(
+            engines.current[current.queue[currentIndex]?.source || 'music']
+              ?.element,
+          )
           engines.current[
             current.queue[currentIndex]?.source || 'music'
           ]?.restart(automatic)
@@ -114,6 +126,7 @@ export const PlaybackQueueProvider = ({ children }) => {
         current.playIndex ?? Math.max(0, current.savedPlayIndex || 0)
       ]
     const engine = engines.current[item?.source || 'music']
+    cancelPlaybackRecovery(engine?.element)
     if ((engine?.element?.currentTime || 0) > 1) engine.element.currentTime = 0
     else step(false)
   }, [step])

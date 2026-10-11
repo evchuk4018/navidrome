@@ -627,6 +627,10 @@ const Player = () => {
             ),
       navigation: playbackQueue
         ? {
+            toggle: () => {
+              handleUserPlayback()
+              togglePlayback(audioInstance, context)
+            },
             previous: playbackQueue.previous,
             next: playbackQueue.next,
             queue: playbackQueue.queue.map((item) => ({
@@ -668,6 +672,9 @@ const Player = () => {
     isMobilePlayer,
     sleepStopped,
     playbackQueue,
+    handleUserPlayback,
+    audioInstance,
+    context,
   ])
 
   const onAudioListsChange = useCallback(
@@ -996,7 +1003,7 @@ const Player = () => {
 
   useMediaSessionSource({
     source: 'music',
-    element: audioInstance,
+    element: playerState.queue.length ? audioInstance : null,
     metadata: musicMediaMetadata,
     audioContext: context,
     active:
