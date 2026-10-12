@@ -158,6 +158,8 @@ func writeMusicJSON(w http.ResponseWriter, value any) {
 func writeMusicError(w http.ResponseWriter, r *http.Request, err error, fallbackStatus int) {
 	status := fallbackStatus
 	switch {
+	case errors.Is(err, model.ErrPlaybackOwnership):
+		status = http.StatusConflict
 	case errors.Is(err, model.ErrValidation):
 		status = http.StatusBadRequest
 	case errors.Is(err, model.ErrAlreadyDownloaded):

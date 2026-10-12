@@ -1,5 +1,13 @@
 import { httpClient } from '../dataProvider'
 import { REST_URL } from '../consts'
+import { playbackSession } from '../playbacksession/controller'
+
+const ownershipOptions = () => {
+  const epoch = playbackSession.epoch()
+  return epoch
+    ? { headers: new Headers({ 'X-ND-Playback-Epoch': String(epoch) }) }
+    : {}
+}
 
 const jsonRequest = (path, options = {}) =>
   httpClient(`${REST_URL}${path}`, options).then(({ json }) => json)
@@ -21,14 +29,19 @@ export const recordQuickPickClick = (viewId, itemKey) =>
 export const recordPlaylistPlay = (playlistId) =>
   httpClient(`${REST_URL}/playlist/${playlistId}/plays`, { method: 'POST' })
 
-export const createPersonalRadio = (seedMediaFileId, mode) =>
-  jsonRequest('/personal-radio/sessions', {
+export const createPersonalRadio = async (seedMediaFileId, mode) => {
+  if (!(await playbackSession.explicitPlay()))
+    throw new Error('Playback moved to another device')
+  return jsonRequest('/personal-radio/sessions', {
+    ...ownershipOptions(),
     method: 'POST',
     body: JSON.stringify({ seedMediaFileId, ...(mode ? { mode } : {}) }),
   })
+}
 
 export const refillPersonalRadio = (sessionId, context = {}) =>
   jsonRequest(`/personal-radio/sessions/${sessionId}/refill`, {
+    ...ownershipOptions(),
     method: 'POST',
     body: JSON.stringify(context),
   })

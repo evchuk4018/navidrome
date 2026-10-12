@@ -21,6 +21,7 @@ import (
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/id"
+	requestctx "github.com/navidrome/navidrome/model/request"
 	"github.com/navidrome/navidrome/utils/cache"
 )
 
@@ -106,11 +107,23 @@ func (s *service) Create(ctx context.Context, userID string, request model.Creat
 	now := time.Now().UTC()
 	session := model.PersonalRadioSession{ID: id.NewRandom(), UserID: userID, SeedMediaFileID: seedID, Mode: model.NormalizeRadioMode(string(request.Mode)), Status: model.PersonalRadioActive, CreatedAt: now, UpdatedAt: now}
 	items := []model.PersonalRadioItem{{ID: id.NewRandom(), SessionID: session.ID, Position: 0, ItemType: model.RadioItemSeed, Status: model.RadioItemReady, MediaFileID: seed.ID, RecordingMBID: seed.MbzRecordingID, Song: seed, CreatedAt: now, UpdatedAt: now}}
-	if err := s.repo.CreateSession(&session, items); err != nil {
-		return nil, err
-	}
-	if err := s.repo.EndActiveSessions(userID, session.ID); err != nil {
-		return nil, err
+	if guard, ok := requestctx.WebPlaybackFrom(ctx); ok {
+		guarded, supported := s.repo.(interface {
+			CreateWebSession(*model.PersonalRadioSession, []model.PersonalRadioItem, model.WebPlaybackGuard) error
+		})
+		if !supported {
+			return nil, model.ErrNotAvailable
+		}
+		if err := guarded.CreateWebSession(&session, items, guard); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := s.repo.CreateSession(&session, items); err != nil {
+			return nil, err
+		}
+		if err := s.repo.EndActiveSessions(userID, session.ID); err != nil {
+			return nil, err
+		}
 	}
 	s.setPlanningStatus(session.ID, model.RadioPlanningSelecting)
 	log.Info(ctx, "Personal radio session created",

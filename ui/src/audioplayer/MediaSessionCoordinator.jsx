@@ -8,6 +8,7 @@ import React, {
   useState,
 } from 'react'
 import { cancelPlaybackRecovery, pauseAudio, resumePlayback } from './playback'
+import { playbackSession } from '../playbacksession/controller'
 
 const MEDIA_SESSION_ACTIONS = [
   'play',
@@ -72,6 +73,8 @@ export const MediaSessionCoordinator = ({ children }) => {
   const sleepBlocked = useRef(false)
   const sleepTimerCheck = useRef(null)
   const installedHandlers = useRef(new Map())
+  const restoredPositions = useRef(new WeakMap())
+  const resumeSelectedRef = useRef(() => {})
   const [revision, setRevision] = useState(0)
   const redraw = useCallback(() => setRevision((revision) => revision + 1), [])
 
@@ -80,7 +83,23 @@ export const MediaSessionCoordinator = ({ children }) => {
       registrations.current.set(id, descriptor)
       const guard = (event) => {
         sleepTimerCheck.current?.()
-        if (!sleepBlocked.current) return
+        const selected = playbackSession.selected()
+        const wrongEntry =
+          selected &&
+          descriptor.source &&
+          ((selected.source === 'hometube' ? 'hometube' : 'music') !==
+            descriptor.source ||
+            (descriptor.element.ndPlaybackEntryId &&
+              descriptor.element.ndPlaybackEntryId !== selected.uuid))
+        if (
+          !sleepBlocked.current &&
+          playbackSession.isAllowed() &&
+          !wrongEntry &&
+          !selected?.unavailable
+        ) {
+          if (event?.type === 'play') resumeSelectedRef.current()
+          if (!playbackSession.isRestoring()) return
+        }
         pauseAudio(descriptor.element)
         // The music engine advances its queue unconditionally on ended.
         // Capture prevents that handler running at or after the deadline.
@@ -91,9 +110,38 @@ export const MediaSessionCoordinator = ({ children }) => {
         descriptor.element.addEventListener(event, guard, true),
       )
       redraw()
+      const progress = (event) => {
+        const current = registrations.current.get(id) || descriptor
+        if (!playbackSession.isAllowed()) return
+        if (event?.type === 'loadedmetadata' || event?.type === 'canplay')
+          resumeSelectedRef.current()
+        const element = current.element
+        const entryId = element.ndPlaybackEntryId || current.entryId
+        if (entryId)
+          playbackSession.updateProgress(
+            entryId,
+            (element.currentTime || 0) * 1000,
+            element.paused || element.ended ? 'paused' : 'playing',
+            event?.type === 'seeked',
+          )
+      }
+      const progressEvents = [
+        'timeupdate',
+        'pause',
+        'seeked',
+        'play',
+        'loadedmetadata',
+        'canplay',
+      ]
+      progressEvents.forEach((event) =>
+        descriptor.element.addEventListener(event, progress),
+      )
       return () => {
         events.forEach((event) =>
           descriptor.element.removeEventListener(event, guard, true),
+        )
+        progressEvents.forEach((event) =>
+          descriptor.element.removeEventListener(event, progress),
         )
         if (cancelPlaybackRecovery(descriptor.element))
           pauseAudio(descriptor.element)
@@ -155,12 +203,76 @@ export const MediaSessionCoordinator = ({ children }) => {
   const allowPlayback = useCallback(() => {
     sleepTimerCheck.current?.()
     sleepBlocked.current = false
+    void playbackSession.explicitPlay()
   }, [])
 
   const isPlaybackBlocked = useCallback(() => {
     sleepTimerCheck.current?.()
-    return sleepBlocked.current
+    return sleepBlocked.current || !playbackSession.isAllowed()
   }, [])
+
+  const resumeSelected = useCallback(() => {
+    if (!playbackSession.wantsPlayback() || sleepBlocked.current) return
+    const selected = playbackSession.selected()
+    if (!selected || selected.unavailable || selected.radioPending) return
+    const source = selected.source === 'hometube' ? 'hometube' : 'music'
+    const descriptor = [...registrations.current.values()].find(
+      (item) =>
+        item.source === source &&
+        (item.element.ndPlaybackEntryId || item.entryId) === selected.uuid,
+    )
+    if (!descriptor?.element || descriptor.element.readyState === 0) return
+    const element = descriptor.element
+    const restoreKey = `${selected.uuid}:${selected.resumeToken}`
+    if (
+      selected.resumePositionMs != null &&
+      !selected.isRadio &&
+      restoredPositions.current.get(element) !== restoreKey &&
+      element.ndResumeKey !== restoreKey
+    ) {
+      if (!Number.isFinite(element.duration) || element.duration <= 0) return
+      try {
+        element.currentTime = Math.min(
+          selected.resumePositionMs / 1000,
+          element.duration,
+        )
+        restoredPositions.current.set(element, restoreKey)
+        element.ndResumeKey = restoreKey
+      } catch {
+        return
+      }
+    }
+    playbackSession.restoreComplete(
+      selected.uuid,
+      (element.currentTime || 0) * 1000,
+      selected.resumeToken,
+    )
+    resumePlayback(element, descriptor.audioContext, (error) => {
+      if (error) playbackSession.playRejected()
+    })
+  }, [])
+  resumeSelectedRef.current = resumeSelected
+
+  useEffect(() => {
+    const removeHooks = playbackSession.setHooks({
+      pause: () =>
+        registrations.current.forEach((descriptor) => {
+          cancelPlaybackRecovery(descriptor.element)
+          pauseAudio(descriptor.element)
+          descriptor.onOwnershipLost?.()
+        }),
+      resume: resumeSelected,
+    })
+    const removeListener = playbackSession.subscribe(redraw)
+    return () => {
+      removeHooks()
+      removeListener()
+    }
+  }, [redraw, resumeSelected])
+
+  useEffect(() => {
+    resumeSelected()
+  }, [revision, resumeSelected])
 
   const setSleepTimerCheck = useCallback((check) => {
     sleepTimerCheck.current = check
@@ -326,6 +438,8 @@ export const useMediaSessionSource = ({
   onSeekForward,
   onSleepExpire,
   onUserPlayback,
+  entryId,
+  onOwnershipLost,
 }) => {
   const coordinator = useContext(MediaSessionContext)
   const idRef = useRef(null)
@@ -333,6 +447,9 @@ export const useMediaSessionSource = ({
 
   const descriptor = useMemo(
     () => ({
+      source,
+      entryId,
+      onOwnershipLost,
       element,
       metadata,
       audioContext,
@@ -344,6 +461,9 @@ export const useMediaSessionSource = ({
       onUserPlayback,
     }),
     [
+      source,
+      entryId,
+      onOwnershipLost,
       audioContext,
       element,
       metadata,

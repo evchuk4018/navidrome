@@ -18,7 +18,17 @@ const (
 	ClientUniqueId = contextKey("clientUniqueId")
 	ReverseProxyIp = contextKey("reverseProxyIp")
 	InternalAuth   = contextKey("internalAuth") // Used for internal API calls, e.g., from the plugins
+	WebPlayback    = contextKey("webPlayback")
 )
+
+func WithWebPlayback(ctx context.Context, guard model.WebPlaybackGuard) context.Context {
+	return context.WithValue(ctx, WebPlayback, guard)
+}
+
+func WebPlaybackFrom(ctx context.Context) (model.WebPlaybackGuard, bool) {
+	guard, ok := ctx.Value(WebPlayback).(model.WebPlaybackGuard)
+	return guard, ok
+}
 
 var allKeys = []contextKey{
 	User,

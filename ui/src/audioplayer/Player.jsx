@@ -43,6 +43,8 @@ import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
 import { pauseAudio, resumeContext, togglePlayback } from './playback'
+import { playbackSession } from '../playbacksession/controller'
+import { usePlaybackOwnership } from '../playbacksession/usePlaybackOwnership'
 import {
   useMediaSessionCoordinator,
   useMediaSessionSource,
@@ -80,6 +82,7 @@ const radioQueueChanged = (queue, data) => {
 }
 
 const Player = () => {
+  const { allowed: playbackAllowed, wantsPlayback } = usePlaybackOwnership()
   const theme = useCurrentTheme()
   const translate = useTranslate()
   const playerTheme = theme.player?.theme || 'dark'
@@ -261,7 +264,8 @@ const Player = () => {
   // a newer response that has already resolved them.
   const requestRadioRefill = useCallback(
     (sessionId) => {
-      if (!sessionId) return
+      if (!sessionId || !playbackSession.canWrite()) return
+      const ownershipEpoch = playbackSession.epoch()
       const request = radioRefillRef.current
       if (request.sessionId !== sessionId) {
         request.sessionId = sessionId
@@ -272,6 +276,8 @@ const Player = () => {
       refillPersonalRadio(sessionId, radioRefillContext(sessionId))
         .then((response) => {
           if (
+            playbackSession.canWrite() &&
+            playbackSession.epoch() === ownershipEpoch &&
             radioRefillRef.current.sessionId === sessionId &&
             playerStateRef.current.radioSession?.id === sessionId
           ) {
@@ -644,6 +650,8 @@ const Player = () => {
           }
         : undefined,
       autoPlay:
+        playbackAllowed &&
+        wantsPlayback &&
         !sleepStopped &&
         homeTubePlayback.activeSource !== 'hometube' &&
         playbackQueue?.selected?.source !== 'hometube' &&
@@ -651,6 +659,9 @@ const Player = () => {
         playerState.autoPlay !== false &&
         (playerState.clear || playerState.playIndex != null),
       autoPlayInitLoadPlayList:
+        playbackAllowed &&
+        wantsPlayback &&
+        playerState.autoPlay !== false &&
         !sleepStopped &&
         homeTubePlayback.activeSource !== 'hometube' &&
         playbackQueue?.selected?.source !== 'hometube',
@@ -666,6 +677,8 @@ const Player = () => {
       showMediaSession: false,
     }
   }, [
+    playbackAllowed,
+    wantsPlayback,
     playerState,
     defaultOptions,
     homeTubePlayback.activeSource,
@@ -730,6 +743,10 @@ const Player = () => {
 
   const onAudioPlay = useCallback(
     (info) => {
+      if (!playbackSession.isAllowed()) {
+        pauseAudio(audioInstance)
+        return
+      }
       if (coordinator?.isPlaybackBlocked?.()) {
         pauseAudio(audioInstance)
         return
@@ -822,6 +839,9 @@ const Player = () => {
 
   const onAudioPlayTrackChange = useCallback(
     (playId, audioLists) => {
+      const item = audioLists.find((row) => row.__PLAYER_KEY__ === playId)
+      if (audioInstance && item) audioInstance.ndPlaybackEntryId = item.uuid
+      if (!playbackSession.isAllowed()) return
       if (playerStateRef.current.radioSession?.id) {
         skipPendingRadioItem(playId, audioLists)
       }
@@ -840,7 +860,7 @@ const Player = () => {
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
     },
-    [currentTrackId, reportRadioFeedback, skipPendingRadioItem],
+    [audioInstance, currentTrackId, reportRadioFeedback, skipPendingRadioItem],
   )
 
   const onAudioPause = useCallback(
@@ -1003,6 +1023,13 @@ const Player = () => {
 
   useMediaSessionSource({
     source: 'music',
+    entryId: playerState.current?.uuid,
+    onOwnershipLost: () => {
+      radioRefillRef.current = { sessionId: null, inFlight: false }
+      radioPlaybackRef.current = null
+      setHeartbeatTrackId(null)
+      stoppedRef.current = true
+    },
     element: playerState.queue.length ? audioInstance : null,
     metadata: musicMediaMetadata,
     audioContext: context,

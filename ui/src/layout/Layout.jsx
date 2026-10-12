@@ -8,6 +8,7 @@ import { useLocation } from 'react-router-dom'
 import Menu from './Menu'
 import AppBar from './AppBar'
 import BottomNavigation from './BottomNavigation'
+import ContinueListening from '../playbacksession/ContinueListening'
 import {
   BOTTOM_NAVIGATION_HEIGHT,
   COMPACT_NAVIGATION_QUERY,
@@ -42,13 +43,17 @@ const Layout = (props) => {
     pathname.startsWith('/song/') ||
     pathname === '/playlist' ||
     pathname.startsWith('/playlist/')
-  const isHomeTubePage = pathname === '/hometube' || pathname.startsWith('/hometube/')
+  const isHomeTubePage =
+    pathname === '/hometube' || pathname.startsWith('/hometube/')
   const isPinkPage = isDiscoveryPage || isLibraryPage || isHomeTubePage
   const queue = useSelector((state) => state.player?.queue)
   const homeTubePlayback = useHomeTubePlayback()
   const hasPlayer =
     (queue?.length || 0) > 0 ||
-    Boolean(homeTubePlayback.activeSource === 'hometube' && homeTubePlayback.currentVideo)
+    Boolean(
+      homeTubePlayback.activeSource === 'hometube' &&
+      homeTubePlayback.currentVideo,
+    )
   const classes = useStyles({ addPadding: hasPlayer, compact })
   const dispatch = useDispatch()
   useSearchRefocus()
@@ -162,6 +167,7 @@ const Layout = (props) => {
         theme={theme}
         notification={Notification}
       >
+        <ContinueListening />
         {props.children}
       </RALayout>
     </HotKeys>

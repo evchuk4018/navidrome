@@ -50,6 +50,17 @@ type KeepAlive struct {
 	TS int64 `json:"ts"`
 }
 
+// The recipient is enforced by the broker before sending to any connection.
+type PlaybackSessionChanged struct {
+	baseEvent
+	UserID        string `json:"userId"`
+	Epoch         int64  `json:"epoch"`
+	Revision      int64  `json:"revision"`
+	OwnerClientID string `json:"ownerClientId"`
+}
+
+func (e *PlaybackSessionChanged) RecipientUserID() string { return e.UserID }
+
 type ServerStart struct {
 	baseEvent
 	StartTime time.Time `json:"startTime"`

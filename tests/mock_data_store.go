@@ -8,30 +8,31 @@ import (
 )
 
 type MockDataStore struct {
-	RealDS               model.DataStore
-	MockedLibrary        model.LibraryRepository
-	MockedFolder         model.FolderRepository
-	MockedGenre          model.GenreRepository
-	MockedAlbum          model.AlbumRepository
-	MockedArtist         model.ArtistRepository
-	MockedMediaFile      model.MediaFileRepository
-	MockedTag            model.TagRepository
-	MockedUser           model.UserRepository
-	MockedProperty       model.PropertyRepository
-	MockedPlayer         model.PlayerRepository
-	MockedPlaylist       model.PlaylistRepository
-	MockedPlayQueue      model.PlayQueueRepository
-	MockedShare          model.ShareRepository
-	MockedTranscoding    model.TranscodingRepository
-	MockedUserProps      model.UserPropsRepository
-	MockedScrobbleBuffer model.ScrobbleBufferRepository
-	MockedScrobble       model.ScrobbleRepository
-	MockedRadio          model.RadioRepository
-	MockedPlugin         model.PluginRepository
-	MockedArtwork        model.ArtworkRepository
-	MockedArtworkQueue   model.ArtworkQueueRepository
-	scrobbleBufferMu     sync.Mutex
-	repoMu               sync.Mutex
+	RealDS                   model.DataStore
+	MockedLibrary            model.LibraryRepository
+	MockedFolder             model.FolderRepository
+	MockedGenre              model.GenreRepository
+	MockedAlbum              model.AlbumRepository
+	MockedArtist             model.ArtistRepository
+	MockedMediaFile          model.MediaFileRepository
+	MockedTag                model.TagRepository
+	MockedUser               model.UserRepository
+	MockedProperty           model.PropertyRepository
+	MockedPlayer             model.PlayerRepository
+	MockedPlaylist           model.PlaylistRepository
+	MockedPlayQueue          model.PlayQueueRepository
+	MockedWebPlaybackSession model.WebPlaybackSessionRepository
+	MockedShare              model.ShareRepository
+	MockedTranscoding        model.TranscodingRepository
+	MockedUserProps          model.UserPropsRepository
+	MockedScrobbleBuffer     model.ScrobbleBufferRepository
+	MockedScrobble           model.ScrobbleRepository
+	MockedRadio              model.RadioRepository
+	MockedPlugin             model.PluginRepository
+	MockedArtwork            model.ArtworkRepository
+	MockedArtworkQueue       model.ArtworkQueueRepository
+	scrobbleBufferMu         sync.Mutex
+	repoMu                   sync.Mutex
 
 	// GC tracking
 	GCCalled bool
@@ -139,6 +140,16 @@ func (db *MockDataStore) Playlist(ctx context.Context) model.PlaylistRepository 
 	}
 	db.MockedPlaylist = CreateMockPlaylistRepo()
 	return db.MockedPlaylist
+}
+
+func (db *MockDataStore) WebPlaybackSession(ctx context.Context) model.WebPlaybackSessionRepository {
+	if db.MockedWebPlaybackSession != nil {
+		return db.MockedWebPlaybackSession
+	}
+	if db.RealDS != nil {
+		return db.RealDS.WebPlaybackSession(ctx)
+	}
+	panic("WebPlaybackSession repository is not configured")
 }
 
 func (db *MockDataStore) PlayQueue(ctx context.Context) model.PlayQueueRepository {

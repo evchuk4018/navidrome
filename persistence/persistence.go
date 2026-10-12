@@ -53,6 +53,10 @@ func (s *SQLStore) PlayQueue(ctx context.Context) model.PlayQueueRepository {
 	return NewPlayQueueRepository(ctx, s.getDBXBuilder())
 }
 
+func (s *SQLStore) WebPlaybackSession(ctx context.Context) model.WebPlaybackSessionRepository {
+	return NewWebPlaybackSessionRepository(ctx, s.getDBXBuilder())
+}
+
 func (s *SQLStore) Playlist(ctx context.Context) model.PlaylistRepository {
 	return NewPlaylistRepository(ctx, s.getDBXBuilder())
 }

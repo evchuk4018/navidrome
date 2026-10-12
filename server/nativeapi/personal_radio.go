@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/log"
@@ -21,6 +22,11 @@ func (api *Router) addPersonalRadioRoute(r chi.Router) {
 }
 
 func (api *Router) createPersonalRadio(w http.ResponseWriter, r *http.Request) {
+	var okGuard bool
+	r, okGuard = api.guardWebRadio(w, r)
+	if !okGuard {
+		return
+	}
 	if api.personalRadio == nil {
 		http.Error(w, "personal radio is not configured", http.StatusNotImplemented)
 		return
@@ -49,6 +55,11 @@ func (api *Router) createPersonalRadio(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *Router) refillPersonalRadio(w http.ResponseWriter, r *http.Request) {
+	var okGuard bool
+	r, okGuard = api.guardWebRadio(w, r)
+	if !okGuard {
+		return
+	}
 	if api.personalRadio == nil {
 		http.Error(w, "personal radio is not configured", http.StatusNotImplemented)
 		return
@@ -75,6 +86,33 @@ func (api *Router) refillPersonalRadio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeMusicJSON(w, response)
+}
+
+// Older/native clients do not send this header and keep their existing contract.
+func (api *Router) guardWebRadio(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+	value := r.Header.Get("X-ND-Playback-Epoch")
+	if value == "" {
+		return r, true
+	}
+	epoch, err := strconv.ParseInt(value, 10, 64)
+	user, client, ok := playbackActor(w, r)
+	if !ok {
+		return r, false
+	}
+	if err != nil || epoch <= 0 {
+		http.Error(w, "invalid playback epoch", http.StatusBadRequest)
+		return r, false
+	}
+	s, err := playbackRead(r.Context(), api.ds, user.ID)
+	if err != nil {
+		playbackError(w, err)
+		return r, false
+	}
+	if s == nil || s.Epoch != epoch || s.OwnerClientID != client {
+		playbackError(w, model.ErrPlaybackOwnership)
+		return r, false
+	}
+	return r.WithContext(request.WithWebPlayback(r.Context(), model.WebPlaybackGuard{ClientID: client, Epoch: epoch})), true
 }
 
 func (api *Router) personalRadioFeedback(w http.ResponseWriter, r *http.Request) {

@@ -31,10 +31,11 @@ const (
 
 type (
 	message struct {
-		id        uint64
-		event     string
-		data      string
-		senderCtx context.Context
+		id              uint64
+		event           string
+		data            string
+		senderCtx       context.Context
+		recipientUserID string
 	}
 	messageChan chan message
 	clientsChan chan client
@@ -42,6 +43,7 @@ type (
 		id             string
 		address        string
 		username       string
+		userID         string
 		userAgent      string
 		clientUniqueId string
 		displayString  string
@@ -95,6 +97,13 @@ func (b *broker) prepareMessage(ctx context.Context, event Event) message {
 	msg.data = event.Data(event)
 	msg.event = event.Name(event)
 	msg.senderCtx = ctx
+	if scoped, ok := event.(interface{ RecipientUserID() string }); ok {
+		msg.recipientUserID = scoped.RecipientUserID()
+		// A private event with no recipient must never fall through to broadcast.
+		if msg.recipientUserID == "" {
+			msg.recipientUserID = "\x00"
+		}
+	}
 	return msg
 }
 
@@ -172,6 +181,7 @@ func (b *broker) subscribe(r *http.Request) client {
 	c := client{
 		id:             id.NewRandom(),
 		username:       user.UserName,
+		userID:         user.ID,
 		address:        r.RemoteAddr,
 		userAgent:      r.UserAgent(),
 		clientUniqueId: clientUniqueId,
@@ -194,6 +204,9 @@ func (b *broker) unsubscribe(c client) {
 }
 
 func (b *broker) shouldSend(msg message, c client) bool {
+	if msg.recipientUserID != "" {
+		return msg.recipientUserID == c.userID
+	}
 	if broadcastToAll, ok := msg.senderCtx.Value(broadcastToAllKey).(bool); ok && broadcastToAll {
 		return true
 	}

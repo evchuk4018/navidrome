@@ -73,6 +73,8 @@ const adminStore = createAdminStore({
   customReducers: {
     library: libraryReducer,
     player: playerReducer,
+    playbackSessionEvent: (state = null, action) =>
+      action.type === 'playbackSessionChanged' ? action.data : state,
     albumView: albumViewReducer,
     theme: themeReducer,
     addToPlaylistDialog: addToPlaylistDialogReducer,

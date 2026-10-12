@@ -30,6 +30,7 @@ type DataStore interface {
 	Tag(ctx context.Context) TagRepository
 	Playlist(ctx context.Context) PlaylistRepository
 	PlayQueue(ctx context.Context) PlayQueueRepository
+	WebPlaybackSession(ctx context.Context) WebPlaybackSessionRepository
 	Transcoding(ctx context.Context) TranscodingRepository
 	Player(ctx context.Context) PlayerRepository
 	Radio(ctx context.Context) RadioRepository
