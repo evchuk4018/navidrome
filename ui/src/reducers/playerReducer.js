@@ -229,14 +229,7 @@ const reduceSyncRadioTracks = (state, { data }) => {
           return
         }
         requiresReplacement = true
-        queue[index] = {
-          ...next,
-          uuid: existing.uuid,
-          ...(existing.resumePositionMs != null && {
-            resumePositionMs: existing.resumePositionMs,
-            resumeToken: existing.resumeToken,
-          }),
-        }
+        queue[index] = { ...next, uuid: existing.uuid }
         return
       }
     }
@@ -329,69 +322,6 @@ const reduceMode = (state, { data: { mode } }) => {
 export const playerReducer = (previousState = initialState, payload) => {
   const { type } = payload
   switch (type) {
-    case 'PLAYER_RESET_PLAYBACK_USER':
-      return { ...initialState, volume: previousState.volume, autoPlay: false }
-    case 'PLAYER_RESTORE_SESSION': {
-      const saved = payload.snapshot
-      const queue = (saved.entries || []).map((entry) => {
-        const song =
-          entry.source === 'hometube'
-            ? { source: 'hometube', videoId: entry.id, video: entry.video }
-            : entry.source === 'radio'
-              ? {
-                  ...(entry.station || {}),
-                  id: entry.id,
-                  isRadio: true,
-                  title: entry.title,
-                  name: entry.title,
-                }
-              : {
-                  ...(entry.song || {}),
-                  id: entry.id,
-                  title: entry.title,
-                  artist: entry.artist,
-                  radioPending: entry.pending,
-                  radioSessionId: entry.radioSessionId,
-                  radioItemId: entry.radioItemId,
-                  radioItemType: entry.radioItemType,
-                }
-        return {
-          ...mapToAudioLists(song),
-          uuid: entry.entryId,
-          unavailable: Boolean(entry.unavailable),
-          ...(entry.entryId === saved.selectedEntryId && {
-            resumePositionMs: saved.positionMs,
-            resumeToken: saved.epoch || payload.token || 'cache',
-          }),
-        }
-      })
-      const index = Math.max(
-        0,
-        queue.findIndex((entry) => entry.uuid === saved.selectedEntryId),
-      )
-      const play = Boolean(
-        payload.play &&
-        queue[index] &&
-        !queue[index].unavailable &&
-        !queue[index].radioPending,
-      )
-      return {
-        ...previousState,
-        queue,
-        current: queue[index] || {},
-        playIndex: index,
-        savedPlayIndex: index,
-        mode: saved.mode || 'order',
-        clear: true,
-        autoPlay: play,
-        selectionAutomatic: !payload.play,
-        radioSession: saved.radioSessionId
-          ? { id: saved.radioSessionId, planningStatus: 'selecting' }
-          : null,
-        musicIntent: (previousState.musicIntent || 0) + (play ? 1 : 0),
-        pendingSearchPlay: null,
-      }
-    }
     case 'PLAYER_QUEUE_REORDER': {
       const queue = [...previousState.queue]
       const selected =

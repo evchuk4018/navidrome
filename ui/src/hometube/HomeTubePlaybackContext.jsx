@@ -15,8 +15,6 @@ import { usePlaybackQueue } from '../audioplayer/PlaybackQueueContext'
 import { currentPlaying } from '../actions'
 import HomeTubePlayer from './HomeTubePlayer'
 import { homeTubeApiPath, homeTubeRequest } from './api'
-import { playbackSession } from '../playbacksession/controller'
-import { usePlaybackOwnership } from '../playbacksession/usePlaybackOwnership'
 
 const HomeTubeContext = createContext(null)
 
@@ -84,7 +82,6 @@ const HomeTubeMiniPlayer = ({
 }
 
 const HomeTubePlayback = ({ children }) => {
-  usePlaybackOwnership()
   const enabled = Boolean(config.homeTubeBaseURL)
   const coordinator = useMediaSessionCoordinator()
   const playbackQueue = usePlaybackQueue()
@@ -123,8 +120,7 @@ const HomeTubePlayback = ({ children }) => {
   }, [activeSource, currentVideo, sharedDispatch])
 
   const isCurrentOperation = useCallback(
-    (operation) =>
-      operationRef.current === operation && playbackSession.isAllowed(),
+    (operation) => operationRef.current === operation,
     [],
   )
 
@@ -145,7 +141,6 @@ const HomeTubePlayback = ({ children }) => {
   const saveProgress = useCallback(
     async (video, position, nextDuration, keepalive = false) => {
       if (
-        !playbackSession.canWrite() ||
         !enabled ||
         !video?.id ||
         !Number.isFinite(Number(nextDuration)) ||
@@ -296,22 +291,6 @@ const HomeTubePlayback = ({ children }) => {
           entries,
         })
       }
-      if (!options.automatic) {
-        const ownership = playbackSession.explicitPlay()
-        if (!playbackSession.isAllowed()) await ownership
-      }
-      if (!isCurrentOperation(operation)) return false
-      const withResume = (value) =>
-        options.resumePositionMs == null
-          ? value
-          : {
-              ...value,
-              playbackPositionSeconds: options.resumePositionMs / 1000,
-              resumePositionSeconds: options.resumePositionMs / 1000,
-              resumeEntryId: options.resumeEntryId,
-              resumeToken: options.resumeToken,
-              watchState: 'in_progress',
-            }
       if (options.managedQueue) {
         // Select the cached item immediately, but wait for fresh readiness before
         // playback. This also registers the pending engine for sleep expiry.
@@ -330,7 +309,6 @@ const HomeTubePlayback = ({ children }) => {
             playbackPositionSeconds: 0,
             watchState: 'unwatched',
           }
-          video = withResume(video)
         } catch (error) {
           if (!isCurrentOperation(operation)) return false
           selectVideo(
@@ -348,7 +326,6 @@ const HomeTubePlayback = ({ children }) => {
           return false
       }
       const selectedWasReady = isReady(video)
-      video = withResume(video)
       selectVideo(
         video,
         true,
@@ -390,7 +367,7 @@ const HomeTubePlayback = ({ children }) => {
       if (isCurrentOperation(operation)) {
         const readyVideo = entries[0]?.video
         if (readyVideo?.id === current.id && isReady(readyVideo)) {
-          setCurrentVideo(withResume(readyVideo))
+          setCurrentVideo(readyVideo)
           setStatus('ready')
           if (!selectedWasReady) setAutoplayNonce((nonce) => nonce + 1)
         }
@@ -441,16 +418,8 @@ const HomeTubePlayback = ({ children }) => {
   }, [coordinator])
 
   const handleAutoplayRejected = useCallback(() => {
-    playbackSession.playRejected()
     setStatus('paused')
   }, [])
-
-  const handleOwnershipLost = useCallback(() => {
-    operationRef.current += 1
-    pauseAudio(element)
-    setStatus('paused')
-    setAutoplayNonce(0)
-  }, [element])
 
   const handleProgress = useCallback(
     ({ position, duration: nextDuration, event = 'timeupdate' }) => {
@@ -644,18 +613,7 @@ const HomeTubePlayback = ({ children }) => {
           coordinator?.isPlaybackBlocked?.()
         )
           return
-        setCurrentVideo((current) =>
-          current?.resumeEntryId && current.id === fresh.id
-            ? {
-                ...fresh,
-                resumeEntryId: current.resumeEntryId,
-                resumeToken: current.resumeToken,
-                resumePositionSeconds: current.resumePositionSeconds,
-                playbackPositionSeconds: current.resumePositionSeconds,
-                watchState: 'in_progress',
-              }
-            : fresh,
-        )
+        setCurrentVideo(fresh)
         if (isReady(fresh)) {
           setStatus('ready')
           setAutoplayNonce((nonce) => nonce + 1)
@@ -677,9 +635,6 @@ const HomeTubePlayback = ({ children }) => {
             managedQueue: true,
             preserveView: activeSource === 'hometube',
             automatic,
-            resumePositionMs: item.resumePositionMs,
-            resumeEntryId: item.uuid,
-            resumeToken: item.resumeToken,
           })
         },
         dismiss: (item) => {
@@ -767,7 +722,6 @@ const HomeTubePlayback = ({ children }) => {
         onClose={() => setExpanded(false)}
         onPlay={claimHomeTube}
         onSleepExpire={handleSleepPause}
-        onOwnershipLost={handleOwnershipLost}
         onUserPlayback={handleSleepRearm}
         onNext={(requestedVideo) => {
           const next = requestedVideo?.id

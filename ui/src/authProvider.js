@@ -2,7 +2,6 @@ import { jwtDecode } from 'jwt-decode'
 import { baseUrl } from './utils'
 import config from './config'
 import { clearQuickPickCache } from './quickpick/cache'
-import { playbackSession } from './playbacksession/controller'
 
 // config sent from server may contain authentication info, for example when the user is authenticated
 // by a reverse proxy request header
@@ -29,8 +28,6 @@ function storeAuthenticationInfo(authInfo) {
   localStorage.setItem('subsonic-salt', authInfo.subsonicSalt)
   localStorage.setItem('subsonic-token', authInfo.subsonicToken)
   localStorage.setItem('is-authenticated', 'true')
-  if (previousUserId && previousUserId !== authInfo.id)
-    playbackSession.identityChanged()
 }
 
 const authProvider = {
@@ -121,7 +118,6 @@ const removeItems = () => {
   localStorage.removeItem('subsonic-salt')
   localStorage.removeItem('subsonic-token')
   localStorage.removeItem('is-authenticated')
-  playbackSession.identityChanged()
 }
 
 export default authProvider

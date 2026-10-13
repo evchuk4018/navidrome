@@ -68,7 +68,6 @@ export const PlaybackQueueProvider = ({ children }) => {
       if (
         row < 0 ||
         !current.queue[row] ||
-        current.queue[row]?.unavailable ||
         (automatic && coordinator?.isPlaybackBlocked?.())
       )
         return
@@ -97,30 +96,13 @@ export const PlaybackQueueProvider = ({ children }) => {
       const current = stateRef.current
       const currentIndex =
         current.playIndex ?? Math.max(0, current.savedPlayIndex || 0)
-      let target = navigationIndex(
+      const target = navigationIndex(
         current.queue,
         currentIndex,
         current.mode || 'order',
         next,
         automatic,
       )
-      let scanned = 0
-      while (
-        target >= 0 &&
-        scanned < current.queue.length &&
-        (current.queue[target]?.unavailable ||
-          current.queue[target]?.radioPending)
-      ) {
-        const candidate = target + (next ? 1 : -1)
-        target =
-          automatic &&
-          (current.mode || 'order') === 'order' &&
-          candidate >= current.queue.length
-            ? -1
-            : (candidate + current.queue.length) % current.queue.length
-        scanned++
-      }
-      if (scanned >= current.queue.length) target = -1
       if (target >= 0) {
         if (target === currentIndex) {
           if (automatic && coordinator?.isPlaybackBlocked?.()) return

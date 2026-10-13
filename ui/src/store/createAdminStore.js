@@ -10,11 +10,6 @@ import { all, fork } from 'redux-saga/effects'
 import { adminReducer, adminSaga, USER_LOGOUT } from 'react-admin'
 import throttle from 'lodash.throttle'
 import { loadState, saveState } from './persistState'
-import {
-  playbackSession,
-  playbackSessionMiddleware,
-} from '../playbacksession/controller'
-import { readPlaybackCache } from '../playbacksession/codec'
 
 const createAdminStore = ({
   authProvider,
@@ -45,38 +40,15 @@ const createAdminStore = ({
       })) ||
     compose
 
-  const persistedState = loadState() || {}
-  if (customReducers.player && persistedState.player) {
-    const localPlayer = localStorage.getItem('userId')
-      ? persistedState.player
-      : { volume: persistedState.player.volume }
-    persistedState.player = {
-      ...customReducers.player(undefined, { type: '@@INIT' }),
-      ...localPlayer,
-    }
-  }
-  const cached = readPlaybackCache(localStorage.getItem('userId'))
-  if (cached && customReducers.player) {
-    const restored = customReducers.player(persistedState?.player, {
-      type: 'PLAYER_RESTORE_SESSION',
-      snapshot: cached,
-      play: false,
-    })
-    if (persistedState) persistedState.player = restored
-  } else if (persistedState?.player) {
-    persistedState.player.autoPlay = false
-    persistedState.player.selectionAutomatic = true
-    persistedState.player.playIndex = persistedState.player.savedPlayIndex || 0
+  const persistedState = loadState()
+  if (persistedState?.player?.savedPlayIndex) {
+    persistedState.player.playIndex = persistedState.player.savedPlayIndex
   }
   const store = createStore(
     resettableAppReducer,
     persistedState,
     composeEnhancers(
-      applyMiddleware(
-        playbackSessionMiddleware,
-        sagaMiddleware,
-        routerMiddleware(history),
-      ),
+      applyMiddleware(sagaMiddleware, routerMiddleware(history)),
     ),
   )
 
@@ -86,8 +58,11 @@ const createAdminStore = ({
       saveState({
         theme: state.theme,
         library: state.library,
-        player: (({ volume }) => ({
+        player: (({ queue, volume, savedPlayIndex, radioSession }) => ({
+          queue,
           volume,
+          savedPlayIndex,
+          radioSession,
         }))(state.player),
         albumView: state.albumView,
         settings: state.settings,
@@ -97,7 +72,6 @@ const createAdminStore = ({
   )
 
   sagaMiddleware.run(saga)
-  playbackSession.start(store)
   return store
 }
 

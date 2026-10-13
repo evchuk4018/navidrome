@@ -36,35 +36,11 @@ func (r *personalRadioRepository) AffinityForCandidates(userID string, candidate
 }
 
 func (r *personalRadioRepository) CreateSession(session *model.PersonalRadioSession, items []model.PersonalRadioItem) error {
-	return r.createSession(session, items, nil)
-}
-
-func (r *personalRadioRepository) CreateWebSession(session *model.PersonalRadioSession, items []model.PersonalRadioItem, guard model.WebPlaybackGuard) error {
-	return r.createSession(session, items, &guard)
-}
-
-func (r *personalRadioRepository) createSession(session *model.PersonalRadioSession, items []model.PersonalRadioItem, guard *model.WebPlaybackGuard) error {
 	tx, err := r.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if guard != nil {
-		// Acquire the write lock before reading ownership. Claims use this same
-		// database lock, so an old start cannot end the new owner's session.
-		res, err := tx.Exec(`UPDATE web_playback_session SET epoch=epoch
-			WHERE user_id=? AND owner_client_id=? AND epoch=?`, session.UserID, guard.ClientID, guard.Epoch)
-		if err != nil {
-			return err
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return model.ErrPlaybackOwnership
-		}
-	}
 	session.Mode = model.NormalizeRadioMode(string(session.Mode))
 	_, err = tx.Exec(`insert into personal_radio_session
 		(id, user_id, seed_media_file_id, mode, status, created_at, updated_at)
@@ -75,14 +51,6 @@ func (r *personalRadioRepository) createSession(session *model.PersonalRadioSess
 	}
 	for i := range items {
 		if err := insertRadioItem(tx, &items[i]); err != nil {
-			return err
-		}
-	}
-	if guard != nil {
-		_, err = tx.Exec(`UPDATE personal_radio_session SET status=?,updated_at=?
-			WHERE user_id=? AND status=? AND id<>?`, model.PersonalRadioEnded, time.Now().UTC(),
-			session.UserID, model.PersonalRadioActive, session.ID)
-		if err != nil {
 			return err
 		}
 	}

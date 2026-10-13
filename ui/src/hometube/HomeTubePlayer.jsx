@@ -12,8 +12,6 @@ import { GlobalHotKeys } from 'react-hotkeys'
 import { keyMap } from '../hotkeys'
 import { makeStyles } from '@material-ui/core/styles'
 import { usePlaybackQueue } from '../audioplayer/PlaybackQueueContext'
-import { usePlaybackOwnership } from '../playbacksession/usePlaybackOwnership'
-import { playbackSession } from '../playbacksession/controller'
 import { useMediaSessionSource } from '../audioplayer/MediaSessionCoordinator'
 import { playAudio, pauseAudio } from '../audioplayer/playback'
 import { homeTubeApiPath } from './api'
@@ -106,11 +104,9 @@ const HomeTubePlayer = ({
   onNext,
   onDismiss,
   onSleepExpire,
-  onOwnershipLost,
   onUserPlayback,
 }) => {
   const classes = useStyles({ expanded })
-  const { allowed: playbackAllowed, wantsPlayback } = usePlaybackOwnership()
   const playbackQueue = usePlaybackQueue()
   const [mediaHost] = useState(() => {
     const host = document.createElement('div')
@@ -166,8 +162,6 @@ const HomeTubePlayer = ({
 
   const coordinator = useMediaSessionSource({
     source: 'hometube',
-    entryId: playbackQueue?.selected?.uuid,
-    onOwnershipLost,
     element: mediaElement,
     metadata,
     active: Boolean(mediaElement && active),
@@ -179,16 +173,7 @@ const HomeTubePlayer = ({
 
   useEffect(() => {
     onElementChange?.(mediaElement || null)
-    if (mediaElement && playbackQueue?.selected?.videoId === video?.id) {
-      mediaElement.ndPlaybackEntryId = playbackQueue.selected.uuid
-    }
-  }, [
-    mediaElement,
-    onElementChange,
-    playbackQueue?.selected?.uuid,
-    playbackQueue?.selected?.videoId,
-    video?.id,
-  ])
+  }, [mediaElement, onElementChange])
 
   useEffect(() => {
     if (!mediaElement) return undefined
@@ -236,69 +221,36 @@ const HomeTubePlayer = ({
   }, [active, mediaElement, onEnded, onPlay, onProgress])
 
   useEffect(() => {
-    const restoreKey = `${video?.id}:${video?.resumeEntryId || ''}:${video?.resumeToken || ''}`
-    if (!mediaElement || !video || restoredVideoId.current === restoreKey)
-      return
+    if (!mediaElement || !video || restoredVideoId.current === video.id) return
     const restore = () => {
-      if (restoredVideoId.current === restoreKey) return
+      if (restoredVideoId.current === video.id) return
       if (!Number.isFinite(mediaElement.duration) || mediaElement.duration <= 0)
         return
-      const saved = Number(
-        video.resumePositionSeconds ?? video.playbackPositionSeconds ?? 0,
-      )
-      const sharedKey = video.resumeEntryId
-        ? `${video.resumeEntryId}:${video.resumeToken}`
-        : null
-      if (sharedKey && mediaElement.ndResumeKey === sharedKey) {
-        restoredVideoId.current = restoreKey
-        playbackSession.restoreComplete(
-          video.resumeEntryId,
-          (mediaElement.currentTime || 0) * 1000,
-          video.resumeToken,
-        )
-        return
-      }
+      const saved = Number(video.playbackPositionSeconds || 0)
       const position =
-        video.resumePositionSeconds == null &&
-        (video.watchState === 'watched' || saved >= mediaElement.duration - 5)
+        video.watchState === 'watched' || saved >= mediaElement.duration - 5
           ? 0
           : Math.max(0, Math.min(saved, mediaElement.duration))
+      restoredVideoId.current = video.id
       if (position > 0) {
         try {
           mediaElement.currentTime = position
         } catch {
           // Metadata may be invalidated while the source changes.
-          return
         }
       }
-      restoredVideoId.current = restoreKey
-      if (sharedKey) mediaElement.ndResumeKey = sharedKey
-      playbackSession.restoreComplete(
-        video.resumeEntryId,
-        position * 1000,
-        video.resumeToken,
-      )
     }
     mediaElement.addEventListener('loadedmetadata', restore)
     mediaElement.addEventListener('durationchange', restore)
-    mediaElement.addEventListener('canplay', restore)
     restore()
     return () => {
       mediaElement.removeEventListener('loadedmetadata', restore)
       mediaElement.removeEventListener('durationchange', restore)
-      mediaElement.removeEventListener('canplay', restore)
     }
   }, [mediaElement, video])
 
   useEffect(() => {
-    if (
-      !active ||
-      !mediaElement ||
-      !mediaReady ||
-      !autoplayNonce ||
-      !playbackAllowed ||
-      !wantsPlayback
-    )
+    if (!active || !mediaElement || !mediaReady || !autoplayNonce)
       return undefined
     let cancelled = false
     autoplayCancelledRef.current = false
@@ -330,8 +282,6 @@ const HomeTubePlayer = ({
       mediaElement.removeEventListener('pause', cancel)
     }
   }, [
-    playbackAllowed,
-    wantsPlayback,
     active,
     autoplayNonce,
     coordinator,

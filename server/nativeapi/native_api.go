@@ -96,7 +96,6 @@ func (api *Router) routes() http.Handler {
 		api.addSongPlaylistsRoute(r)
 		api.addHomeTubeRoute(r)
 		api.addQueueRoute(r)
-		api.addWebPlaybackRoute(r)
 		api.addMissingFilesRoute(r)
 		api.addKeepAliveRoute(r)
 		api.addInsightsRoute(r)

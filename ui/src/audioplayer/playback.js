@@ -82,7 +82,7 @@ export const cancelPlaybackRecovery = (audio) => {
 
 // Explicit Play is independent of the dependency's toggle and ready-state
 // checks. Safari can evict a paused source while keeping its queue selected.
-export const resumePlayback = (audio, context, onSettled = () => {}) => {
+export const resumePlayback = (audio, context) => {
   if (!audio) return
   allowReloadPlayback(audio)
   const source = getSource(audio)
@@ -180,7 +180,6 @@ export const resumePlayback = (audio, context, onSettled = () => {}) => {
   }
 
   requestPlay(audio, context, (error) => {
-    onSettled(error)
     playSettled = true
     // The dependency may reload the same source while handling waiting. Keep
     // its pending position restoration through that expected AbortError.
